@@ -37,7 +37,6 @@ from .services import (
     build_injected_item,
     is_injected_item,
 )
-from .services.engine import local_now
 from .services.store import NarrativeStore
 
 # 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
@@ -186,13 +185,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         避免把后续普通轮次误判为主动轮。
         """
         fire_at = self._proactive_pending_at.pop(session_id, None)
-        if fire_at is not None and (self._local_now() - fire_at).total_seconds() <= window_seconds:
+        if fire_at is not None and (datetime.datetime.now() - fire_at).total_seconds() <= window_seconds:
             return "proactive"
         return "reply"
-
-    def _local_now(self) -> datetime.datetime:
-        """按插件配置时区取本地时间（与引擎统一）。"""
-        return local_now(self.config.narrative.timezone_offset_hours)
 
     # ===== 入站事件：落痕 + 采样 + 支线反馈 =====
 
@@ -202,38 +197,24 @@ class MaiNarrativePlugin(MaiBotPlugin):
         event_type=EventType.ON_MESSAGE,
     )
     async def handle_inbound_message(self, message: Any = None, stream_id: str = "", **kwargs: Any) -> Tuple[bool, bool, str, None, None]:
-        """用户消息到达：登记会话、更新互动状态、采集指标。
-
-        带结构化日志：任一过滤分支命中都会留痕，便于真机定位
-        （曾出现入站落痕整条链不生效、但注入 hook 正常的问题）。
-        """
+        """用户消息到达：登记会话、更新互动状态、采集指标。"""
         del kwargs
         if self._engine is None or self._store is None or self._telemetry is None:
-            self.ctx.logger.warning("narrative inbound: 服务未初始化，跳过")
             return True, False, "", None, None
         if not isinstance(message, dict) or not message:
-            self.ctx.logger.info("narrative inbound: message 为空/非 dict（type=%s）", type(message).__name__)
+            return True, False, "", None, None
+        if not self._is_private_chat(message):
             return True, False, "", None, None
 
         user_id = self._extract_user_id(message)
-        is_private = self._is_private_chat(message)
-        is_mode = self._is_mode_uid(user_id)
-        self.ctx.logger.info(
-            "narrative inbound: keys=%s | user_id=%r | stream_id=%r | is_private=%s | is_mode=%s | text=%s",
-            sorted(message.keys()), user_id, stream_id, is_private, is_mode,
-            str(message.get("plain_text") or message.get("raw_message") or "")[:30],
-        )
-        if not is_private:
-            return True, False, "", None, None
-        if not is_mode:
-            self.ctx.logger.info("narrative inbound: 用户不在模式名单，uid=%r", user_id)
+        if not self._is_mode_uid(user_id):
             return True, False, "", None, None
 
         if stream_id:
             self._record_stream(user_id, stream_id)
 
         plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
-        now = self._local_now()
+        now = datetime.datetime.now()
         self._engine.record_interaction(user_id, plain, now)
         self._update_branch_feedback(user_id, now)
 
@@ -246,7 +227,6 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 验收指标 3：主动消息是否被接住
         if self._check_proactive_reply(user_id, now):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
-        self.ctx.logger.info("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
         return True, False, "", None, None
 
     def _update_branch_feedback(self, user_id: str, now: datetime.datetime) -> None:
@@ -301,7 +281,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if self._telemetry is None:
             return True, False, "", None, None
         if resolved_stream:
-            self._last_bot_sent[resolved_stream] = self._local_now()
+            self._last_bot_sent[resolved_stream] = datetime.datetime.now()
         if isinstance(message, dict):
             plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
             self._telemetry.record("dialogue_depth", value=float(len(plain)), scope="bot_msg_len")
@@ -336,7 +316,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         recent = self._store.recent_chronicle("self", limit=3)
         round_kind = self._consume_proactive_pending(session_id)
         context_text = build_context_block(
-            self, state, branch, self._local_now(), recent, round_kind=round_kind
+            self, state, branch, datetime.datetime.now(), recent, round_kind=round_kind
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
@@ -451,7 +431,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         recent = self._store.recent_chronicle("self", limit=2)
         if recent:
             lines.append("编年史最近: " + str(recent[0].get("text", ""))[:40])
-        today = self._local_now().strftime("%Y-%m-%d")
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
         for uid in self._mode_user_ids():
             count = self._store.get_kv_int(f"proactive:count:{uid}:{today}")
             lines.append(f"今日主动[{uid}]: {count}")

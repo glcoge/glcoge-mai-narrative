@@ -107,7 +107,7 @@ class ProactiveScheduler:
             self._next_fire.clear()
             return
 
-        now = datetime.datetime.now()
+        now = self._plugin._local_now()
         for user_id in (cfg.narrative.mode_user_ids or []):
             stream_id = self._plugin._stream_id_of(user_id)
             if not stream_id:

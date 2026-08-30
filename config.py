@@ -26,7 +26,7 @@ class PluginSection(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "order": 1},
     )
     config_version: str = Field(
-        default="0.1.1",
+        default="0.1.2",
         description="配置文件版本号，由 SDK 自动维护。",
         json_schema_extra={"label": "配置版本", "disabled": True, "order": 2},
     )
@@ -133,6 +133,20 @@ class NarrativeSection(PluginConfigBase):
         le=240,
         description="世界时钟 tick 间隔（分钟）。规则驱动，默认免 LLM。",
         json_schema_extra={"label": "时钟 tick 间隔", "hint": "分钟；5-240", "order": 4},
+    )
+    timezone_offset_hours: int = Field(
+        default=8,
+        ge=-12,
+        le=14,
+        description=(
+            "剧本时区偏移（小时，UTC+）。影响作息阶段/注入时间/主动窗口/编年史日期。"
+            "服务器时区与本地不一致时必须配置正确，否则作息会错位。"
+        ),
+        json_schema_extra={
+            "label": "时区偏移",
+            "hint": "例：UTC+8=8、UTC-5=-5",
+            "order": 5,
+        },
     )
     event_max_daily: int = Field(
         default=6,

@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .store import NarrativeStore
@@ -59,6 +59,16 @@ def mood_by_energy(energy: float) -> str:
         if energy >= threshold:
             return label
     return "平静"
+
+
+def local_now(offset_hours: int = 8) -> datetime:
+    """按配置时区返回本地时间（naive、规整到秒）。
+
+    服务器时区可能与剧本时区不一致（如远端为 UTC），统一用 UTC + 偏移
+    计算"本地时间"，与日记插件 schedule.timezone_offset_hours 同构。
+    """
+    utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    return (utc_naive + timedelta(hours=int(offset_hours))).replace(microsecond=0)
 
 
 def default_self_state() -> Dict[str, Any]:
@@ -137,6 +147,10 @@ class NarrativeEngine:
         except asyncio.CancelledError:
             pass
 
+    def _local_now(self) -> datetime:
+        """按插件配置时区取本地时间（全引擎统一入口）。"""
+        return local_now(self._plugin.config.narrative.timezone_offset_hours)
+
     # ─── 状态访问 ────────────────────────────────────────────────
 
     def load_self_state(self) -> Dict[str, Any]:
@@ -149,7 +163,7 @@ class NarrativeEngine:
 
     def save_self_state(self, state: Dict[str, Any]) -> None:
         """写回自我层状态。"""
-        state["meta"]["updated_ts"] = datetime.now().isoformat(timespec="seconds")
+        state["meta"]["updated_ts"] = self._local_now().isoformat(timespec="seconds")
         self._store.set_kv(_SELF_SCOPE, state)
 
     def load_branch_state(self, user_id: str) -> Dict[str, Any]:
@@ -158,20 +172,20 @@ class NarrativeEngine:
         state = self._store.get_kv(key)
         if state is None:
             state = default_branch_state()
-            state["identity"]["first_met"] = datetime.now().isoformat(timespec="seconds")
+            state["identity"]["first_met"] = self._local_now().isoformat(timespec="seconds")
             self._store.set_kv(key, state)
         return state
 
     def save_branch_state(self, user_id: str, state: Dict[str, Any]) -> None:
         """写回支线层状态。"""
-        state["meta"]["updated_ts"] = datetime.now().isoformat(timespec="seconds")
+        state["meta"]["updated_ts"] = self._local_now().isoformat(timespec="seconds")
         self._store.set_kv(f"branch:{user_id}", state)
 
     # ─── 规则 tick ───────────────────────────────────────────────
 
     async def tick(self, now: Optional[datetime] = None) -> None:
         """确定性生活推进：精力衰减、心情映射、作息流转、事件出队。"""
-        current = now or datetime.now()
+        current = now or self._local_now()
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             return
@@ -236,7 +250,7 @@ class NarrativeEngine:
 
     def record_interaction(self, user_id: str, text: str, now: Optional[datetime] = None) -> None:
         """用户互动落痕：更新自我层互动时点，素材入支线事件队列。"""
-        current = now or datetime.now()
+        current = now or self._local_now()
         today = current.strftime("%Y-%m-%d")
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
@@ -269,7 +283,7 @@ class NarrativeEngine:
 
     def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
         """从状态机签发"主动开口的由头"：由头永远来自生活，禁止干聊。"""
-        current = now or datetime.now()
+        current = now or self._local_now()
         cfg = self._plugin.config
         state = self.load_self_state()
         branch = self.load_branch_state(user_id)
@@ -316,7 +330,7 @@ class NarrativeEngine:
         if trigger is None:
             return
 
-        current = now or datetime.now()
+        current = now or self._local_now()
         if current.time() < trigger:
             return
         today = current.strftime("%Y-%m-%d")
@@ -412,6 +426,7 @@ class NarrativeEngine:
 
 __all__ = [
     "NarrativeEngine",
+    "local_now",
     "parse_clock",
     "routine_phase",
     "mood_by_energy",

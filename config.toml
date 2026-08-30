@@ -1,6 +1,6 @@
 [plugin]
 enabled = false
-config_version = "0.1.1"
+config_version = "0.1.2"
 admin_qq = []
 
 # ===== 锚定层（手动配置，运行时只读） =====
@@ -20,6 +20,7 @@ enabled = false
 mode_user_ids = []
 mode_stream_ids = []
 clock_tick_minutes = 30
+timezone_offset_hours = 8
 event_max_daily = 6
 event_max_per_user_daily = 3
 chronicle_enabled = true
