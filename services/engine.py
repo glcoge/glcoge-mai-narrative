@@ -46,8 +46,12 @@ def parse_clock(value: str) -> Optional[time]:
 
 
 def routine_phase(hour: int) -> str:
-    """返回当前作息阶段标签。"""
-    for start_hour, label in _ROUTINE_PHASES:
+    """返回当前作息阶段标签。
+
+    注意：相位表按升序排列，必须**倒序**匹配（取最大的 start_hour ≤ hour），
+    否则任意 hour≥5 都会命中首个"清晨"（真机踩坑：阶段永远清晨）。
+    """
+    for start_hour, label in reversed(_ROUTINE_PHASES):
         if hour >= start_hour:
             return label
     return "深夜"
@@ -62,11 +66,26 @@ def mood_by_energy(energy: float) -> str:
 
 
 def local_now(offset_hours: int = 8) -> datetime:
-    """按配置时区返回本地时间（naive、规整到秒）。
+    """按配置时区返回"剧本本地时间"（naive、规整到秒）。
 
-    服务器时区可能与剧本时区不一致（如远端为 UTC），统一用 UTC + 偏移
-    计算"本地时间"，与日记插件 schedule.timezone_offset_hours 同构。
+    真机踩坑（2026-08-30）：部分环境（Docker 容器/沙箱）墙钟是 +8 时间，
+    但系统时区被注册为 UTC——``datetime.now(timezone.utc)`` 返回的竟是
+    墙钟（21:54）而非真 UTC（13:54），再叠加偏移会错 8 小时（相位永远清晨）。
+
+    策略（系统感知）：
+    - 系统注册时区 == 剧本时区 → 直接信墙钟 ``datetime.now()``；
+    - 系统注册为 UTC（常见 mislabel）→ 视为"墙钟即本地"，也信墙钟；
+    - 其余（注册了其他时区且与剧本不同）→ 才用 UTC + 偏移。
     """
+    try:
+        offset = datetime.now().astimezone()
+        system_hours = float(offset.utcoffset().total_seconds() / 3600) if offset.utcoffset() else 0.0
+    except (AttributeError, ValueError, TypeError):
+        system_hours = 0.0
+
+    wall = datetime.now().replace(microsecond=0)
+    if abs(system_hours - float(offset_hours)) < 0.01 or abs(system_hours) < 0.01:
+        return wall
     utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     return (utc_naive + timedelta(hours=int(offset_hours))).replace(microsecond=0)
 
