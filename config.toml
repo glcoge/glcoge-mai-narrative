@@ -1,0 +1,46 @@
+[plugin]
+enabled = false
+config_version = "0.1.0"
+admin_qq = []
+
+# ===== 锚定层人设（手动配置，运行时只读） =====
+# 这三块是"铁律"：剧本系统永远不会改写它们。请像写角色卡一样认真填写。
+[identity]
+name = ""
+creature = ""
+world = ""
+values = []
+world_rules = []
+immutable_traits = []
+
+# ===== 剧本模式与世界引擎 =====
+[narrative]
+enabled = false
+# v0.1 最小切片：只填你自己的 QQ 号（私聊剧本模式）
+mode_user_ids = []
+mode_stream_ids = []
+clock_tick_minutes = 30
+event_max_daily = 6
+event_max_per_user_daily = 3
+chronicle_enabled = true
+daily_chronicle_time = "23:30"
+
+# ===== 主动消息 =====
+[proactive]
+enabled = false
+silent_start = "23:00"
+silent_end = "08:00"
+random_minutes = [60, 240]
+daily_max = 2
+default_active_window = ["09:00-22:00"]
+user_active_windows = {}
+
+# ===== 模型路由（复用 MaiBot 内部 task） =====
+[llm]
+creation_task = "learner"
+temperature = 0.9
+show_prompt = false
+
+# ===== 验收采样 =====
+[telemetry]
+enabled = true

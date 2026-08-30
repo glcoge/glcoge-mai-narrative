@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "id": "glcoge.mai-narrative",
+  "version": "0.1.0",
+  "name": "MaiBot 剧本人设系统",
+  "description": "让 bot 活在实时推进的剧本里：双层状态机（自我层+支线层）、世界时钟规则推进、事件驱动主动消息、编年史双写与表达学习隔离。（v0.1 最小切片：单人单私聊剧本模式）",
+  "author": {
+    "name": "glcoge",
+    "url": "https://github.com/glcoge"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/glcoge/glcoge-mai-narrative",
+    "issues": "https://github.com/glcoge/glcoge-mai-narrative/issues"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.7.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "llm.generate",
+    "maisaka.proactive.trigger"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": ["zh-CN"]
+  }
+}
