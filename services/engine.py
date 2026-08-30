@@ -333,7 +333,9 @@ class NarrativeEngine:
                 if str(item.get("ts", "")).startswith(today):
                     materials.append(str(item.get("bysource", "")))
 
-        prompt = self._build_chronicle_prompt(current, state, materials)
+        persona = await self._load_native_personality()
+
+        prompt = self._build_chronicle_prompt(current, state, materials, persona=persona)
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("编年史 prompt: %s", prompt[:300])
 
@@ -343,19 +345,28 @@ class NarrativeEngine:
             self._plugin.ctx.logger.info("编年史今日小结已写入: %s", today)
         self._store.set_kv_int(f"chronicle:done:{today}", 1)
 
+    async def _load_native_personality(self) -> str:
+        """读取主程序原生 [personality].personality（人设唯一来源，失败降级为空串）。"""
+        try:
+            return str(await self._plugin.ctx.config.get("personality.personality", "") or "").strip()
+        except Exception as exc:
+            self._plugin.ctx.logger.debug("读取原生 personality 失败: %s", exc)
+            return ""
+
     def _build_chronicle_prompt(
         self,
         now: datetime,
         state: Dict[str, Any],
         materials: Sequence[str],
+        persona: str = "",
     ) -> str:
         """构造编年史压缩 prompt（40~90 字的一日小结，第一人称）。"""
         cfg = self._plugin.config
         identity = cfg.identity
         inner = state["state"]
         personality = (
-            identity.name
-            or identity.creature
+            persona
+            or (f"生活在{identity.world}的角色" if identity.world else "")
             or "一个角色"
         )
         chunks = [
