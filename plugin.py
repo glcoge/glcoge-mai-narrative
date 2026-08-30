@@ -7,8 +7,10 @@ v0.1 最小切片（设计树已闭合，.scratch/narrative-persona/）：
 - 主动消息：活跃窗口 + 随机计时 + 静默时段 + 由头签发（禁止干聊）
 - 表达学习隔离：剧本模式会话阻断表达注入与写入
 
-构成：@HookHandler x3（注入 / 表达选择拦截 / 表达写入拦截）、
-@EventHandler x2（入站落痕 / 出站采样）、@Command + @API。
+构成：@HookHandler x5（入站落痕 / 出站采样 / 剧本注入 / 表达选择拦截 / 表达写入拦截）、
+@Command + @API。接入点全部走命名 hook（chat.receive.after_process /
+send_service.before_send / maisaka.planner.before_request / expression.*）；
+本代架构消息经 heart_flow + 命名 hook，事件（ON_MESSAGE/POST_SEND）不再派发给插件。
 不使用已废弃的 @Action（官方建议）。
 """
 
@@ -21,12 +23,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from maibot_sdk import (
     API,
     Command,
-    EventHandler,
     HookHandler,
     MaiBotPlugin,
     PluginConfigBase,
 )
-from maibot_sdk.types import ErrorPolicy, EventType, HookMode, HookOrder
+from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
 from .config import MaiNarrativePluginConfig
 from .services import (
@@ -194,26 +195,32 @@ class MaiNarrativePlugin(MaiBotPlugin):
         """按插件配置时区取本地时间（与引擎统一）。"""
         return local_now(self.config.narrative.timezone_offset_hours)
 
-    # ===== 入站事件：落痕 + 采样 + 支线反馈 =====
+    # ===== 入站 Hook：落痕 + 采样 + 支线反馈 =====
+    # 接入点用 chat.receive.after_process（与 always-reply-private 同源，真机已验证送达）；
+    # 本代架构消息走 heart_flow + 命名 hook，ON_MESSAGE 事件不再派发给插件。
 
-    @EventHandler(
-        "narrative_inbound",
+    @HookHandler(
+        "chat.receive.after_process",
+        name="narrative_inbound",
         description="剧本模式私聊入站落痕与验收采样",
-        event_type=EventType.ON_MESSAGE,
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        error_policy=ErrorPolicy.SKIP,
     )
-    async def handle_inbound_message(self, message: Any = None, stream_id: str = "", **kwargs: Any) -> Tuple[bool, bool, str, None, None]:
-        """用户消息到达：登记会话、更新互动状态、采集指标。
+    async def handle_inbound_message(self, **kwargs: Any) -> Dict[str, Any]:
+        """用户消息到达：登记会话、更新互动状态、采集指标（Hook 契约返回 dict）。
 
         带结构化日志：任一过滤分支命中都会留痕，便于真机定位
         （曾出现入站落痕整条链不生效、但注入 hook 正常的问题）。
         """
-        del kwargs
+        message = kwargs.get("message")
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
         if self._engine is None or self._store is None or self._telemetry is None:
             self.ctx.logger.warning("narrative inbound: 服务未初始化，跳过")
-            return True, False, "", None, None
+            return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(message, dict) or not message:
             self.ctx.logger.info("narrative inbound: message 为空/非 dict（type=%s）", type(message).__name__)
-            return True, False, "", None, None
+            return {"action": "continue", "modified_kwargs": kwargs}
 
         user_id = self._extract_user_id(message)
         is_private = self._is_private_chat(message)
@@ -224,10 +231,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
             str(message.get("plain_text") or message.get("raw_message") or "")[:30],
         )
         if not is_private:
-            return True, False, "", None, None
+            return {"action": "continue", "modified_kwargs": kwargs}
         if not is_mode:
             self.ctx.logger.info("narrative inbound: 用户不在模式名单，uid=%r", user_id)
-            return True, False, "", None, None
+            return {"action": "continue", "modified_kwargs": kwargs}
 
         if stream_id:
             self._record_stream(user_id, stream_id)
@@ -247,7 +254,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if self._check_proactive_reply(user_id, now):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
         self.ctx.logger.info("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
-        return True, False, "", None, None
+        return {"action": "continue", "modified_kwargs": kwargs}
 
     def _update_branch_feedback(self, user_id: str, now: datetime.datetime) -> None:
         """支线层反馈：信任/熟悉度小步增长；里程碑只进不退。"""
@@ -288,24 +295,28 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._proactive_sent_at[user_id] = active[-2:]
         return bool(active)
 
-    # ===== 出站事件：采样 =====
+    # ===== 出站 Hook：采样（受入站事件不派发影响，出站同样改用命名 hook） =====
 
-    @EventHandler(
-        "narrative_post_send",
+    @HookHandler(
+        "send_service.before_send",
+        name="narrative_post_send",
         description="剧本模式出站采样（对话深度/成本）",
-        event_type=EventType.POST_SEND,
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        error_policy=ErrorPolicy.SKIP,
     )
-    async def handle_post_send(self, message: Any = None, stream_id: str = "", **kwargs: Any) -> Tuple[bool, bool, str, None, None]:
-        """bot 发出消息后：记录出站时刻与长度（指标 1/2 的对照侧）。"""
-        resolved_stream = stream_id or str(kwargs.get("session_id") or "")
+    async def handle_post_send(self, **kwargs: Any) -> Dict[str, Any]:
+        """bot 发送消息前：记录出站时刻与长度（指标 1/2 的对照侧）。"""
+        message = kwargs.get("message")
+        resolved_stream = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
         if self._telemetry is None:
-            return True, False, "", None, None
+            return {"action": "continue", "modified_kwargs": kwargs}
         if resolved_stream:
             self._last_bot_sent[resolved_stream] = self._local_now()
         if isinstance(message, dict):
             plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
             self._telemetry.record("dialogue_depth", value=float(len(plain)), scope="bot_msg_len")
-        return True, False, "", None, None
+        return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== Hook：剧本上下文注入 =====
 
