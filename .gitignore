@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 config_back/
+
+# 本地备份副本
+* - 副本.py
+*副本*.py
