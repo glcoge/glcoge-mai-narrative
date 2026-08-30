@@ -152,6 +152,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self._engine.start()
         elif not want_engine and engine_running:
             await self._engine.stop()
+        elif not want_engine and not engine_running:
+            self.ctx.logger.info(
+                "narrative 看门狗：无动作（剧本开关 plugin=%s narrative=%s）",
+                cfg.plugin.enabled, cfg.narrative.enabled,
+            )
 
         proactive_running = bool(self._proactive._running) if hasattr(self._proactive, "_running") else False
         if want_proactive and not proactive_running:

@@ -122,6 +122,10 @@ class NarrativeEngine:
             return
         self._running = True
         self._task = asyncio.create_task(self._tick_loop(), name="narrative-engine-tick")
+        interval = max(30, int(self._plugin.config.narrative.clock_tick_minutes) * 60)
+        self._plugin.ctx.logger.info(
+            "narrative 世界时钟已启动（tick 间隔 %s 分钟）", interval // 60
+        )
 
     async def stop(self) -> None:
         """停止世界时钟周期任务。"""
@@ -188,11 +192,20 @@ class NarrativeEngine:
         current = now or self._local_now()
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
+            self._plugin.ctx.logger.info("narrative tick@%s 跳过（剧本开关未开）", current.strftime("%H:%M"))
             return
 
         state = self.load_self_state()
         self._apply_state_rules(state, current)
         self.save_self_state(state)
+        inner = state["state"]
+        self._plugin.ctx.logger.info(
+            "narrative tick@%s: phase=%s mood=%s energy=%.2f",
+            current.strftime("%Y-%m-%d %H:%M"),
+            inner["routine"]["phase"],
+            inner["mood"]["label"],
+            float(inner["mood"].get("energy", 0)),
+        )
         self._snapshot_if_day_changed(state, current)
         self._dequeue_expired_branch_events(current)
 
