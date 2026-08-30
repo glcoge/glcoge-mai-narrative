@@ -70,6 +70,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._last_bot_sent: Dict[str, datetime.datetime] = {}
         # uid -> 最近主动消息时刻列表（30 分钟回复判定）
         self._proactive_sent_at: Dict[str, List[datetime.datetime]] = {}
+        # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
+        self._proactive_pending_at: Dict[str, datetime.datetime] = {}
 
     # ===== 生命周期 =====
 
@@ -175,6 +177,17 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return True
         uid = self._stream_to_uid.get(session_id, "")
         return self._is_mode_uid(uid)
+
+    def _consume_proactive_pending(self, session_id: str, window_seconds: int = 30) -> str:
+        """主动轮判定：本会话 30s 内刚触发过主动消息 → 当前轮标记为"proactive"。
+
+        触发后由调度器写入 ``_proactive_pending_at``，本处消费一次即清除，
+        避免把后续普通轮次误判为主动轮。
+        """
+        fire_at = self._proactive_pending_at.pop(session_id, None)
+        if fire_at is not None and (datetime.datetime.now() - fire_at).total_seconds() <= window_seconds:
+            return "proactive"
+        return "reply"
 
     # ===== 入站事件：落痕 + 采样 + 支线反馈 =====
 
@@ -301,8 +314,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         state = self._engine.load_self_state()
         branch = self._engine.load_branch_state(user_id) if user_id else None
         recent = self._store.recent_chronicle("self", limit=3)
+        round_kind = self._consume_proactive_pending(session_id)
         context_text = build_context_block(
-            self, state, branch, datetime.datetime.now(), recent
+            self, state, branch, datetime.datetime.now(), recent, round_kind=round_kind
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
@@ -502,11 +516,18 @@ class MaiNarrativePlugin(MaiBotPlugin):
         inner = state["state"]
         identity = cfg.identity
 
-        # 锚定层人设 → 作者人格描述（与 render.build_context_block 同源，避免两处漂移）
+        # 锚定层人设 → 作者人格描述：复用原生 [personality].personality（人设唯一来源）+
+        # 插件世界观字段。与 render.build_context_block 同源原则：本 API 只回摘要。
         persona_parts: List[str] = []
-        name_line = identity.name or identity.creature or ""
-        if name_line:
-            persona_parts.append(name_line)
+        try:
+            native_personality = str(
+                await self.ctx.config.get("personality.personality", "") or ""
+            ).strip()
+        except Exception as exc:
+            native_personality = ""
+            self.ctx.logger.debug("读取原生 personality 失败: %s", exc)
+        if native_personality:
+            persona_parts.append(native_personality)
         if identity.world:
             persona_parts.append(f"生活在{identity.world}")
         traits = [str(item).strip() for item in (identity.immutable_traits or []) if str(item).strip()]

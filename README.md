@@ -18,11 +18,12 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 
 ## 启用步骤
 
-1. WebUI 插件页启用本插件，并填写 `[identity]` **锚定层人设**（手动配置，运行时只读）。
-2. `[narrative] mode_user_ids` 填入你的 QQ 号；`[narrative] enabled = true`。
-3. 需要主动开口时：`[proactive] enabled = true`，并按需调窗口/每日上限。
-4. 保存配置（热重载自动生效）；重启后任务自动重排。
-5. 私聊里 `/narrative status` 查看状态；`/narrative reset yes` 重置状态（编年史保留）。
+1. **写人设（在主配置）**：把 `config/bot_config.toml` 的 `[personality]` 三段（`personality` 身份白描 / `behavior_style` 行为准则 / `reply_style` 说话风格）改成剧本人设——人设主体**复用原生配置**，系统提示里只保留这一份"你是谁"，避免双人格。
+2. WebUI 插件页启用本插件，填写 `[identity]` **锚定层**（只填原生三段没有的维度）：`world` 世界观、`values` 价值观底线、`world_rules` 世界观规则/禁忌、`immutable_traits` 不可变人格。
+3. `[narrative] mode_user_ids` 填入你的 QQ 号；`[narrative] enabled = true`。
+4. 需要主动开口时：`[proactive] enabled = true`，并按需调窗口/每日上限。
+5. 保存配置（热重载自动生效）；重启后任务自动重排。
+6. 私聊里 `/narrative status` 查看状态；`/narrative reset yes` 重置状态（编年史保留）。
 
 ## 命令 / API
 

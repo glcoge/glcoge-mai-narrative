@@ -166,6 +166,7 @@ class ProactiveScheduler:
         day_count = plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
         plugin._store.set_kv_int(f"proactive:count:{user_id}:{today}", day_count + 1)
         plugin._proactive_sent_at.setdefault(user_id, []).append(now)
+        plugin._proactive_pending_at[stream_id] = now
         plugin._telemetry.record("proactive_sent", 1, user_id=user_id, scope="proactive")
 
     # ─── 内部 ────────────────────────────────────────────────────

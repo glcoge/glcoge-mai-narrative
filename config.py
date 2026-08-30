@@ -26,7 +26,7 @@ class PluginSection(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "order": 1},
     )
     config_version: str = Field(
-        default="0.1.0",
+        default="0.1.1",
         description="配置文件版本号，由 SDK 自动维护。",
         json_schema_extra={"label": "配置版本", "disabled": True, "order": 2},
     )
@@ -44,26 +44,23 @@ class PluginSection(PluginConfigBase):
 
 
 class IdentitySection(PluginConfigBase):
-    """锚定层人设 —— 用户手动配置，运行时只读，任何代码不得改写。"""
+    """锚定层 —— 用户手动配置，运行时只读，任何代码不得改写。
 
-    __ui_label__: ClassVar[str] = "锚定层人设（手动配置）"
+    注意：**人设主体（身份白描/行为准则/说话风格）复用主程序原生配置**
+    ``config/bot_config.toml`` 的 ``[personality]``（personality / behavior_style /
+    reply_style）与 ``[bot].nickname``——系统提示里只保留这一份"你是谁"，
+    避免双人格并置。本段只承载原生三段没有的维度：世界观 / 价值观底线 /
+    世界观规则 / 不可变人格特征。
+    """
+
+    __ui_label__: ClassVar[str] = "锚定层（世界观与铁律）"
     __ui_icon__: ClassVar[str] = "user"
     __ui_order__: ClassVar[int] = 1
 
-    name: str = Field(
-        default="",
-        description="名字。留空时回退到主程序配置的 bot 昵称。",
-        json_schema_extra={"label": "名字", "order": 1},
-    )
-    creature: str = Field(
-        default="",
-        description="身份/物种描述。例：银发红瞳的狐妖、失眠的 AI 管理员。",
-        json_schema_extra={"label": "身份/物种", "hint": "一句话身份设定", "order": 2},
-    )
     world: str = Field(
         default="",
         description="世界观归属。例：塞博朋克沿海城市、普通现代都市。",
-        json_schema_extra={"label": "世界观", "hint": "一句话世界观", "order": 3},
+        json_schema_extra={"label": "世界观", "hint": "一句话世界观", "order": 1},
     )
     values: List[str] = Field(
         default_factory=list,
@@ -72,7 +69,7 @@ class IdentitySection(PluginConfigBase):
             "label": "价值观底线",
             "hint": '例 ["不撒谎","尊重每个玩家"]',
             "item_type": "string",
-            "order": 4,
+            "order": 2,
         },
     )
     world_rules: List[str] = Field(
@@ -82,17 +79,17 @@ class IdentitySection(PluginConfigBase):
             "label": "世界观规则",
             "hint": '例 ["这个世界没有魔法","本市没有第 13 区"]',
             "item_type": "string",
-            "order": 5,
+            "order": 3,
         },
     )
     immutable_traits: List[str] = Field(
         default_factory=list,
-        description="不可变人格特征：语气/性格底色的铁律。",
+        description="不可变人格特征：语气/性格底色的铁律（如与原生 reply_style 冲突，以本字段为最终裁决）。",
         json_schema_extra={
             "label": "不可变人格",
             "hint": '例 ["说话简短","轻微社恐"]',
             "item_type": "string",
-            "order": 6,
+            "order": 4,
         },
     )
 
