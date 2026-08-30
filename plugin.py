@@ -140,7 +140,17 @@ class MaiNarrativePlugin(MaiBotPlugin):
         return bool(user_id) and user_id in set(self._mode_user_ids())
 
     def _is_private_chat(self, message: Dict[str, Any]) -> bool:
-        """判断消息是否为私聊。"""
+        """判断消息是否为私聊。
+
+        真机实测：本代 hook 载荷没有 is_private/chat_type 字段，主程序判定规则为
+        ``chat_type = "group" if message_info.group_info else "private"``
+        （src/chat/message_receive/message.py:61）——先按 group_info 判，再做旧字段兜底。
+        """
+        msg_info = message.get("message_info")
+        if isinstance(msg_info, dict) and isinstance(msg_info.get("group_info"), dict):
+            return False
+        if isinstance(msg_info, dict) and msg_info.get("group_info") is None:
+            return True
         if message.get("is_private") is True:
             return True
         chat_type = (
@@ -150,6 +160,27 @@ class MaiNarrativePlugin(MaiBotPlugin):
             or ""
         )
         return str(chat_type) in ("private", "direct")
+
+    def _message_text(self, message: Dict[str, Any]) -> str:
+        """提取消息正文。
+
+        真机实测：`raw_message` 是分段数组（[{"type":"text","data":...}]），
+        `processed_plain_text` 才是拼好的纯文本，优先用它。
+        """
+        text = str(message.get("processed_plain_text") or "").strip()
+        if text:
+            return text
+        raw = message.get("raw_message")
+        if isinstance(raw, list):
+            parts: List[str] = []
+            for segment in raw:
+                if isinstance(segment, dict):
+                    data = segment.get("data")
+                    parts.append(str(data) if data is not None else "")
+                else:
+                    parts.append(str(segment))
+            return "".join(parts).strip()
+        return str(raw or "").strip()
 
     def _extract_user_id(self, message: Dict[str, Any]) -> str:
         """从消息中提取用户 ID。"""
@@ -214,7 +245,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
         （曾出现入站落痕整条链不生效、但注入 hook 正常的问题）。
         """
         message = kwargs.get("message")
-        stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
+        stream_id = str(
+            kwargs.get("stream_id")
+            or kwargs.get("session_id")
+            or (message.get("session_id") if isinstance(message, dict) else "")
+            or ""
+        )
         if self._engine is None or self._store is None or self._telemetry is None:
             self.ctx.logger.warning("narrative inbound: 服务未初始化，跳过")
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -228,7 +264,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self.ctx.logger.info(
             "narrative inbound: keys=%s | user_id=%r | stream_id=%r | is_private=%s | is_mode=%s | text=%s",
             sorted(message.keys()), user_id, stream_id, is_private, is_mode,
-            str(message.get("plain_text") or message.get("raw_message") or "")[:30],
+            self._message_text(message)[:30],
         )
         if not is_private:
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -239,7 +275,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if stream_id:
             self._record_stream(user_id, stream_id)
 
-        plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
+        plain = self._message_text(message)
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
         self._update_branch_feedback(user_id, now)
