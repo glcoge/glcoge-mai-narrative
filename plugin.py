@@ -74,6 +74,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._proactive_sent_at: Dict[str, List[datetime.datetime]] = {}
         # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
         self._proactive_pending_at: Dict[str, datetime.datetime] = {}
+        # 看门狗任务：不依赖 on_config_update 回调，主动对齐"配置开关 ↔ 后台任务"
+        self._watchdog: Optional[asyncio.Task] = None
 
     # ===== 生命周期 =====
 
@@ -86,6 +88,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._engine = NarrativeEngine(self)
         self._proactive = ProactiveScheduler(self)
         await self._restart_tasks()
+        self._watchdog = asyncio.create_task(self._watchdog_loop(), name="narrative-watchdog")
         self.ctx.logger.info(
             "mai-narrative v0.1 已加载（剧本=%s 主动=%s 模式用户=%s 数据目录=%s）",
             self.config.narrative.enabled,
@@ -95,6 +98,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
         )
 
     async def on_unload(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._watchdog
+            self._watchdog = None
         with contextlib.suppress(Exception):
             if self._engine is not None:
                 await self._engine.stop()
@@ -111,6 +119,45 @@ class MaiNarrativePlugin(MaiBotPlugin):
             scope, version,
         )
         await self._restart_tasks()
+
+    async def _watchdog_loop(self) -> None:
+        """看门狗：每 15s 对齐"配置开关 ↔ 引擎/主动任务"。
+
+        背景（真机实测）：WebUI 打开剧本开关后，``on_config_update`` 若未触发，
+        引擎不会自行启动（阶段/精力冻结在旧值）。看门狗让引擎在被启用后的
+        15s 内自动拉起，不依赖回调时序。
+        """
+        try:
+            while True:
+                try:
+                    await self._ensure_tasks_aligned()
+                except Exception as exc:
+                    self.ctx.logger.warning("narrative 看门狗异常: %s", exc, exc_info=True)
+                await asyncio.sleep(15)
+        except asyncio.CancelledError:
+            pass
+
+    async def _ensure_tasks_aligned(self) -> None:
+        """按当前配置同步引擎/主动调度器的启停状态（幂等）。"""
+        if self._engine is None or self._proactive is None:
+            return
+        cfg = self.config
+        want_engine = bool(cfg.plugin.enabled and cfg.narrative.enabled)
+        want_proactive = bool(want_engine and cfg.proactive.enabled)
+
+        engine_running = bool(self._engine._running) if hasattr(self._engine, "_running") else False
+        if want_engine and not engine_running:
+            self.ctx.logger.info("narrative 看门狗：启动世界时钟（剧本已启用）")
+            self._engine.start()
+        elif not want_engine and engine_running:
+            await self._engine.stop()
+
+        proactive_running = bool(self._proactive._running) if hasattr(self._proactive, "_running") else False
+        if want_proactive and not proactive_running:
+            self.ctx.logger.info("narrative 看门狗：启动主动消息调度")
+            self._proactive.start()
+        elif not want_proactive and proactive_running:
+            await self._proactive.stop()
 
     async def _restart_tasks(self) -> None:
         """按当前开关重启世界时钟与主动调度任务。"""
