@@ -275,6 +275,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if stream_id:
             self._record_stream(user_id, stream_id)
 
+        # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）
+        if bool(message.get("is_command")) or bool(message.get("is_notify")):
+            self.ctx.logger.info("narrative inbound: 命令/通知消息（is_command=%s is_notify=%s），跳过素材采集 uid=%s",
+                                 message.get("is_command"), message.get("is_notify"), user_id)
+            return {"action": "continue", "modified_kwargs": kwargs}
+
         plain = self._message_text(message)
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
