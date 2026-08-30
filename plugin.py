@@ -16,6 +16,7 @@ send_service.before_send / maisaka.planner.before_request / expression.*）；
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime
 from typing import Any, Dict, List, Optional, Tuple
