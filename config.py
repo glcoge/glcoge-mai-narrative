@@ -82,16 +82,6 @@ class IdentitySection(PluginConfigBase):
             "order": 3,
         },
     )
-    immutable_traits: List[str] = Field(
-        default_factory=list,
-        description="不可变人格特征：语气/性格底色的铁律（如与原生 reply_style 冲突，以本字段为最终裁决）。",
-        json_schema_extra={
-            "label": "不可变人格",
-            "hint": '例 ["说话简短","轻微社恐"]',
-            "item_type": "string",
-            "order": 4,
-        },
-    )
 
 
 class NarrativeSection(PluginConfigBase):

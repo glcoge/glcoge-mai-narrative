@@ -647,6 +647,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
 
         # 锚定层人设 → 作者人格描述：复用原生 [personality].personality（人设唯一来源）+
         # 插件世界观字段。与 render.build_context_block 同源原则：本 API 只回摘要。
+        # 表达风格提示 expression_hint 同样从原生 reply_style 派生（人设唯一事实源，
+        # 插件不再重复定义性格/语气——曾用 immutable_traits，与原生冲突已删除）。
         persona_parts: List[str] = []
         try:
             native_personality = str(
@@ -659,8 +661,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
             persona_parts.append(native_personality)
         if identity.world:
             persona_parts.append(f"生活在{identity.world}")
-        traits = [str(item).strip() for item in (identity.immutable_traits or []) if str(item).strip()]
-        expression_hint = "；".join(traits)
+        try:
+            native_reply_style = str(
+                await self.ctx.config.get("personality.reply_style", "") or ""
+            ).strip()
+        except Exception as exc:
+            native_reply_style = ""
+            self.ctx.logger.debug("读取原生 reply_style 失败: %s", exc)
+        expression_hint = native_reply_style
 
         mood = inner["mood"]
         return {

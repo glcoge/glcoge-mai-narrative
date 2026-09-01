@@ -18,8 +18,8 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 
 ## 启用步骤
 
-1. **写人设（在主配置）**：把 `config/bot_config.toml` 的 `[personality]` 三段（`personality` 身份白描 / `behavior_style` 行为准则 / `reply_style` 说话风格）改成剧本人设——人设主体**复用原生配置**，系统提示里只保留这一份"你是谁"，避免双人格。
-2. WebUI 插件页启用本插件，填写 `[identity]` **锚定层**（只填原生三段没有的维度）：`world` 世界观、`values` 价值观底线、`world_rules` 世界观规则/禁忌、`immutable_traits` 不可变人格。
+1. **写人设（在主配置）**：把 `config/bot_config.toml` 的 `[personality]` 三段（`personality` 身份白描 / `behavior_style` 行为准则 / `reply_style` 说话风格）改成剧本人设——人设主体**复用原生配置**，系统提示里只保留这一份"你是谁"，避免双人格。**性格/语气/行为一律只写在这里**，插件不重复定义。
+2. WebUI 插件页启用本插件，填写 `[identity]` **锚定层**（只填原生三段没有的维度）：`world` 世界观、`values` 价值观底线、`world_rules` 世界观规则/禁忌。
 3. `[narrative] mode_user_ids` 填入你的 QQ 号；`[narrative] enabled = true`。
 4. 需要主动开口时：`[proactive] enabled = true`，并按需调窗口/每日上限。
 5. （v0.1.3）创作层默认开启：`[narrative] life_fragment_interval_minutes = 240`（生活片段生成间隔，分钟）、`life_fragment_daily_max = 3`（每日上限）。间隔越短、上限越高，主动消息由头越"有生活"，token 成本也越高——**先按默认值跑，观察指标 5 再收紧**。

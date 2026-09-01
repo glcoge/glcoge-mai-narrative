@@ -6,12 +6,11 @@ admin_qq = []
 # ===== 锚定层（手动配置，运行时只读） =====
 # 人设主体复用主程序原生配置 config/bot_config.toml 的 [personality] 段
 # （personality 身份白描 / behavior_style 行为准则 / reply_style 说话风格）。
-# 本段只填原生三段没有的维度：
+# 本段只填原生三段没有的维度（性格/语气/etc.一律写原生，勿在本段重复定义）：
 [identity]
 world = ""
 values = []
 world_rules = []
-immutable_traits = []
 
 # ===== 剧本模式与世界引擎 =====
 [narrative]

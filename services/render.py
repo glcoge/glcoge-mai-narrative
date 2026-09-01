@@ -118,13 +118,10 @@ def build_context_block(
 
     anchored_values = [str(item).strip() for item in (identity.values or []) if str(item).strip()]
     anchored_rules = [str(item).strip() for item in (identity.world_rules or []) if str(item).strip()]
-    anchored_traits = [str(item).strip() for item in (identity.immutable_traits or []) if str(item).strip()]
     if anchored_values:
         lines.append(f"- 你的价值观底线（不可违背）：{'、'.join(anchored_values[:5])}")
     if anchored_rules:
         lines.append("- 你的世界观规则（不可违背）：\n" + "\n".join(f"    - {item}" for item in anchored_rules[:5]))
-    if anchored_traits:
-        lines.append(f"- 你的人格底色（如与原生设定冲突，以本条为准）：{'、'.join(anchored_traits[:5])}")
 
     if round_kind == "proactive":
         lines.append(_PROACTIVE_TURN_HINT)
