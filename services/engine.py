@@ -227,6 +227,11 @@ class NarrativeEngine:
         )
         self._snapshot_if_day_changed(state, current)
         self._dequeue_expired_branch_events(current)
+        # 创作层：按间隔+上限闸门尝试生成生活片段（内部自控频率，失败不影响规则 tick）
+        try:
+            await self.maybe_generate_life_fragment(current)
+        except Exception as exc:
+            self._plugin.ctx.logger.error("生活片段生成异常: %s", exc, exc_info=True)
 
     def _apply_state_rules(self, state: Dict[str, Any], now: datetime) -> None:
         """纯规则：精力衰减/回升、心情映射、作息阶段、日程到点。"""
@@ -296,12 +301,8 @@ class NarrativeEngine:
         normalized = str(text or "").strip()
         if not normalized:
             return
-        # 由头：把"用户说了点什么"变成"bot 心里记挂的焦点"（确定性规则）
-        if len(normalized) >= 12:
-            state = self.load_self_state()
-            state["state"]["focus"]["hot_thread"] = normalized[:60]
-            self.save_self_state(state)
-
+        # 素材入支线事件队列供创作层消费（v0.1.3 起 hot_thread 不再由用户消息覆盖；
+        # "心头事"只由创作层/生活片段写入，防止命令与用户发言镜像污染）
         self._store.push_event(
             {
                 "ts": current.isoformat(timespec="seconds"),
@@ -314,26 +315,26 @@ class NarrativeEngine:
     # ─── 由头签发（主动消息的内容之源） ──────────────────────────
 
     def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
-        """从状态机签发"主动开口的由头"：由头永远来自生活，禁止干聊。"""
+        """从"bot 自己的生活"签发主动开口的由头（v0.1.3 重构）。
+
+        取材优先级（全部来自 bot 自身，禁止取材用户消息镜像，防复述）：
+        1. 创作层最近生活片段（focus.pending_events 最新两条）；
+        2. 支线里程碑（你们之间发生过的事）；
+        3. 情绪/作息（疲惫想倾诉、深夜清醒）。
+
+        没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
+        """
         current = now or self._local_now()
         cfg = self._plugin.config
         state = self.load_self_state()
         branch = self.load_branch_state(user_id)
 
         candidates: List[str] = []
-        hot_thread = str(state["state"]["focus"].get("hot_thread", "")).strip()
-        if hot_thread:
-            candidates.append(f"今天心里一直挂着这件事：{hot_thread}")
-
-        mood = str(state["state"]["mood"].get("label", "平静"))
-        if mood in ("低落", "疲惫"):
-            candidates.append(f"今天有点{mood}，想找人聊聊")
-
-        phase = str(state["state"]["routine"].get("phase", ""))
-        if phase == "深夜":
-            candidates.append("夜深了，我还不想睡，想跟你说点什么")
-        elif phase == "清晨":
-            candidates.append("刚醒，今天莫名的想先跟你说句话")
+        pending = list(state["state"]["focus"].get("pending_events", []))
+        for item in pending[-2:]:
+            fragment = str(item.get("text", "") or "").strip()
+            if fragment:
+                candidates.append(f"最近一段生活：{fragment[:60]}")
 
         stage = str(branch["identity"].get("stage", "陌生人"))
         milestones = list(branch["state"].get("milestones", []))
@@ -342,11 +343,20 @@ class NarrativeEngine:
             candidates.append(f"想起我们之间那件事：{latest_milestone.get('desc', '')}")
 
         if not candidates:
-            world = str(cfg.identity.world or "这个城市")
-            candidates.append(f"在{world}里度过了平静的一天，突然想跟你打声招呼")
+            mood = str(state["state"]["mood"].get("label", "平静"))
+            if mood in ("低落", "疲惫"):
+                candidates.append(f"今天有点{mood}，想找人聊聊")
+            phase = str(state["state"]["routine"].get("phase", ""))
+            if phase == "深夜":
+                candidates.append("夜深了，我还不想睡，想跟你说点什么")
+            elif phase == "清晨":
+                candidates.append("刚醒，今天莫名的想先跟你说句话")
 
-        # 场景感补全：把由头变成"生活片段"式的开口（确定性选一个，按小时稳定）
-        seed = sum(ord(char) for char in user_id) + current.hour
+        if not candidates:
+            return ""  # 无可借由的生活素材：本轮主动取消（宁可缺席，不干聊）
+
+        # 场景感补全：确定性选一个（按小时稳定），避免同一天重复同一由头
+        seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
         return candidates[seed % len(candidates)]
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
@@ -398,6 +408,111 @@ class NarrativeEngine:
         except Exception as exc:
             self._plugin.ctx.logger.debug("读取原生 personality 失败: %s", exc)
             return ""
+
+    # ─── 创作层：生活片段生成器（v0.1.3 新增，唯一的日常 LLM 创作节点） ──
+
+    async def maybe_generate_life_fragment(self, now: Optional[datetime] = None) -> None:
+        """创作层消费器：间隔 + 每日上限闸门下，用轻量模型生成一段"生活片段"。
+
+        目的：让 bot 的"生活"不只是数字变化，而是有一段段可被对话引用的生活故事
+        （修复主动消息复述问题的第一环）。生成结果双写：
+        - ``focus.pending_events``（有界 5 条，渲染时引用为"最近的生活片段"）；
+        - ``chronicle``（append-only，kind=life，日记侧可见）。
+
+        只读事件队列，不消费（三个原因：编年史 23:30 也要读同一批素材；
+        事件有每日上限本来就有界；3 天前的由 _dequeue_expired_branch_events 清理）。
+        """
+        cfg = self._plugin.config
+        if not cfg.plugin.enabled or not cfg.narrative.enabled:
+            return
+        if int(cfg.narrative.life_fragment_daily_max) <= 0:
+            return
+
+        current = now or self._local_now()
+        today = current.strftime("%Y-%m-%d")
+
+        # 每日次数上限
+        day_count = self._store.get_kv_int(f"life_fragment:count:{today}")
+        if day_count >= int(cfg.narrative.life_fragment_daily_max):
+            return
+
+        # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
+        last_entry = self._store.get_kv("life_fragment:last_ts")
+        last_ts = str((last_entry or {}).get("ts", "") or "")
+        if last_ts:
+            try:
+                last_dt = datetime.fromisoformat(last_ts)
+                if (current - last_dt).total_seconds() < int(cfg.narrative.life_fragment_interval_minutes) * 60:
+                    return
+            except (TypeError, ValueError):
+                pass
+
+        # 收集素材：全部模式用户的支线事件（最近一条对话素材 → 生活的原料）
+        materials: List[str] = []
+        for user_id in (cfg.narrative.mode_user_ids or []):
+            for item in self._store.list_events(f"branch:{user_id}", limit=20):
+                source_text = str(item.get("bysource", "") or "").strip()
+                if source_text:
+                    materials.append(source_text)
+
+        state = self.load_self_state()
+        persona = await self._load_native_personality()
+        prompt = self._build_life_fragment_prompt(current, state, materials, persona=persona)
+        if cfg.llm.show_prompt:
+            self._plugin.ctx.logger.info("生活片段 prompt: %s", prompt[:300])
+
+        text = await self._call_creation_llm(prompt)
+        if not text:
+            return
+
+        # 双写：pending_events（有界）+ 编年史（append-only）
+        inner = state["state"]
+        focus = inner.setdefault("focus", {})
+        pending = list(focus.get("pending_events", []))
+        pending.append({"ts": current.isoformat(timespec="seconds"), "text": text})
+        focus["pending_events"] = pending[-5:]
+        self.save_self_state(state)
+        self._store.append_chronicle(
+            _SELF_SCOPE, "life", text, current.isoformat(timespec="seconds")
+        )
+
+        # 闸门推进 + 计数（store.get_kv 契约：kv 值为 JSON dict，故 last_ts 用 dict 包装）
+        self._store.set_kv("life_fragment:last_ts", {"ts": current.isoformat(timespec="seconds")})
+        self._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
+        self._plugin.ctx.logger.info("生活片段已生成（今日 %s/%s）: %s", day_count + 1, cfg.narrative.life_fragment_daily_max, text[:40])
+
+    def _build_life_fragment_prompt(
+        self,
+        now: datetime,
+        state: Dict[str, Any],
+        materials: Sequence[str],
+        persona: str = "",
+    ) -> str:
+        """构造生活片段生成 prompt（40~90 字第一人称内心活动/小事/感慨）。"""
+        cfg = self._plugin.config
+        identity = cfg.identity
+        inner = state["state"]
+        personality = (
+            persona
+            or (f"生活在{identity.world}的角色" if identity.world else "")
+            or "一个角色"
+        )
+        chunks = [
+            f"你是{personality}，正在度过自己的一天。",
+            (
+                f"此刻：{now.strftime('%Y-%m-%d %H:%M')}，"
+                f"你处于{inner['routine']['phase']}，"
+                f"心情{inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）。"
+            ),
+        ]
+        if materials:
+            chunks.append("最近发生的对话与小事：\n- " + "\n- ".join(materials[-6:]))
+        chunks.append(
+            "请以第一人称写一段 40~90 字的生活片段：你此刻心里的一段念头、"
+            "一件正在想的小事、一句生活里的感慨。要有生活气息和画面感，"
+            "只输出正文，不要任何标题/引号/表情/动作旁白。"
+        )
+        return "\n".join(chunks)
 
     def _build_chronicle_prompt(
         self,

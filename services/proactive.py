@@ -143,11 +143,16 @@ class ProactiveScheduler:
     # ─── 触发 ────────────────────────────────────────────────────
 
     async def _fire(self, user_id: str, stream_id: str, now: datetime.datetime) -> None:
-        """签发由头并触发 Maisaka 主动任务。"""
+        """签发由头并触发 Maisaka 主动任务。由头为空（无可借生活素材）则跳过本轮。"""
         cfg = self._plugin.config
         plugin = self._plugin
         bysource = plugin._engine.build_bysource(user_id, now)
-        intent = f"按剧本生活主动开口"
+        if not bysource:
+            plugin.ctx.logger.info(
+                "主动消息跳过: uid=%s stream=%s 无可借由的生活素材（不干聊）", user_id, stream_id
+            )
+            return
+        intent = "按剧本生活主动开口"
         plugin.ctx.logger.info(
             "主动消息触发: uid=%s stream=%s 由头=%s", user_id, stream_id, bysource
         )
@@ -166,7 +171,11 @@ class ProactiveScheduler:
         day_count = plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
         plugin._store.set_kv_int(f"proactive:count:{user_id}:{today}", day_count + 1)
         plugin._proactive_sent_at.setdefault(user_id, []).append(now)
-        plugin._proactive_pending_at[stream_id] = now
+        # 侧信道：由头与触发时刻一并暂存，供渲染层注入"主动轮指示 + 由头文本"
+        plugin._proactive_pending_at[stream_id] = {
+            "ts": now,
+            "bysource": bysource,
+        }
         plugin._telemetry.record("proactive_sent", 1, user_id=user_id, scope="proactive")
 
     # ─── 内部 ────────────────────────────────────────────────────

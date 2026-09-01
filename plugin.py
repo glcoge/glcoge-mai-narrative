@@ -264,16 +264,19 @@ class MaiNarrativePlugin(MaiBotPlugin):
         uid = self._stream_to_uid.get(session_id, "")
         return self._is_mode_uid(uid)
 
-    def _consume_proactive_pending(self, session_id: str, window_seconds: int = 30) -> str:
-        """主动轮判定：本会话 30s 内刚触发过主动消息 → 当前轮标记为"proactive"。
+    def _consume_proactive_pending(self, session_id: str, window_seconds: int = 30) -> Tuple[str, str]:
+        """主动轮判定：本会话 30s 内刚触发过主动消息 → 返回 ("proactive", 由头)。
 
-        触发后由调度器写入 ``_proactive_pending_at``，本处消费一次即清除，
-        避免把后续普通轮次误判为主动轮。
+        触发后由调度器写入 ``_proactive_pending_at``（结构 {ts, bysource}），
+        本处消费一次即清除，避免把后续普通轮次误判为主动轮。
+        Returns:
+            (round_kind, bysource)：round_kind ∈ {"proactive","reply"}；
+            bysource 非空仅当主动轮（由头文本，供渲染注入）。
         """
-        fire_at = self._proactive_pending_at.pop(session_id, None)
-        if fire_at is not None and (self._local_now() - fire_at).total_seconds() <= window_seconds:
-            return "proactive"
-        return "reply"
+        entry = self._proactive_pending_at.pop(session_id, None)
+        if entry is not None and (self._local_now() - entry["ts"]).total_seconds() <= window_seconds:
+            return "proactive", str(entry.get("bysource", "") or "")
+        return "reply", ""
 
     def _local_now(self) -> datetime.datetime:
         """按插件配置时区取本地时间（与引擎统一）。"""
@@ -440,9 +443,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         state = self._engine.load_self_state()
         branch = self._engine.load_branch_state(user_id) if user_id else None
         recent = self._store.recent_chronicle("self", limit=3)
-        round_kind = self._consume_proactive_pending(session_id)
+        round_kind, bysource = self._consume_proactive_pending(session_id)
         context_text = build_context_block(
-            self, state, branch, self._local_now(), recent, round_kind=round_kind
+            self, state, branch, self._local_now(), recent, round_kind=round_kind, bysource=bysource
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
@@ -674,6 +677,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "mood_shift_ts": str(mood.get("last_shift_ts", "")),
                 "routine_phase": str(inner["routine"].get("phase", "")),
                 "hot_thread": str(inner["focus"].get("hot_thread", "")),
+                "latest_life_fragment": (
+                    str(
+                        list(inner.get("focus", {}).get("pending_events", []))[-1]
+                        .get("text", "")
+                    )[:60]
+                    if inner.get("focus", {}).get("pending_events")
+                    else ""
+                ),
                 "recent_chronicle": [
                     str(entry.get("text", ""))[:60]
                     for entry in self._store.recent_chronicle("self", limit=3)

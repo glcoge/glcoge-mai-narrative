@@ -1,6 +1,6 @@
 [plugin]
 enabled = false
-config_version = "0.1.2"
+config_version = "0.1.3"
 admin_qq = []
 
 # ===== 锚定层（手动配置，运行时只读） =====
@@ -25,6 +25,9 @@ event_max_daily = 6
 event_max_per_user_daily = 3
 chronicle_enabled = true
 daily_chronicle_time = "23:30"
+# 创作层：生活片段生成间隔（分钟）与每日上限（防超支，遵守成本 30% 红线）
+life_fragment_interval_minutes = 240
+life_fragment_daily_max = 3
 
 # ===== 主动消息 =====
 [proactive]

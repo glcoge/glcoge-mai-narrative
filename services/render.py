@@ -58,6 +58,7 @@ def build_context_block(
     now: datetime,
     recent_entries: List[Dict[str, str]],
     round_kind: str = "reply",
+    bysource: str = "",
 ) -> str:
     """把剧本特有内容渲染成一段紧凑的上下文文本。
 
@@ -68,6 +69,7 @@ def build_context_block(
         now: 当前时间。
         recent_entries: 近期编年史条目（store.recent_chronicle("self")）。
         round_kind: "reply"=正常回应轮 / "proactive"=主动开口轮。
+        bysource: 主动轮的由头文本（v0.1.3 起由侧信道注入，非空仅当主动轮）。
 
     Returns:
         str: 注入给模型的剧本上下文段。
@@ -77,16 +79,12 @@ def build_context_block(
     inner = state["state"]
     mood = inner["mood"]
     phase = inner["routine"]["phase"]
-    hot_thread = str(inner["focus"].get("hot_thread", "")).strip()
 
     lines: List[str] = [
         "【角色内部状态 · 仅供你（模型）参考，不要把本段原样告诉对方】",
         f"- 此刻：{now.strftime('%Y-%m-%d %H:%M')}，你正处于{phase}，"
         f"心情{mood['label']}，精力 {mood['energy'] * 10:.0f}/10",
     ]
-
-    if hot_thread:
-        lines.append(f"- 你现在心里正想着：{hot_thread}")
 
     if recent_entries:
         recent_text = "；".join(
@@ -96,6 +94,16 @@ def build_context_block(
         )
         if recent_text:
             lines.append(f"- 你最近的生活：{recent_text}")
+
+    # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
+    pending_events = list(inner.get("focus", {}).get("pending_events", []))
+    fragments = [
+        str(item.get("text", "")).strip()
+        for item in pending_events[-2:]
+        if str(item.get("text", "") or "").strip()
+    ]
+    if fragments:
+        lines.append("- 你心里正挂念的生活片段：\n" + "\n".join(f"    - {fragment[:56]}" for fragment in fragments))
 
     if branch is not None:
         stage = str(branch["identity"].get("stage", "陌生人"))
@@ -120,6 +128,8 @@ def build_context_block(
 
     if round_kind == "proactive":
         lines.append(_PROACTIVE_TURN_HINT)
+        if bysource:
+            lines.append(f"\n你这次主动开口想说的是（由头）：{bysource}")
     else:
         lines.append(
             "- 对话原则：按以上状态自然地表达自己；不要主动说明你有剧本；"

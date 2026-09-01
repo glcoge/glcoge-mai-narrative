@@ -172,6 +172,20 @@ class NarrativeSection(PluginConfigBase):
         description="每日编年史压缩触发时间（HH:MM）。当日有互动时用轻量模型写一条「今日小结」。",
         json_schema_extra={"label": "编年史压缩时间", "hint": "HH:MM；留空=不自动压缩", "order": 8},
     )
+    life_fragment_interval_minutes: int = Field(
+        default=240,
+        ge=30,
+        le=1440,
+        description="生活片段生成的间隔（分钟）。创作层消费器每隔 N 分钟可能用轻量模型生成一段 bot 的「生活片段」；间隔越大越省 token。",
+        json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440", "order": 9},
+    )
+    life_fragment_daily_max: int = Field(
+        default=3,
+        ge=0,
+        le=12,
+        description="每日生活片段生成上限（防超支；连同编年史合计遵守成本 30% 红线）。",
+        json_schema_extra={"label": "生活片段日上限", "hint": "0-12", "order": 10},
+    )
 
 
 class ProactiveSection(PluginConfigBase):
