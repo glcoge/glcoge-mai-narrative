@@ -247,10 +247,14 @@ class LLMSection(PluginConfigBase):
 
     creation_task: str = Field(
         default="learner",
-        description="事件创作/编年史压缩所用模型 task 名（需已存在于主程序 model_config.toml）。",
+        description=(
+            "事件创作/编年史压缩所用模型 task 名（需已存在于主程序 model_config.toml）。"
+            "只填任务名，不填模型名。若创作模型为推理模型且未关思考（思维链挤占 max_tokens "
+            "导致正文截断），建议新建无思考模型+任务并在此指向它（见 README「创作模型路由」）。"
+        ),
         json_schema_extra={
             "label": "创作模型 task",
-            "hint": "replyer / utils / learner 等；建议用轻量任务控制成本",
+            "hint": "任务名（非模型名）；推理模型建议配无思考任务",
             "placeholder": "learner",
             "order": 1,
         },

@@ -40,6 +40,19 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 - **LLM 只在规则候选里创作**：tick 纯规则；每日仅一次编年史压缩调 LLM（`llm.creation_task`）。
 - **编年史 append-only**：重置也不清编年史。
 
+## 创作模型路由（v0.1.3，重要）
+
+生活片段 / 编年史压缩走 `[llm] creation_task`（默认 `learner`）。⚠️ **若主配置的创作模型是推理模型（如 Mimo V2.5）且未关思考，思维链会挤占 `max_tokens` 导致正文截断**（日志出现 "超过 max_token 限制"）。处理办法（**纯 WebUI 配置，零代码**）：
+
+1. **模型注册页**：复制原推理模型（如 `mimo-v2.5`）注册一个**无思考版**：`name = "mimo-v2.5-no-think"`、`extra_params = {thinking = {type = "disabled"}}`，不分配任务（仅占位备用）。
+2. **任务管理页**：新建任务 `narrative_creator`，`model_list` 只挂无思考版（如 `["mimo-v2.5-no-think"]`），`max_tokens` 填 1024（正文 40~90 字绰绰有余；思维链已关，不会截断）。
+3. **本插件配置页**：`[llm] creation_task = "narrative_creator"`。
+
+要点：
+- `creation_task` 只认**任务名**，不认模型名（`resolve_task_name` 行为）；务必填任务名。
+- 原 `learner` 任务及其有思考模型不受影响——学习任务照旧用推理能力。
+- 保持 `[llm] max_tokens` 不动（该字段不生效于创作调用）；上限由任务级 `max_tokens` 决定。
+
 ## 数据目录
 
 `data/plugins/glcoge.mai-narrative/narrative/`
