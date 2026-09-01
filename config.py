@@ -273,12 +273,71 @@ class LLMSection(PluginConfigBase):
     )
 
 
+class CreatorModelSection(PluginConfigBase):
+    """剧本创作模型（可选：插件直连 OpenAI 兼容端点，绕过 MaiBot 任务路由）。
+
+    启用后，生活片段/编年史压缩直接 POST 到 ``base_url``（/chat/completions），
+    body 固定携带 ``thinking = {type: "disabled"}``（生成短文本无需思维链；
+    推理模型不禁思考会挤占 max_tokens 导致正文截断）。留空关闭时回退 MaiBot task 路由。
+    """
+
+    __ui_label__: ClassVar[str] = "创作模型直连"
+    __ui_icon__: ClassVar[str] = "link"
+    __ui_order__: ClassVar[int] = 5
+
+    enabled: bool = Field(
+        default=False,
+        description="启用插件直连创作模型（关=回退 MaiBot task 路由）。",
+        json_schema_extra={"label": "启用直连", "order": 1},
+    )
+    base_url: str = Field(
+        default="",
+        description="OpenAI 兼容 BaseURL（会自动拼接 /chat/completions）。",
+        json_schema_extra={
+            "label": "BaseURL",
+            "hint": "例 https://api.example.com/v1",
+            "placeholder": "https://…/v1",
+            "order": 2,
+        },
+    )
+    api_key: str = Field(
+        default="",
+        description="API Key（明文存插件配置，与 MaiBot model_config.toml 现状一致）。",
+        json_schema_extra={
+            "label": "API Key",
+            "hint": "Bearer 令牌；留空则不发 Authorization 头",
+            "placeholder": "sk-…",
+            "password": True,
+            "order": 3,
+        },
+    )
+    model_id: str = Field(
+        default="",
+        description="模型 ID（服务商侧标识，如 mimo-v2.5）。",
+        json_schema_extra={"label": "模型 ID", "hint": "服务商侧 model 字段", "order": 4},
+    )
+    max_tokens: int = Field(
+        default=384,
+        ge=64,
+        le=8192,
+        description="最大输出 token（默认 384；创作正文短，384 足够且含余量）。",
+        json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 5},
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        ge=5.0,
+        le=180.0,
+        description="直连请求超时（秒）。",
+        json_schema_extra={"label": "超时秒", "order": 6},
+    )
+
+
 class TelemetrySection(PluginConfigBase):
     """验收采样（5 指标，见 .scratch/narrative-persona/acceptance-dashboard.md）。"""
 
     __ui_label__: ClassVar[str] = "验收采样"
     __ui_icon__: ClassVar[str] = "activity"
-    __ui_order__: ClassVar[int] = 5
+    __ui_order__: ClassVar[int] = 6
 
     enabled: bool = Field(
         default=True,
@@ -295,6 +354,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     narrative: NarrativeSection = Field(default_factory=NarrativeSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     llm: LLMSection = Field(default_factory=LLMSection)
+    creator_model: CreatorModelSection = Field(default_factory=CreatorModelSection)
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
 
 
@@ -304,6 +364,7 @@ __all__ = [
     "NarrativeSection",
     "ProactiveSection",
     "LLMSection",
+    "CreatorModelSection",
     "TelemetrySection",
     "MaiNarrativePluginConfig",
 ]

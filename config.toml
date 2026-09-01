@@ -44,6 +44,18 @@ creation_task = "learner"
 temperature = 0.9
 show_prompt = false
 
+# ===== 创作模型直连（可选；启用后绕过 MaiBot 任务路由，直接 POST 到 base_url）=====
+# 用途：推理模型（如 Mimo V2.5）不禁思考会挤占 max_tokens 导致正文截断；
+# 直连请求 body 固定携带 thinking={type:"disabled"}，生成短文本无需思维链。
+# 留空/关闭 = 回退 [llm] creation_task 路由。
+[creator_model]
+enabled = false
+base_url = ""
+api_key = ""
+model_id = ""
+max_tokens = 384
+timeout_seconds = 30.0
+
 # ===== 验收采样 =====
 [telemetry]
 enabled = true

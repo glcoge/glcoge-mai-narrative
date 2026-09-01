@@ -543,7 +543,68 @@ class NarrativeEngine:
         return "\n".join(chunks)
 
     async def _call_creation_llm(self, prompt: str) -> str:
-        """调用创作模型；失败返回空串（当前是唯一常规 LLM 调用点）。"""
+        """调用创作模型；失败返回空串（当前是唯一常规 LLM 调用点）。
+
+        优先直连：``[creator_model]`` 启用且 base_url 非空时，直接 POST
+        OpenAI 兼容 /chat/completions（body 固定 ``thinking={type:"disabled"}``，
+        关闭推理模型的思维链，避免挤占 max_tokens 导致正文截断）。
+        否则回退 MaiBot task 路由（``[llm] creation_task``）。
+        """
+        cfg = self._plugin.config
+        creator = cfg.creator_model
+        if creator.enabled and str(creator.base_url or "").strip():
+            text = await self._call_creator_direct(prompt)
+        else:
+            text = await self._call_creator_via_task(prompt)
+
+        if not text:
+            return ""
+        # 成本采样（指标 5）：按字符粗估 token，写入 llm_extra_tokens
+        telemetry = getattr(self._plugin, "_telemetry", None)
+        if telemetry is not None:
+            tokens_approx = max(1, (len(prompt) + len(text)) // 3)
+            telemetry.record_llm_tokens(float(tokens_approx), task="creation")
+        return text
+
+    async def _call_creator_direct(self, prompt: str) -> str:
+        """直连 OpenAI 兼容端点生成（自带 thinking disabled，绕开推理模型思维链）。"""
+        import httpx
+
+        cfg = self._plugin.config
+        creator = cfg.creator_model
+        base_url = str(creator.base_url or "").strip().rstrip("/")
+        endpoint = f"{base_url}/chat/completions"
+        payload = {
+            "model": str(creator.model_id or "").strip(),
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": int(creator.max_tokens or 384),
+            "temperature": float(cfg.llm.temperature),
+            # 关闭思考：生成短文本无需思维链，防止推理模型挤占 max_tokens
+            "thinking": {"type": "disabled"},
+        }
+        headers = {"Content-Type": "application/json"}
+        api_key = str(creator.api_key or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=float(creator.timeout_seconds or 30.0)) as client:
+                response = await client.post(endpoint, json=payload, headers=headers)
+                response.raise_for_status()
+        except Exception as exc:
+            self._plugin.ctx.logger.warning("创作模型直连失败: %s", exc)
+            return ""
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return str(content or "").strip()
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            self._plugin.ctx.logger.warning("创作模型直连响应解析失败: %s", exc)
+            return ""
+
+    async def _call_creator_via_task(self, prompt: str) -> str:
+        """回退：走 MaiBot 内部 task 路由（llm.generate）。"""
         cfg = self._plugin.config
         try:
             result = await asyncio.wait_for(
@@ -558,14 +619,6 @@ class NarrativeEngine:
         except Exception as exc:
             self._plugin.ctx.logger.warning("创作模型调用失败: %s", exc)
             return ""
-        # 成本采样（指标 5）：按字符粗估 token，写入 llm_extra_tokens
-        telemetry = getattr(self._plugin, "_telemetry", None)
-        if telemetry is not None:
-            text = ""
-            if isinstance(result, dict):
-                text = str(result.get("response") or result.get("content") or "")
-            tokens_approx = max(1, (len(prompt) + len(text)) // 3)
-            telemetry.record_llm_tokens(float(tokens_approx), task="creation")
         if isinstance(result, dict):
             return str(result.get("response") or result.get("content") or "").strip()
         return ""
