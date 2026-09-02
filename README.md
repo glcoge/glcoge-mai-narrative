@@ -3,15 +3,15 @@
 让 bot 活在实时推进的剧本里：有生活、有情绪、会主动开口、随生活自进化。
 v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参与）。
 
-设计文档与验收仪表盘见仓库 `.scratch/narrative-persona/`。
+设计文档与验收仪表盘在**主仓库** `.scratch/narrative-persona/`（本插件为独立仓库，不含此目录）。
 
 ## 它做什么
 
 | 能力 | 机制 |
 |---|---|
 | 剧本状态 | 双层状态机：自我层（全局心情/作息/聚焦）+ 支线层（每用户关系值/里程碑） |
-| 生活推进 | 世界时钟规则 tick（30min，零 LLM）+ 每日编年史压缩（轻量模型一次） |
-| 主动开口 | 活跃窗口 + 随机 1~4h 计时 + 23:00~08:00 静默 + 由头签发（有由头才开口） |
+| 生活推进 | 世界时钟规则 tick（30min，零 LLM）+ 创作层生活片段生成（间隔+日上限双闸门）+ 每日编年史压缩 |
+| 主动开口 | 活跃窗口 + 随机 1~4h 计时 + 23:00~08:00 静默 + 由头签发（有由头才开口，不干聊） |
 | 对话注入 | 每轮请求前注入剧本生活状态（`maisaka.planner.before_request`） |
 | 表达学习隔离 | 剧本模式会话阻断表达注入/写入（防稀释人设） |
 | 验收采样 | 5 指标 CSV（用户主动频率/对话深度/主动回复率/状态多样性/额外成本） |
@@ -37,7 +37,7 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 
 - **不改主程序代码**：全部通过插件挂载点实现（Hook/Event/Command/API）。
 - **锚定层不可改**：`[identity]` 只读，代码永不改写；里程碑只进不退。
-- **LLM 只在规则候选里创作**：tick 纯规则；每日仅一次编年史压缩调 LLM（`llm.creation_task`）。
+- **LLM 只在规则候选里创作**：tick 纯规则；生活片段 + 编年史压缩按频率闸门调 LLM（见「创作模型路由」）。
 - **编年史 append-only**：重置也不清编年史。
 
 ## 创作模型路由（v0.1.3，重要）
@@ -58,7 +58,7 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 - 直连启用后**不依赖 MaiBot 模型体系**：不占任务、不经 RPC、不改 model_config.toml。
 - `[llm] creation_task` 仅在 `[creator_model].enabled=false` 或 `base_url` 空时作为回退。
 - API Key 明文存插件配置（与 model_config.toml 现状一致）；如需更安全可后续改环境变量引用。
-- 已知 MaiBot 缺陷（llm.generate 的 model_name 被 host 吞入任务名解析）：见 `E:\1MyProjects\maibot-model-name-issue-pr-template.md`，可提交 issue/PR 打通原生通道。
+- 已知 MaiBot 缺陷（`llm.generate` 的 model_name 被 host 吞入任务名解析）已提交 upstream issue **#2031**；本地备有 issue/PR 模板 `E:\1MyProjects\maibot-model-name-issue-pr-template.md`。
 
 ## 数据目录
 
