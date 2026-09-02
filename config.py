@@ -249,12 +249,12 @@ class LLMSection(PluginConfigBase):
         default="learner",
         description=(
             "事件创作/编年史压缩所用模型 task 名（需已存在于主程序 model_config.toml）。"
-            "只填任务名，不填模型名。若创作模型为推理模型且未关思考（思维链挤占 max_tokens "
-            "导致正文截断），建议新建无思考模型+任务并在此指向它（见 README「创作模型路由」）。"
+            "只填任务名，不填模型名。仅当 [creator_model] 直连关闭时才生效（回退路径）。"
+            "若创作模型为推理模型且未关思考，建议改用 [creator_model] 直连（见 README「创作模型路由」）。"
         ),
         json_schema_extra={
-            "label": "创作模型 task",
-            "hint": "任务名（非模型名）；推理模型建议配无思考任务",
+            "label": "创作模型 task（回退）",
+            "hint": "任务名（非模型名）；直连关闭时才走此回退",
             "placeholder": "learner",
             "order": 1,
         },
