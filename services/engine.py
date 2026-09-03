@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .creator import CreatorClient
 from .store import NarrativeStore
 
 # 每日作息阶段（本地 24h 制）
@@ -33,6 +34,13 @@ _MOOD_BY_ENERGY: List[Tuple[float, str]] = [
 
 # 常驻状态片段，避免每次初始化重建
 _SELF_SCOPE = "self"
+
+# 关系阶段阈值（familiarity，只进不退）：倒序匹配，取首个 familiarity >= threshold 的标签
+_STAGE_THRESHOLDS: List[Tuple[float, str]] = [
+    (85, "挚友"),
+    (60, "朋友"),
+    (30, "熟人"),
+]
 
 
 def parse_clock(value: str) -> Optional[time]:
@@ -130,6 +138,7 @@ class NarrativeEngine:
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
         self._store: NarrativeStore = plugin._store
+        self._creator = CreatorClient(plugin)
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -156,6 +165,18 @@ class NarrativeEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+    async def reconcile(self) -> None:
+        """按当前配置幂等对齐启停状态（供 plugin 看门狗/配置热重载调用）。
+
+        只做 start/stop 判定，不打印无动作日志（避免每 15s 刷屏）。
+        """
+        cfg = self._plugin.config
+        want = bool(cfg.plugin.enabled and cfg.narrative.enabled)
+        if want and not self._running:
+            self.start()
+        elif not want and self._running:
+            await self.stop()
 
     async def _tick_loop(self) -> None:
         """世界时钟循环：按配置间隔执行确定性 tick。"""
@@ -312,6 +333,36 @@ class NarrativeEngine:
             }
         )
 
+    def record_branch_feedback(self, user_id: str, now: datetime) -> None:
+        """支线层反馈：信任/熟悉度小步增长；里程碑只进不退。"""
+        branch = self.load_branch_state(user_id)
+        inner = branch["state"]
+        inner["last_interaction_ts"] = now.isoformat(timespec="seconds")
+        inner["familiarity"] = round(min(100.0, float(inner.get("familiarity", 0.0)) + 0.8), 1)
+        inner["trust"] = round(min(100.0, float(inner.get("trust", 0.0)) + 0.5), 1)
+
+        stage = str(branch["identity"].get("stage", "陌生人"))
+        familiarity = float(inner["familiarity"])
+        milestones = list(inner.get("milestones", []))
+        for threshold, label in _STAGE_THRESHOLDS:
+            if familiarity >= threshold:
+                # 阈值从高到低，命中首个即 familiarity 能达到的最高档；未到该档才晋升（只进不退）
+                if stage != label:
+                    old_stage = stage
+                    branch["identity"]["stage"] = label
+                    if not any(item.get("id") == f"stage:{label}" for item in milestones):
+                        milestones.append(
+                            {
+                                "id": f"stage:{label}",
+                                "ts": now.isoformat(timespec="seconds"),
+                                "desc": f"你们从{old_stage}变成了{label}",
+                                "stage": "done",
+                            }
+                        )
+                    inner["milestones"] = milestones
+                break
+        self.save_branch_state(user_id, branch)
+
     # ─── 由头签发（主动消息的内容之源） ──────────────────────────
 
     def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
@@ -395,7 +446,7 @@ class NarrativeEngine:
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("编年史 prompt: %s", prompt[:300])
 
-        text = await self._call_creation_llm(prompt)
+        text = await self._creator.generate(prompt)
         if text:
             self._store.append_chronicle(_SELF_SCOPE, "daily", text, current.isoformat(timespec="seconds"))
             self._plugin.ctx.logger.info("编年史今日小结已写入: %s", today)
@@ -437,8 +488,7 @@ class NarrativeEngine:
             return
 
         # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
-        last_entry = self._store.get_kv("life_fragment:last_ts")
-        last_ts = str((last_entry or {}).get("ts", "") or "")
+        last_ts = self._store.get_kv_str("life_fragment:last_ts")
         if last_ts:
             try:
                 last_dt = datetime.fromisoformat(last_ts)
@@ -461,7 +511,7 @@ class NarrativeEngine:
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("生活片段 prompt: %s", prompt[:300])
 
-        text = await self._call_creation_llm(prompt)
+        text = await self._creator.generate(prompt)
         if not text:
             return
 
@@ -476,8 +526,8 @@ class NarrativeEngine:
             _SELF_SCOPE, "life", text, current.isoformat(timespec="seconds")
         )
 
-        # 闸门推进 + 计数（store.get_kv 契约：kv 值为 JSON dict，故 last_ts 用 dict 包装）
-        self._store.set_kv("life_fragment:last_ts", {"ts": current.isoformat(timespec="seconds")})
+        # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
+        self._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))
         self._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
         self._plugin.ctx.logger.info("生活片段已生成（今日 %s/%s）: %s", day_count + 1, cfg.narrative.life_fragment_daily_max, text[:40])
 
@@ -541,87 +591,6 @@ class NarrativeEngine:
             "只输出正文，不要任何标题/引号/表情。"
         )
         return "\n".join(chunks)
-
-    async def _call_creation_llm(self, prompt: str) -> str:
-        """调用创作模型；失败返回空串（当前是唯一常规 LLM 调用点）。
-
-        优先直连：``[creator_model]`` 启用且 base_url 非空时，直接 POST
-        OpenAI 兼容 /chat/completions（body 固定 ``thinking={type:"disabled"}``，
-        关闭推理模型的思维链，避免挤占 max_tokens 导致正文截断）。
-        否则回退 MaiBot task 路由（``[llm] creation_task``）。
-        """
-        cfg = self._plugin.config
-        creator = cfg.creator_model
-        if creator.enabled and str(creator.base_url or "").strip():
-            text = await self._call_creator_direct(prompt)
-        else:
-            text = await self._call_creator_via_task(prompt)
-
-        if not text:
-            return ""
-        # 成本采样（指标 5）：按字符粗估 token，写入 llm_extra_tokens
-        telemetry = getattr(self._plugin, "_telemetry", None)
-        if telemetry is not None:
-            tokens_approx = max(1, (len(prompt) + len(text)) // 3)
-            telemetry.record_llm_tokens(float(tokens_approx), task="creation")
-        return text
-
-    async def _call_creator_direct(self, prompt: str) -> str:
-        """直连 OpenAI 兼容端点生成（自带 thinking disabled，绕开推理模型思维链）。"""
-        import httpx
-
-        cfg = self._plugin.config
-        creator = cfg.creator_model
-        base_url = str(creator.base_url or "").strip().rstrip("/")
-        endpoint = f"{base_url}/chat/completions"
-        payload = {
-            "model": str(creator.model_id or "").strip(),
-            "messages": [
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": int(creator.max_tokens or 384),
-            "temperature": float(cfg.llm.temperature),
-            # 关闭思考：生成短文本无需思维链，防止推理模型挤占 max_tokens
-            "thinking": {"type": "disabled"},
-        }
-        headers = {"Content-Type": "application/json"}
-        api_key = str(creator.api_key or "").strip()
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        try:
-            async with httpx.AsyncClient(timeout=float(creator.timeout_seconds or 30.0)) as client:
-                response = await client.post(endpoint, json=payload, headers=headers)
-                response.raise_for_status()
-        except Exception as exc:
-            self._plugin.ctx.logger.warning("创作模型直连失败: %s", exc)
-            return ""
-        try:
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            return str(content or "").strip()
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            self._plugin.ctx.logger.warning("创作模型直连响应解析失败: %s", exc)
-            return ""
-
-    async def _call_creator_via_task(self, prompt: str) -> str:
-        """回退：走 MaiBot 内部 task 路由（llm.generate）。"""
-        cfg = self._plugin.config
-        try:
-            result = await asyncio.wait_for(
-                self._plugin.ctx.llm.generate(
-                    prompt,
-                    model=cfg.llm.creation_task or "",
-                    temperature=cfg.llm.temperature,
-                    max_tokens=256,
-                ),
-                timeout=30,
-            )
-        except Exception as exc:
-            self._plugin.ctx.logger.warning("创作模型调用失败: %s", exc)
-            return ""
-        if isinstance(result, dict):
-            return str(result.get("response") or result.get("content") or "").strip()
-        return ""
 
 
 __all__ = [

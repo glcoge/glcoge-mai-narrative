@@ -129,6 +129,25 @@ class NarrativeStore:
                 (key, str(value)),
             )
 
+    def get_kv_str(self, key: str, default: str = "") -> str:
+        """读取字符串型 kv 值（时间戳等，不再用 dict 包装）。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM kv WHERE key = ?", (key,)
+            ).fetchone()
+        if row is None:
+            return default
+        return str(row["value"])
+
+    def set_kv_str(self, key: str, value: str) -> None:
+        """写入字符串型 kv 值。"""
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO kv (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+
     def delete_keys_with_prefix(self, prefix: str) -> int:
         """删除 key 以指定前缀开头的全部记录（用于状态重置）。"""
         with self._connect() as connection:

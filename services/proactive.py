@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .engine import parse_clock
 
+# 主动消息后 30 分钟内用户回复，记为"被接住"
+_PROACTIVE_REPLY_WINDOW_MINUTES = 30
+
 
 def parse_window(value: str) -> Optional[Tuple[datetime.time, datetime.time]]:
     """解析窗口字符串 ``HH:MM-HH:MM``；失败返回 None。"""
@@ -65,6 +68,10 @@ class ProactiveScheduler:
         self._running = False
         # uid -> 下一次开口时刻；窗口外或已用完上限时为 None
         self._next_fire: Dict[str, datetime.datetime] = {}
+        # uid -> 最近主动消息时刻列表（30 分钟回复判定）
+        self._sent_at: Dict[str, List[datetime.datetime]] = {}
+        # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
+        self._pending_at: Dict[str, Dict[str, Any]] = {}
 
     # ─── 生命周期 ────────────────────────────────────────────────
 
@@ -85,6 +92,15 @@ class ProactiveScheduler:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+    async def reconcile(self) -> None:
+        """按当前配置幂等对齐启停状态（供 plugin 看门狗/配置热重载调用）。"""
+        cfg = self._plugin.config
+        want = bool(cfg.plugin.enabled and cfg.narrative.enabled and cfg.proactive.enabled)
+        if want and not self._running:
+            self.start()
+        elif not want and self._running:
+            await self.stop()
 
     # ─── 主循环 ──────────────────────────────────────────────────
 
@@ -170,13 +186,53 @@ class ProactiveScheduler:
         today = now.strftime("%Y-%m-%d")
         day_count = plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
         plugin._store.set_kv_int(f"proactive:count:{user_id}:{today}", day_count + 1)
-        plugin._proactive_sent_at.setdefault(user_id, []).append(now)
-        # 侧信道：由头与触发时刻一并暂存，供渲染层注入"主动轮指示 + 由头文本"
-        plugin._proactive_pending_at[stream_id] = {
+        self.record_sent(user_id, stream_id, now, bysource)
+        plugin._telemetry.record("proactive_sent", 1, user_id=user_id, scope="proactive")
+
+    def record_sent(
+        self,
+        user_id: str,
+        stream_id: str,
+        now: datetime.datetime,
+        bysource: str,
+    ) -> None:
+        """登记一次主动开口：发送时刻（30 分钟回复判定）+ 侧信道由头（渲染层消费）。"""
+        self._sent_at.setdefault(user_id, []).append(now)
+        self._pending_at[stream_id] = {
             "ts": now,
             "bysource": bysource,
         }
-        plugin._telemetry.record("proactive_sent", 1, user_id=user_id, scope="proactive")
+
+    def consume_pending(self, session_id: str, window_seconds: int = 30) -> Tuple[str, str]:
+        """主动轮判定：本会话 window_seconds 内刚触发过主动消息 → 返回 ("proactive", 由头)。
+
+        触发后由本调度器写入 ``_pending_at``，本处消费一次即清除，避免把后续普通轮次误判为主动轮。
+
+        Returns:
+            (round_kind, bysource)：round_kind ∈ {"proactive","reply"}；
+            bysource 非空仅当主动轮（由头文本，供渲染注入）。
+        """
+        entry = self._pending_at.pop(session_id, None)
+        if entry is not None and (self._plugin._local_now() - entry["ts"]).total_seconds() <= window_seconds:
+            return "proactive", str(entry.get("bysource", "") or "")
+        return "reply", ""
+
+    def check_reply(self, user_id: str, now: datetime.datetime) -> bool:
+        """主动消息 30 分钟内收到用户回复 → 记一次"被接住"。"""
+        sent_list = self._sent_at.get(user_id, [])
+        if not sent_list:
+            return False
+        active = [
+            item
+            for item in sent_list
+            if (now - item).total_seconds() / 60 <= _PROACTIVE_REPLY_WINDOW_MINUTES
+        ]
+        self._sent_at[user_id] = active[-2:]
+        return bool(active)
+
+    def clear_sent(self) -> None:
+        """清空主动消息发送记录（状态重置用）。"""
+        self._sent_at.clear()
 
     # ─── 内部 ────────────────────────────────────────────────────
 
