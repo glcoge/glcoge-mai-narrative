@@ -16,10 +16,13 @@ send_service.before_send / maisaka.planner.before_request / expression.*）；
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import asyncio
 import contextlib
 import datetime
-from typing import Any, Dict, List, Optional, Tuple
+import json
 
 from maibot_sdk import (
     API,
@@ -45,6 +48,9 @@ from .services.store import NarrativeStore
 
 # 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
 _USER_INITIATED_GAP_MINUTES = 5
+# 入站消息登记后，出站回复在该窗口内到达则配对为一次对话往返（指标 2；
+# 与指标 3 的 30 分钟回复窗口保持同一时间尺度）
+_ROUND_PAIR_WINDOW_MINUTES = 30
 _STAGE_EPOCH = datetime.datetime(1970, 1, 1)
 
 
@@ -64,6 +70,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._stream_to_uid: Dict[str, str] = {}
         # stream_id -> 最后一次 bot 发送时刻（用户主动发起判定）
         self._last_bot_sent: Dict[str, datetime.datetime] = {}
+        # stream_id -> 最近一次模式会话入站时刻（指标 2 对话轮次配对）
+        self._pending_round: Dict[str, datetime.datetime] = {}
         # 看门狗任务：不依赖 on_config_update 回调，主动对齐"配置开关 ↔ 后台任务"
         self._watchdog: Optional[asyncio.Task] = None
 
@@ -81,12 +89,27 @@ class MaiNarrativePlugin(MaiBotPlugin):
         await self._reconcile_all()
         self._watchdog = asyncio.create_task(self._watchdog_loop(), name="narrative-watchdog")
         self.ctx.logger.info(
-            "mai-narrative v0.1 已加载（剧本=%s 主动=%s 模式用户=%s 数据目录=%s）",
+            "mai-narrative v%s 已加载（剧本=%s 主动=%s 模式用户=%s 数据目录=%s）",
+            self._plugin_version(),
             self.config.narrative.enabled,
             self.config.proactive.enabled,
             ",".join(self._mode_user_ids()) or "无",
             data_dir,
         )
+
+    def _plugin_version(self) -> str:
+        """从插件自带的 _manifest.json 读版本号（加载日志不再写死版本漂移文案）。"""
+        try:
+            manifest_path = Path(__file__).parent / "_manifest.json"
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            version = str(data.get("version") or "").strip()
+        except (OSError, ValueError) as exc:
+            self.ctx.logger.warning("读取 _manifest.json 版本失败: %s", exc)
+            return "未知"
+        if not version:
+            self.ctx.logger.warning("_manifest.json 缺少 version 字段")
+            return "未知"
+        return version
 
     async def on_unload(self) -> None:
         if self._watchdog is not None:
@@ -210,8 +233,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
     async def handle_inbound_message(self, **kwargs: Any) -> Dict[str, Any]:
         """用户消息到达：登记会话、更新互动状态、采集指标（Hook 契约返回 dict）。
 
-        带结构化日志：任一过滤分支命中都会留痕，便于真机定位
-        （曾出现入站落痕整条链不生效、但注入 hook 正常的问题）。
+        过滤分支均留 debug 级结构化日志（测试期排查入站链不生效用的 INFO
+        已在 v0.1.4 部署稳定化时降级——每条消息都打会刷屏，但排查时仍在）。
         """
         message = kwargs.get("message")
         stream_id = str(
@@ -224,13 +247,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self.ctx.logger.warning("narrative inbound: 服务未初始化，跳过")
             return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(message, dict) or not message:
-            self.ctx.logger.info("narrative inbound: message 为空/非 dict（type=%s）", type(message).__name__)
+            self.ctx.logger.debug("narrative inbound: message 为空/非 dict（type=%s）", type(message).__name__)
             return {"action": "continue", "modified_kwargs": kwargs}
 
         user_id = extract_user_id(message)
         is_private = is_private_chat(message)
         is_mode = self._is_mode_uid(user_id)
-        self.ctx.logger.info(
+        self.ctx.logger.debug(
             "narrative inbound: keys=%s | user_id=%r | stream_id=%r | is_private=%s | is_mode=%s | text=%s",
             sorted(message.keys()), user_id, stream_id, is_private, is_mode,
             message_text(message)[:30],
@@ -238,7 +261,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if not is_private:
             return {"action": "continue", "modified_kwargs": kwargs}
         if not is_mode:
-            self.ctx.logger.info("narrative inbound: 用户不在模式名单，uid=%r", user_id)
+            self.ctx.logger.debug("narrative inbound: 用户不在模式名单，uid=%r", user_id)
             return {"action": "continue", "modified_kwargs": kwargs}
 
         if stream_id:
@@ -246,7 +269,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
 
         # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）
         if bool(message.get("is_command")) or bool(message.get("is_notify")):
-            self.ctx.logger.info("narrative inbound: 命令/通知消息（is_command=%s is_notify=%s），跳过素材采集 uid=%s",
+            self.ctx.logger.debug("narrative inbound: 命令/通知消息（is_command=%s is_notify=%s），跳过素材采集 uid=%s",
                                  message.get("is_command"), message.get("is_notify"), user_id)
             return {"action": "continue", "modified_kwargs": kwargs}
 
@@ -254,6 +277,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
         self._engine.record_branch_feedback(user_id, now)
+        # 指标 2 · 对话轮次：登记本轮入站，待出站回复配对成一次往返（scope=rounds）
+        self._pending_round[stream_id or user_id] = now
 
         # 验收指标 1：用户主动发起（距上一条 bot 消息超过阈值）
         last_sent = self._last_bot_sent.get(stream_id or user_id, _STAGE_EPOCH)
@@ -264,7 +289,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 验收指标 3：主动消息是否被接住
         if self._proactive.check_reply(user_id, now):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
-        self.ctx.logger.info("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
+        self.ctx.logger.debug("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== 出站 Hook：采样（受入站事件不派发影响，出站同样改用命名 hook） =====
@@ -285,6 +310,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         if resolved_stream:
             self._last_bot_sent[resolved_stream] = self._local_now()
+            # 指标 2 · 对话轮次：本条出站若在窗口内接住一次模式会话入站，记一轮往返
+            pending_ts = self._pending_round.pop(resolved_stream, None)
+            if pending_ts is not None and (
+                (self._local_now() - pending_ts).total_seconds() <= _ROUND_PAIR_WINDOW_MINUTES * 60
+            ):
+                self._telemetry.record("dialogue_depth", value=1, scope="rounds")
         if isinstance(message, dict):
             plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
             self._telemetry.record("dialogue_depth", value=float(len(plain)), scope="bot_msg_len")
@@ -462,6 +493,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._store.clear_all_events()
         self._uid_to_stream.clear()
         self._stream_to_uid.clear()
+        self._pending_round.clear()
         self._proactive.clear_sent()
         await self.ctx.send.text(
             f"已重置叙事状态（kv {deleted} 项、事件队列已清空；编年史保留未动）。", stream_id

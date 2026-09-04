@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from .engine import daylight_hint
+
 _EXTRA_ITEM = "_narrative_life_context"
 
 # 主动轮指令：当本轮由主动消息触发（生活由头）时附加，压过原生行为准则的"被动"面
@@ -82,7 +84,8 @@ def build_context_block(
 
     lines: List[str] = [
         "【角色内部状态 · 仅供你（模型）参考，不要把本段原样告诉对方】",
-        f"- 此刻：{now.strftime('%Y-%m-%d %H:%M')}，你正处于{phase}，"
+        # v0.1.4 P1：日照预期锚点——相位标签之外补充"窗外什么样"的感官时间感
+        f"- 此刻：{now.strftime('%Y-%m-%d %H:%M')}，你正处于{phase}（{daylight_hint(now.hour)}），"
         f"心情{mood['label']}，精力 {mood['energy'] * 10:.0f}/10",
     ]
 

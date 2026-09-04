@@ -73,6 +73,30 @@ def mood_by_energy(energy: float) -> str:
     return "平静"
 
 
+# 日照预期提示（配合 routine_phase：相位标签不带"此刻窗外什么样"的感官信息，
+# "下午"既可能是烈日当空也可能是天色将暗）。按小时升序排列，倒序匹配（同款纪律）。
+_DAYLIGHT_HINTS: List[Tuple[int, str]] = [
+    (6, "天刚亮不久"),
+    (9, "上午的阳光正好"),
+    (12, "日光还长，太阳挂在半空"),
+    (16, "傍晚的光变得很软"),
+    (18, "天色暗下来了"),
+    (21, "夜已深，窗外全黑了"),
+]
+
+
+def daylight_hint(hour: int) -> str:
+    """返回当前小时对应的日照预期描述（确定性规则，零 LLM）。
+
+    给渲染层一个稳定的时间锚点，让状态表达有"日光预期"可依
+    （v0.1.4 P1：日照预期时间锚点）。倒序匹配，与 routine_phase 同款纪律。
+    """
+    for start_hour, hint in reversed(_DAYLIGHT_HINTS):
+        if hour >= start_hour:
+            return hint
+    return "天还没亮"
+
+
 def local_now(offset_hours: int = 8) -> datetime:
     """按配置时区返回"剧本本地时间"（naive、规整到秒）。
 
@@ -232,14 +256,17 @@ class NarrativeEngine:
         current = now or self._local_now()
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
-            self._plugin.ctx.logger.info("narrative tick@%s 跳过（剧本开关未开）", current.strftime("%H:%M"))
+            # 正常情况下 reconcile 会直接停掉 tick 循环，这里是防御分支；
+            # 每 tick 打 INFO 会刷屏（v0.1.4 降 debug）
+            self._plugin.ctx.logger.debug("narrative tick@%s 跳过（剧本开关未开）", current.strftime("%H:%M"))
             return
 
         state = self.load_self_state()
         self._apply_state_rules(state, current)
         self.save_self_state(state)
         inner = state["state"]
-        self._plugin.ctx.logger.info(
+        # 心跳日志降 debug（每 30min 一条，部署后无排查价值，v0.1.4）
+        self._plugin.ctx.logger.debug(
             "narrative tick@%s: phase=%s mood=%s energy=%.2f",
             current.strftime("%Y-%m-%d %H:%M"),
             inner["routine"]["phase"],
@@ -598,6 +625,7 @@ __all__ = [
     "local_now",
     "parse_clock",
     "routine_phase",
+    "daylight_hint",
     "mood_by_energy",
     "default_self_state",
     "default_branch_state",

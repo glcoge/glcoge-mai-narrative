@@ -2,7 +2,8 @@
 
 指标名（写入 metrics/*.csv）：
 - user_initiated_freq  用户主动发起频率（由谁起头标记）
-- dialogue_depth       对话深度（单条消息长度、往返轮次）
+- dialogue_depth       对话深度，按 scope 区分：user_msg_len/bot_msg_len=单条消息长度、
+                       rounds=对话往返轮次（v0.1.4 补齐，入站登记+出站 30 分钟内配对成 1 轮）
 - proactive_sent       主动消息发出计数
 - proactive_replied    主动消息 30 分钟内被回复计数
 - state_diversity      状态多样性（mood 切换等，随快照采集）
