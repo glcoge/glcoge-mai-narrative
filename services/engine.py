@@ -287,13 +287,18 @@ class NarrativeEngine:
         energy = float(inner["mood"].get("energy", 0.55))
         old_label = str(inner["mood"].get("label", "平静"))
 
-        # 精力：向基线 0.45 衰减；近期互动（2h 内）回升一档
-        energy -= 0.06
+        # 精力（v0.1.5 重构，三参数入 config [narrative]）：
+        # ① 向基线回归（双向：低于基线回升、高于基线回落）——老版注释声称"向基线
+        #    衰减"但无回归项，每 tick 无条件 -0.06，无互动日必然贴地 0.05 卡死；
+        # ② 近期互动（2h 内）提振；
+        # ③ 深夜睡眠恢复——老版深夜反而 -0.08（睡觉掉精力），方向反了。
+        cfg = self._plugin.config.narrative
+        energy += (float(cfg.energy_baseline) - energy) * float(cfg.energy_baseline_pull)
         last_interaction = inner.get("last_interaction_ts", "")
         if last_interaction and self._hours_since(last_interaction, now) <= 2:
-            energy += 0.12
+            energy += float(cfg.energy_interaction_boost)
         if routine_phase(now.hour) == "深夜":
-            energy -= 0.08
+            energy += float(cfg.energy_sleep_recovery)
         energy = max(0.05, min(1.0, energy))
 
         new_label = mood_by_energy(energy)

@@ -24,6 +24,14 @@ event_max_daily = 6
 event_max_per_user_daily = 3
 chronicle_enabled = true
 daily_chronicle_time = "23:30"
+# 精力规则（v0.1.5）：修复无互动日 mood 贴地卡死；A/B 期间可调
+# baseline=精力基线；pull=每 tick 向基线回归系数（0=老版单调衰减行为）；
+# sleep_recovery=深夜每 tick 恢复量（睡觉回血，深夜平衡点≈基线+恢复量/pull≈0.78 轻快档）；
+# interaction_boost=2h 内互动每 tick 提振
+energy_baseline = 0.45
+energy_baseline_pull = 0.3
+energy_sleep_recovery = 0.1
+energy_interaction_boost = 0.12
 # 创作层：生活片段生成间隔（分钟）与每日上限（防超支，遵守成本 30% 红线）
 life_fragment_interval_minutes = 240
 life_fragment_daily_max = 3

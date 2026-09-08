@@ -157,6 +157,36 @@ class NarrativeSection(PluginConfigBase):
         description="编年史总开关（append-only 散文日记，供对话注入与日记插件握手）。",
         json_schema_extra={"label": "编年史", "order": 7},
     )
+    # ── 精力规则参数（v0.1.5：修复无互动日 mood 贴地卡死，A/B 可调） ──
+    energy_baseline: float = Field(
+        default=0.45,
+        ge=0.05,
+        le=1.0,
+        description="精力基线：无互动时精力每 tick 向该值回归（双向）。",
+        json_schema_extra={"label": "精力基线", "hint": "0.05-1.0", "order": 8},
+    )
+    energy_baseline_pull: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="基线回归系数：每 tick 向基线靠拢的比例（0=老版单调衰减行为，越大回摆越快）。",
+        json_schema_extra={"label": "基线回归系数", "hint": "0-1；默认 0.3", "order": 9},
+    )
+    energy_sleep_recovery: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="深夜（23:00-05:00）每 tick 额外恢复量：睡觉回血，早晨自然满状态。"
+        "深夜平衡点 = 基线 + 恢复量/回归系数（默认 0.45+0.1/0.3≈0.78，落在轻快档下沿）。",
+        json_schema_extra={"label": "睡眠恢复", "hint": "每 tick 恢复量；默认 0.1", "order": 10},
+    )
+    energy_interaction_boost: float = Field(
+        default=0.12,
+        ge=0.0,
+        le=1.0,
+        description="近 2 小时内有互动时每 tick 额外提振量。",
+        json_schema_extra={"label": "互动提振", "hint": "每 tick 提振量；默认 0.12", "order": 11},
+    )
     daily_chronicle_time: str = Field(
         default="23:30",
         description="每日编年史压缩触发时间（HH:MM）。当日有互动时用轻量模型写一条「今日小结」。",
