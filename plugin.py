@@ -54,6 +54,30 @@ _ROUND_PAIR_WINDOW_MINUTES = 30
 _STAGE_EPOCH = datetime.datetime(1970, 1, 1)
 
 
+def _extract_outbound_text_len(message: Any) -> Optional[int]:
+    """从序列化 SessionMessage 的 raw_message 组件列表提取出站文本总长度。
+
+    组件格式（主程序 ``serialize_session_message`` 序列化产物）：
+    文本组件为 ``{"type": "text", "data": "<文本>"}``。
+
+    Returns:
+        Optional[int]: 文本总长度；message 缺失/非 dict/无文本组件时返回
+        ``None``（调用方跳过记录，避免把"取不到文本"记成 0 污染数据）。
+    """
+    if not isinstance(message, dict):
+        return None
+    raw_components = message.get("raw_message")
+    if not isinstance(raw_components, list):
+        return None
+    total_len = 0
+    has_text = False
+    for component in raw_components:
+        if isinstance(component, dict) and component.get("type") == "text":
+            total_len += len(str(component.get("data") or ""))
+            has_text = True
+    return total_len if has_text else None
+
+
 class MaiNarrativePlugin(MaiBotPlugin):
     """剧本人设系统主插件。"""
 
@@ -295,19 +319,27 @@ class MaiNarrativePlugin(MaiBotPlugin):
     # ===== 出站 Hook：采样（受入站事件不派发影响，出站同样改用命名 hook） =====
 
     @HookHandler(
-        "send_service.before_send",
+        "send_service.after_build_message",
         name="narrative_post_send",
-        description="剧本模式出站采样（对话深度/成本）",
+        description="剧本模式出站采样（对话深度/轮次/成本对照侧）",
         mode=HookMode.BLOCKING,
         order=HookOrder.LATE,
         error_policy=ErrorPolicy.SKIP,
     )
     async def handle_post_send(self, **kwargs: Any) -> Dict[str, Any]:
-        """bot 发送消息前：记录出站时刻与长度（指标 1/2 的对照侧）。"""
+        """bot 出站消息构建完成后：记录出站时刻/长度与对话轮次配对（指标 1/2 的对照侧）。
+
+        挂载点说明（2026-09-08 修复）：曾挂在 ``send_service.before_send``，但其
+        载荷没有 stream_id，轮次配对与 ``_last_bot_sent`` 结构上无法工作，且真机
+        上 handler 疑似从未被派发（bot_msg_len 上线起 0 条）。``after_build_message``
+        载荷含 stream_id，派发点位于发送链路外层 try/except 内，异常不再静默。
+        """
         message = kwargs.get("message")
         resolved_stream = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
         if self._telemetry is None:
             return {"action": "continue", "modified_kwargs": kwargs}
+        # 触发层追踪：部署后临时调 debug 日志级别，一轮对话即可确认本 hook 是否被派发
+        self.ctx.logger.debug("narrative outbound: stream=%s", resolved_stream or "-")
         if resolved_stream:
             self._last_bot_sent[resolved_stream] = self._local_now()
             # 指标 2 · 对话轮次：本条出站若在窗口内接住一次模式会话入站，记一轮往返
@@ -315,10 +347,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
             if pending_ts is not None and (
                 (self._local_now() - pending_ts).total_seconds() <= _ROUND_PAIR_WINDOW_MINUTES * 60
             ):
-                self._telemetry.record("dialogue_depth", value=1, scope="rounds")
-        if isinstance(message, dict):
-            plain = str(message.get("plain_text") or message.get("raw_message") or "").strip()
-            self._telemetry.record("dialogue_depth", value=float(len(plain)), scope="bot_msg_len")
+                # 反查 user_id，支持按用户拆轮次（A/B 对照需要）
+                paired_user_id = self._stream_to_uid.get(resolved_stream, "")
+                self._telemetry.record(
+                    "dialogue_depth", value=1, scope="rounds", user_id=paired_user_id
+                )
+        bot_text_len = _extract_outbound_text_len(message)
+        if bot_text_len is not None:
+            self._telemetry.record(
+                "dialogue_depth", value=float(bot_text_len), scope="bot_msg_len"
+            )
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== Hook：剧本上下文注入 =====
@@ -354,6 +392,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
+        # 注入追踪（含日照锚点/心情/精力段，debug 级不刷盘时需临时调高日志级别）
+        self.ctx.logger.debug(
+            "narrative 注入: stream=%s | %s",
+            session_id or "-",
+            context_text[:100].replace("\n", " "),
+        )
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== Hook：表达学习隔离 =====
