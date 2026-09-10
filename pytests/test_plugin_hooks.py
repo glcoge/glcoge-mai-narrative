@@ -67,12 +67,17 @@ class _FakeTelemetry:
         )
 
 
-def _make_plugin() -> tuple:
+def _make_plugin(*, narrative_enabled: bool = True) -> tuple:
     """构造绕过 __init__ 的插件实例 + 假 telemetry（纯 handler 单测所需最小依赖）。"""
     plugin = MaiNarrativePlugin.__new__(MaiNarrativePlugin)
     # config 是 SDK 的只读 property（读 _plugin_config_instance），测试直接注入内层实例
     plugin._plugin_config_instance = SimpleNamespace(
-        narrative=SimpleNamespace(timezone_offset_hours=8),
+        narrative=SimpleNamespace(
+            enabled=narrative_enabled,
+            timezone_offset_hours=8,
+            mode_user_ids=["u1"],
+            mode_stream_ids=[],
+        ),
         plugin=SimpleNamespace(enabled=True),
         telemetry=SimpleNamespace(enabled=True),
     )
@@ -150,6 +155,35 @@ def test_round_window_expiry():
 
     assert not [r for r in telemetry.records if r.scope == "rounds"]
     assert "s1" not in plugin._pending_round  # 超窗的待办同样被消费丢弃
+
+
+class _NoTouchEngine:
+    """哨兵对象：narrative.enabled=false 时任何属性访问/调用都视为违规。"""
+
+    def __getattr__(self, name: str):
+        def _fail(*args, **kwargs):
+            raise AssertionError(f"narrative.enabled=false 时不应调用 engine.{name}")
+
+        return _fail
+
+
+def test_injection_disabled_when_narrative_off():
+    """A/B 对照关键用例：narrative.enabled=false 时注入必须停止。
+
+    对照组窗口要求：剧本行为（注入/主动/创作/tick）全停，但入站/出站采样
+    hook 不受影响（它们无本 gate）。mode 名单保留以维持采样。
+    """
+    plugin, _telemetry = _make_plugin(narrative_enabled=False)
+    plugin._engine = _NoTouchEngine()
+    plugin._store = _NoTouchEngine()
+
+    items = [{"type": "text", "content": "用户消息占位"}]
+    kwargs = {"session_id": "s1", "items": items}
+
+    asyncio.run(plugin.inject_life_context(**kwargs))
+
+    injected = [i for i in kwargs["items"] if _PLUGIN.is_injected_item(i)]
+    assert not injected, "narrative.enabled=false 时不应注入剧本上下文"
 
 
 # ===== 独立运行入口 =====

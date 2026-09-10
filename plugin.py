@@ -371,6 +371,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
     )
     async def inject_life_context(self, **kwargs: Any) -> Dict[str, Any]:
         """把自我层/支线层/编年史渲染成 item 追加进请求。"""
+        # A/B 对照 gate（2026-09-10）：narrative.enabled=false 时剧本行为全停，
+        # 但入站/出站采样 hook 无本 gate 照常采集——对照组数据口径的关键。
+        if not (self.config.plugin.enabled and self.config.narrative.enabled):
+            return {"action": "continue", "modified_kwargs": kwargs}
         session_id = str(kwargs.get("session_id") or "")
         items = kwargs.get("items")
         if self._engine is None or self._store is None:
