@@ -23,11 +23,28 @@ from .engine import daylight_hint
 _EXTRA_ITEM = "_narrative_life_context"
 
 # 主动轮指令：当本轮由主动消息触发（生活由头）时附加，压过原生行为准则的"被动"面
+# v0.1.5.x（2026-09-11 复读话尾修复）：① 禁"字面复读"（重复自己上次的句式/用词、
+# 改写式复述）——真机高频症状；② 但**放行语义履约**（承接约定/未竟话题必须带新内容），
+# 不搞一刀切禁接上文，否则会切掉"昨天约好今天聊"这类最像人的连续性。
 _PROACTIVE_TURN_HINT = (
     "本轮没有对方的实时消息——是你自己决定主动开口的一轮。"
-    "请按上面的生活状态自然地开启话题（可以从你正在想的事情/今天发生的事聊起），"
-    "说一句完整、有生活感的话，不要问开放式大问题，不要解释这是主动消息。"
+    "硬规则："
+    "① 不要重复你上次说过的句式和用词，也不要改写式复述自己上一句话（换个说法再说一遍同样不行）；"
+    "② 可以承接没说完的事或约定（例如昨天约好今天聊、上次提过的事），但必须带来新的内容或新的事由；"
+    "③ 从上面给你的由头或你此刻的状态重新起头，说一句完整、有生活感的话。"
+    "不要问开放式大问题，不要解释这是主动消息。"
 )
+
+
+def _elapsed_hours(iso_ts: str, now: datetime) -> Optional[float]:
+    """按 ISO 时间戳计算距 now 的小时数（空/损坏时间戳返回 None，静默跳过锚点）。"""
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(iso_ts))
+    except (TypeError, ValueError):
+        return None
+    return (now - ts).total_seconds() / 3600
 
 
 def build_injected_item(text: str, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -127,9 +144,20 @@ def build_context_block(
         lines.append("- 你的世界观规则（不可违背）：\n" + "\n".join(f"    - {item}" for item in anchored_rules[:5]))
 
     if round_kind == "proactive":
-        lines.append(_PROACTIVE_TURN_HINT)
+        # 由头前置（v0.1.5.x）：先给"想说什么"，再给规则——避免由头被靠后的
+        # 聊天历史淹没，让它在生成时成为强锚点（复读话尾的结构性修复之一）
         if bysource:
-            lines.append(f"\n你这次主动开口想说的是（由头）：{bysource}")
+            lines.append(f"- 你这次主动开口想说的是（由头）：{bysource}")
+        # 时间锚点：让模型知道距上次对话多久，自行判断该履约还是开新头
+        elapsed = _elapsed_hours(str(inner.get("last_interaction_ts", "")), now)
+        if elapsed is not None and elapsed >= 1:
+            if elapsed >= 6:
+                lines.append(
+                    f"- 距离上次对话已经过去约 {int(elapsed)} 小时（隔了一夜或更久）。"
+                )
+            else:
+                lines.append(f"- 距离上次对话已经过去约 {int(elapsed)} 小时。")
+        lines.append(_PROACTIVE_TURN_HINT)
     else:
         lines.append(
             "- 对话原则：按以上状态自然地表达自己；不要主动说明你有剧本；"
