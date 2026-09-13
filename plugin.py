@@ -74,6 +74,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
     async def on_load(self) -> None:
         if not self.config.plugin.enabled:
             self.ctx.logger.info("mai-narrative 已禁用（plugin.enabled=false），仅保留命令")
+        self._warn_deprecated_config_keys()
         data_dir = self.ctx.paths.data_dir / "narrative"
         self._store = NarrativeStore(data_dir)
         self._telemetry = Telemetry(self)
@@ -92,6 +93,27 @@ class MaiNarrativePlugin(MaiBotPlugin):
             ",".join(self._mode_user_ids()) or "无",
             data_dir,
         )
+
+    def _warn_deprecated_config_keys(self) -> None:
+        """探测已废弃的旧配置键并告警（SDK extra="ignore" 会静默丢弃，用户无感知）。
+
+        背景（2026-09-13）：``[llm].creation_task`` 已被 ``[llm].creation_model``
+        （按模型名路由，依赖 MaiBot 1.2.5 #2031）取代；旧键残留在 config.toml
+        时模型路由静默失效。经 SDK 公开接口 ``get_plugin_config_data()`` 读
+        合并后的原始配置（未删的未知键保留其中）。
+        """
+        try:
+            raw_config = self.get_plugin_config_data()
+        except Exception as exc:
+            self.ctx.logger.debug("读取原始配置数据失败（跳过弃用键检查）: %s", exc)
+            return
+        llm_raw = raw_config.get("llm")
+        if isinstance(llm_raw, dict) and llm_raw.get("creation_task"):
+            self.ctx.logger.warning(
+                "检测到已废弃配置键 [llm].creation_task=%r（已不再生效，模型路由将走默认模型）。"
+                "请改用 [llm].creation_model（填已注册模型名，详见 README「创作模型路由」）。",
+                llm_raw["creation_task"],
+            )
 
     def _plugin_version(self) -> str:
         """从插件自带的 _manifest.json 读版本号（加载日志不再写死版本漂移文案）。"""
