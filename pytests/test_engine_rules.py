@@ -20,41 +20,12 @@ import——借鉴 mai-diary 的做法，用 ``importlib`` 挂到合成包名
 from __future__ import annotations
 
 import datetime
-import importlib.util
 import sys
-import types
-from pathlib import Path
 from types import SimpleNamespace
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-_SYNTH_PKG = "_narrative_test_plugin"
+import _synth_loader
 
-
-def _install_synth_package() -> None:
-    """注册合成包（根 + services），使 engine.py 的相对导入可解析。"""
-    if _SYNTH_PKG in sys.modules:
-        return
-    root = types.ModuleType(_SYNTH_PKG)
-    root.__path__ = [str(PLUGIN_ROOT)]  # type: ignore[attr-defined]
-    sys.modules[_SYNTH_PKG] = root
-    services = types.ModuleType(f"{_SYNTH_PKG}.services")
-    services.__path__ = [str(PLUGIN_ROOT / "services")]  # type: ignore[attr-defined]
-    sys.modules[f"{_SYNTH_PKG}.services"] = services
-
-
-def _load(rel_name: str, file_path: Path):
-    full_name = f"{_SYNTH_PKG}.{rel_name}"
-    spec = importlib.util.spec_from_file_location(full_name, str(file_path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"无法加载 {full_name} from {file_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[full_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_install_synth_package()
-_ENGINE = _load("services.engine", PLUGIN_ROOT / "services" / "engine.py")
+_ENGINE = _synth_loader.load("services.engine")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 mood_by_energy = _ENGINE.mood_by_energy
@@ -199,18 +170,4 @@ def test_config_params_take_effect():
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":
-    fns = [
-        (name, obj)
-        for name, obj in list(globals().items())
-        if name.startswith("test_") and callable(obj)
-    ]
-    failed = 0
-    for name, fn in fns:
-        try:
-            fn()
-            print(f"  [PASS] {name}")
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            print(f"  [FAIL] {name}: {type(exc).__name__}: {exc}")
-    print(f"\n{len(fns) - failed} passed, {failed} failed")
-    sys.exit(0 if not failed else 1)
+    sys.exit(_synth_loader.run_standalone(globals()))
