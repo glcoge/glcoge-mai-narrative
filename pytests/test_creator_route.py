@@ -59,6 +59,16 @@ class _FakeLLM:
         return list(self._available)
 
 
+class _FakeTelemetry:
+    """记录 record_llm_tokens 调用的假 telemetry（成本采样锁定用）。"""
+
+    def __init__(self) -> None:
+        self.token_calls: list = []
+
+    def record_llm_tokens(self, tokens: float, task: str = "creation") -> None:
+        self.token_calls.append((tokens, task))
+
+
 def _make_client(
     *,
     creator_enabled: bool = False,
@@ -88,11 +98,12 @@ def _make_client(
             logger=_stdlib_logging.getLogger("creator-route-test"),
         ),
     )
-    plugin._telemetry = None  # 跳过成本采样
+    telemetry = _FakeTelemetry()
+    plugin._telemetry = telemetry
     client = CreatorClient(plugin)
     handler = _ListHandler()
     plugin.ctx.logger.addHandler(handler)
-    return client, plugin.ctx.llm, handler
+    return client, plugin.ctx.llm, handler, telemetry
 
 
 # ===== 回归用例 =====
@@ -100,7 +111,7 @@ def _make_client(
 
 def test_direct_route_used_when_configured():
     """直连条件满足 → 走直连，不触发 llm.generate。"""
-    client, llm, _handler = _make_client(
+    client, llm, _handler, _telemetry = _make_client(
         creator_enabled=True, base_url="https://api.example.com"
     )
     direct_calls: list = []
@@ -119,7 +130,7 @@ def test_direct_route_used_when_configured():
 
 def test_model_name_route_payload():
     """直连关闭 + 已配模型名 → 载荷为 task_name="utils" + model_name=配置值。"""
-    client, llm, _handler = _make_client(
+    client, llm, _handler, _telemetry = _make_client(
         creation_model="my-thinking-off-model",
         available=["my-thinking-off-model", "other-model"],
     )
@@ -138,7 +149,7 @@ def test_model_name_route_payload():
 
 def test_empty_creation_model_uses_default():
     """直连关闭 + 未配模型名 → 只传 task_name="utils"，不传 model_name。"""
-    client, llm, _handler = _make_client(creation_model="")
+    client, llm, _handler, _telemetry = _make_client(creation_model="")
     result = asyncio.run(client.generate("提示"))
 
     assert result == "生成结果"
@@ -149,7 +160,7 @@ def test_empty_creation_model_uses_default():
 
 def test_generation_failure_returns_empty():
     """LLM 调用异常 → 返回空串且不向外抛（创作是附加动作，不能阻塞主流程）。"""
-    client, _llm, _handler = _make_client(
+    client, _llm, _handler, _telemetry = _make_client(
         creation_model="bad-model",
         raise_on_generate=RuntimeError("未找到名为 'bad-model' 的模型"),
     )
@@ -158,9 +169,21 @@ def test_generation_failure_returns_empty():
     assert result == ""
 
 
+def test_generate_records_token_cost():
+    """生成成功后应向 telemetry 记录成本采样（指标 5：按字符粗估 token，task=creation）。"""
+    client, _llm, _handler, telemetry = _make_client(creation_model="my-model")
+    result = asyncio.run(client.generate("提示词"))
+
+    assert result == "生成结果"
+    assert len(telemetry.token_calls) == 1, "生成成功应记录一次成本采样"
+    tokens, task = telemetry.token_calls[0]
+    assert task == "creation"
+    assert tokens >= 1, "token 估算至少为 1"
+
+
 def test_unknown_model_name_warns_but_still_calls():
     """配置的模型名不在已注册列表 → 告警（含可用列表），但仍尝试调用。"""
-    client, llm, handler = _make_client(
+    client, llm, handler, _telemetry = _make_client(
         creation_model="typo-model", available=["model-a", "model-b"]
     )
     result = asyncio.run(client.generate("提示"))

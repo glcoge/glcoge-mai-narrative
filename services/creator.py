@@ -40,7 +40,8 @@ class CreatorClient:
         if not text:
             return ""
         # 成本采样（指标 5）：按字符粗估 token，写入 llm_extra_tokens
-        telemetry = getattr(self._plugin, "_telemetry", None)
+        # （_telemetry 在 plugin.__init__ 显式置 None，直接属性访问即可，勿用 getattr 掩盖未初始化）
+        telemetry = self._plugin._telemetry
         if telemetry is not None:
             tokens_approx = max(1, (len(prompt) + len(text)) // 3)
             telemetry.record_llm_tokens(float(tokens_approx), task="creation")
