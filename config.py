@@ -275,17 +275,18 @@ class LLMSection(PluginConfigBase):
     __ui_icon__: ClassVar[str] = "cpu"
     __ui_order__: ClassVar[int] = 4
 
-    creation_task: str = Field(
-        default="learner",
+    creation_model: str = Field(
+        default="",
         description=(
-            "事件创作/编年史压缩所用模型 task 名（需已存在于主程序 model_config.toml）。"
-            "只填任务名，不填模型名。仅当 [creator_model] 直连关闭时才生效（回退路径）。"
-            "若创作模型为推理模型且未关思考，建议改用 [creator_model] 直连（见 README「创作模型路由」）。"
+            "创作模型名（须与主程序已注册的模型名完全一致，WebUI 模型列表可查看复制）。"
+            "只填模型名，无需把模型分配给任何任务。仅当 [creator_model] 直连关闭时生效；"
+            "留空则使用主程序默认模型。推理模型可在该模型的 extra_params 配 "
+            "{thinking = {type = \"disabled\"}} 关思考，无需直连。"
         ),
         json_schema_extra={
-            "label": "创作模型 task（回退）",
-            "hint": "任务名（非模型名）；直连关闭时才走此回退",
-            "placeholder": "learner",
+            "label": "创作模型（模型名）",
+            "hint": "已注册模型名；留空用默认模型",
+            "placeholder": "my-thinking-off-model",
             "order": 1,
         },
     )

@@ -26,6 +26,7 @@
     "send.text",
     "config.get",
     "llm.generate",
+    "llm.get_available_models",
     "maisaka.proactive.trigger"
   ],
   "i18n": {

@@ -40,13 +40,18 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 - **LLM 只在规则候选里创作**：tick 纯规则；生活片段 + 编年史压缩按频率闸门调 LLM（见「创作模型路由」）。
 - **编年史 append-only**：重置也不清编年史。
 
-## 创作模型路由（v0.1.3，重要）
+## 创作模型路由（v0.1.5 起：按模型名路由，推荐）
 
-生活片段 / 编年史压缩默认走 `[llm] creation_task`（MaiBot task 路由）。⚠️ **若该任务用的模型是推理模型（如 Mimo V2.5）且未关思考，思维链会挤占 `max_tokens` 导致正文截断**（日志出现 "超过 max_token 限制"）。
+生活片段 / 编年史压缩的模型路线（二选一，直连优先）：
 
-**推荐：插件直连创作模型**（`[creator_model]` 段，纯 WebUI 填 4 项）——插件自己 POST 到 OpenAI 兼容端点，**body 固定携带 `thinking={type:"disabled"}`**，彻底绕开思维链与任务路由：
+**路线 A：按模型名路由（默认，推荐）** —— `[llm] creation_model` 填一个**已在主程序注册的模型名**（WebUI 模型列表可查看复制），只填模型名、**无需把模型分配给任何任务**（MaiBot ≥1.2.5 修复 #2031 后支持按名调用，模型名查全局列表）。留空则用主程序默认模型。
 
-1. 本插件配置页 → `创建模型直连` 段：
+- 推理模型关思考：直接在该模型的 `extra_params` 配 `{thinking = {type = "disabled"}}`（WebUI 模型编辑页可配），插件侧零改动。
+- 配置名写错不会静默：调用失败日志会明确报 `未找到名为 'X' 的模型`；`/narrative status` 会列出可用模型与当前路线。
+
+**路线 B：插件直连**（`[creator_model]` 段）—— 需要独立供应商 / 独立 api_key / 独立额度时才用：插件自己 POST 到 OpenAI 兼容端点，**body 固定携带 `thinking={type:"disabled"}`**：
+
+1. 本插件配置页 → `创作模型直连` 段：
    - `enabled = true`
    - `base_url` = 服务商 OpenAI 兼容地址（如 `https://…/v1`，自动拼 `/chat/completions`）
    - `api_key` = 你的 Key
@@ -55,10 +60,10 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 2. 生活片段/编年史即走直连（该模型是否推理、是否开思考都无所谓——thinking 被强制关闭）。
 
 要点：
-- 直连启用后**不依赖 MaiBot 模型体系**：不占任务、不经 RPC、不改 model_config.toml。
-- `[llm] creation_task` 仅在 `[creator_model].enabled=false` 或 `base_url` 空时作为回退。
+- 直连启用后**不依赖 MaiBot 模型体系**：不占任务、不经 RPC、不改 model_config.toml；适合"创作模型与主模型不同供应商"的场景。
+- 直连关闭时走路线 A；`[llm].creation_model` 为空则用主程序默认模型。
 - API Key 明文存插件配置（与 model_config.toml 现状一致）；如需更安全可后续改环境变量引用。
-- 已知 MaiBot 缺陷（`llm.generate` 的 model_name 被 host 吞入任务名解析）已提交 upstream issue **#2031**；本地备有 issue/PR 模板 `E:\1MyProjects\maibot-model-name-issue-pr-template.md`。
+- 历史备注：v0.1.3~v0.1.4 的回退路线是 `[llm] creation_task`（task 名路由），因 #2031（model_name 被吞入任务名解析）只能按 task 复用；#2031 已随 MaiBot 1.2.5 修复（维护者提交 `008019c2`），v0.1.5 起改为按模型名路由，`creation_task` 字段废弃。
 
 ## 数据目录
 

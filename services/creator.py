@@ -11,7 +11,12 @@ from typing import Any
 
 
 class CreatorClient:
-    """创作模型客户端：直连优先，回退 MaiBot task 路由。"""
+    """创作模型客户端：直连优先，回退按模型名路由（复用主程序已注册模型）。
+
+    模型名路由依赖 MaiBot 1.2.5 的 #2031 修复（``task_name`` 与 ``model_name``
+    可分别指定）；``model_name`` 指向**全局模型列表**中任意已注册模型，
+    无需把模型分配给任何任务（``get_model_info_by_name`` 只查 models 列表）。
+    """
 
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
@@ -22,14 +27,15 @@ class CreatorClient:
         优先直连：``[creator_model]`` 启用且 base_url 非空时，直接 POST
         OpenAI 兼容 /chat/completions（body 固定 ``thinking={type:"disabled"}``，
         关闭推理模型的思维链，避免挤占 max_tokens 导致正文截断）。
-        否则回退 MaiBot task 路由（``[llm] creation_task``）。
+        否则按模型名路由（``[llm].creation_model``，须为已注册模型名；
+        留空则用主程序默认模型）。
         """
         cfg = self._plugin.config
         creator = cfg.creator_model
         if creator.enabled and str(creator.base_url or "").strip():
             text = await self._generate_direct(prompt)
         else:
-            text = await self._generate_via_task(prompt)
+            text = await self._generate_via_model(prompt)
 
         if not text:
             return ""
@@ -77,16 +83,30 @@ class CreatorClient:
             self._plugin.ctx.logger.warning("创作模型直连响应解析失败: %s", exc)
             return ""
 
-    async def _generate_via_task(self, prompt: str) -> str:
-        """回退：走 MaiBot 内部 task 路由（llm.generate）。"""
+    async def _generate_via_model(self, prompt: str) -> str:
+        """回退：按模型名路由（``llm.generate``，``task_name`` 与 ``model_name`` 分别指定）。
+
+        ``model_name`` 指向全局模型列表中任意已注册模型（含只注册、未分配任务的）；
+        配置为空则不传 ``model_name``，走主程序默认模型（首次使用打 info 说明）。
+        """
         cfg = self._plugin.config
+        model_name = str(cfg.llm.creation_model or "").strip()
+        payload_kwargs: dict[str, Any] = {"task_name": "utils"}
+        if model_name:
+            await self._warn_if_model_unknown(model_name)
+            payload_kwargs["model_name"] = model_name
+        else:
+            self._plugin.ctx.logger.info(
+                "创作模型未配置（[llm].creation_model 为空），使用主程序默认模型；"
+                "可在 WebUI 模型列表注册模型后填入该配置项"
+            )
         try:
             result = await asyncio.wait_for(
                 self._plugin.ctx.llm.generate(
                     prompt,
-                    model=cfg.llm.creation_task or "",
                     temperature=cfg.llm.temperature,
                     max_tokens=256,
+                    **payload_kwargs,
                 ),
                 timeout=30,
             )
@@ -96,6 +116,24 @@ class CreatorClient:
         if isinstance(result, dict):
             return str(result.get("response") or result.get("content") or "").strip()
         return ""
+
+    async def _warn_if_model_unknown(self, model_name: str) -> None:
+        """配置的模型名不在已注册列表时告警（附可用列表）；查询失败不阻塞调用。"""
+        try:
+            available = await self._plugin.ctx.llm.get_available_models()
+        except Exception as exc:
+            self._plugin.ctx.logger.debug("获取可用模型列表失败: %s", exc)
+            return
+        names = [str(item) for item in (available or [])]
+        if model_name not in names:
+            preview = ", ".join(names[:8]) or "（空）"
+            self._plugin.ctx.logger.warning(
+                "创作模型 %r 不在已注册模型列表中（可用: %s%s），调用将失败；"
+                "请核对 WebUI 模型列表中的名称",
+                model_name,
+                preview,
+                "…" if len(names) > 8 else "",
+            )
 
 
 __all__ = ["CreatorClient"]

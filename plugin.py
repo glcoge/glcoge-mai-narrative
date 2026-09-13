@@ -492,10 +492,18 @@ class MaiNarrativePlugin(MaiBotPlugin):
         cfg = self.config
         state = self._engine.load_self_state()
         inner = state["state"]
+        creator_cfg = cfg.creator_model
+        if creator_cfg.enabled and str(creator_cfg.base_url or "").strip():
+            creator_line = f"创作模型: 直连（{creator_cfg.model_id or '未配 model_id'}）"
+        elif str(cfg.llm.creation_model or "").strip():
+            creator_line = f"创作模型: 按名路由（{cfg.llm.creation_model}）"
+        else:
+            creator_line = "创作模型: 默认（未配置，可填 [llm].creation_model）"
         lines = [
             "【剧本人设系统 · 状态】",
             f"剧本模式: {'开' if cfg.narrative.enabled else '关'} | "
             f"主动消息: {'开' if cfg.proactive.enabled else '关'}",
+            creator_line,
             f"模式用户: {','.join(self._mode_user_ids()) or '无'} | "
             f"已知会话: {len(self._uid_to_stream)}",
             f"心情: {inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）| "
@@ -524,6 +532,15 @@ class MaiNarrativePlugin(MaiBotPlugin):
             count = self._store.get_kv_int(f"proactive:count:{uid}:{today}")
             lines.append(f"今日主动[{uid}]: {count}")
         lines.append(f"数据目录: {self.ctx.paths.data_dir / 'narrative'}")
+        # 可用模型列表（供 [llm].creation_model 按名路由填写参考）；失败不影响 status
+        try:
+            available_models = await self.ctx.llm.get_available_models()
+            names = [str(item) for item in (available_models or [])]
+            if names:
+                shown = ", ".join(names[:10]) + ("…" if len(names) > 10 else "")
+                lines.append(f"可用模型: {shown}")
+        except Exception as exc:
+            self.ctx.logger.debug("获取可用模型列表失败: %s", exc)
         await self.ctx.send.text("\n".join(lines), stream_id)
 
     async def _cmd_reset(self, param: str, stream_id: str) -> None:

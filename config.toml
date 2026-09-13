@@ -46,16 +46,19 @@ daily_max = 2
 default_active_window = ["09:00-22:00"]
 user_active_windows = {}
 
-# ===== 模型路由（复用 MaiBot 内部 task） =====
+# ===== 模型路由（按模型名调用已注册模型，MaiBot ≥1.2.5） =====
 [llm]
-creation_task = "learner"
+# 创作模型名：须与主程序已注册的模型名完全一致（WebUI 模型列表可查看复制）；
+# 只填模型名、无需分配给任何任务。留空 = 使用主程序默认模型。
+# 推理模型可在 WebUI 该模型的 extra_params 配 {thinking = {type = "disabled"}} 关思考。
+creation_model = ""
 temperature = 0.9
 show_prompt = false
 
-# ===== 创作模型直连（可选；启用后绕过 MaiBot 任务路由，直接 POST 到 base_url）=====
-# 用途：推理模型（如 Mimo V2.5）不禁思考会挤占 max_tokens 导致正文截断；
+# ===== 创作模型直连（可选；启用后绕过模型名路由，直接 POST 到 base_url）=====
+# 用途：需要独立供应商 / 独立 api_key / 独立额度时才启用；
 # 直连请求 body 固定携带 thinking={type:"disabled"}，生成短文本无需思维链。
-# 留空/关闭 = 回退 [llm] creation_task 路由。
+# 留空/关闭 = 走 [llm] creation_model 按名路由。
 [creator_model]
 enabled = false
 base_url = ""
