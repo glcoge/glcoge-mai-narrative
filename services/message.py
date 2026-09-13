@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def is_private_chat(message: Dict[str, Any]) -> bool:
@@ -67,4 +67,31 @@ def extract_user_id(message: Dict[str, Any]) -> str:
     return str(user_info.get("user_id") or user_info.get("id") or "").strip()
 
 
-__all__ = ["is_private_chat", "message_text", "extract_user_id"]
+def outbound_text_len(message: Any) -> Optional[int]:
+    """从序列化 SessionMessage 的 raw_message 组件列表提取出站文本总长度。
+
+    组件格式（主程序 ``serialize_session_message`` 序列化产物）：
+    文本组件为 ``{"type": "text", "data": "<文本>"}``。
+
+    Returns:
+        Optional[int]: 文本总长度；message 缺失/非 dict/无文本组件时返回
+        ``None``（调用方跳过记录，避免把"取不到文本"记成 0 污染数据）。
+
+    2026-09-13 体检（C2）：自 plugin.py 纯搬移至此——入站/出站的消息字段
+    探针统一收敛在 message.py 这一个 seam（规范 §架构层 2）。
+    """
+    if not isinstance(message, dict):
+        return None
+    raw_components = message.get("raw_message")
+    if not isinstance(raw_components, list):
+        return None
+    total_len = 0
+    has_text = False
+    for component in raw_components:
+        if isinstance(component, dict) and component.get("type") == "text":
+            total_len += len(str(component.get("data") or ""))
+            has_text = True
+    return total_len if has_text else None
+
+
+__all__ = ["is_private_chat", "message_text", "extract_user_id", "outbound_text_len"]

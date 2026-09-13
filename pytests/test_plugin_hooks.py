@@ -27,6 +27,9 @@ _COMPONENT_INFO_ATTR = "__maibot_component_info__"
 # 真正执行 services/__init__.py（plugin.py 依赖其再导出），子模块走标准导入机制
 _synth_loader.load("services")
 _PLUGIN = _synth_loader.load("plugin")
+_MESSAGE = _synth_loader.load("services.message")
+
+outbound_text_len = _MESSAGE.outbound_text_len
 
 MaiNarrativePlugin = _PLUGIN.MaiNarrativePlugin
 
@@ -160,6 +163,23 @@ def test_injection_disabled_when_narrative_off():
 
     injected = [i for i in kwargs["items"] if _PLUGIN.is_injected_item(i)]
     assert not injected, "narrative.enabled=false 时不应注入剧本上下文"
+
+
+# ===== message seam 单测（C2 下沉 outbound_text_len） =====
+
+
+def test_outbound_text_len_sums_text_components():
+    """出站文本总长度 = raw_message 全部 text 组件 data 之和。"""
+    message = {"raw_message": [{"type": "text", "data": "对呀"}, {"type": "face", "data": "x"}]}
+    assert outbound_text_len(message) == 2
+
+
+def test_outbound_text_len_invalid_inputs_return_none():
+    """非 dict / 无 raw_message / 无文本组件 → None（调用方跳过记录，不记 0）。"""
+    assert outbound_text_len(None) is None
+    assert outbound_text_len("not a dict") is None
+    assert outbound_text_len({}) is None
+    assert outbound_text_len({"raw_message": [{"type": "face", "data": "x"}]}) is None
 
 
 # ===== 独立运行入口 =====

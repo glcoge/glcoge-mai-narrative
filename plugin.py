@@ -43,7 +43,12 @@ from .services import (
     is_injected_item,
 )
 from .services.engine import local_now
-from .services.message import extract_user_id, is_private_chat, message_text
+from .services.message import (
+    extract_user_id,
+    is_private_chat,
+    message_text,
+    outbound_text_len,
+)
 from .services.store import NarrativeStore
 
 # 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
@@ -52,30 +57,6 @@ _USER_INITIATED_GAP_MINUTES = 5
 # 与指标 3 的 30 分钟回复窗口保持同一时间尺度）
 _ROUND_PAIR_WINDOW_MINUTES = 30
 _STAGE_EPOCH = datetime.datetime(1970, 1, 1)
-
-
-def _extract_outbound_text_len(message: Any) -> Optional[int]:
-    """从序列化 SessionMessage 的 raw_message 组件列表提取出站文本总长度。
-
-    组件格式（主程序 ``serialize_session_message`` 序列化产物）：
-    文本组件为 ``{"type": "text", "data": "<文本>"}``。
-
-    Returns:
-        Optional[int]: 文本总长度；message 缺失/非 dict/无文本组件时返回
-        ``None``（调用方跳过记录，避免把"取不到文本"记成 0 污染数据）。
-    """
-    if not isinstance(message, dict):
-        return None
-    raw_components = message.get("raw_message")
-    if not isinstance(raw_components, list):
-        return None
-    total_len = 0
-    has_text = False
-    for component in raw_components:
-        if isinstance(component, dict) and component.get("type") == "text":
-            total_len += len(str(component.get("data") or ""))
-            has_text = True
-    return total_len if has_text else None
 
 
 class MaiNarrativePlugin(MaiBotPlugin):
@@ -352,7 +333,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 self._telemetry.record(
                     "dialogue_depth", value=1, scope="rounds", user_id=paired_user_id
                 )
-        bot_text_len = _extract_outbound_text_len(message)
+        bot_text_len = outbound_text_len(message)
         if bot_text_len is not None:
             self._telemetry.record(
                 "dialogue_depth", value=float(bot_text_len), scope="bot_msg_len"
