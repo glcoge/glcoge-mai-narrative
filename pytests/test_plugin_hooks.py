@@ -64,7 +64,10 @@ def _make_plugin(*, narrative_enabled: bool = True) -> tuple:
     plugin._telemetry = telemetry
     # ctx 同为只读 property（读 self._ctx），直接注入内层
     plugin._ctx = SimpleNamespace(logger=_stdlib_logging.getLogger("narrative-hook-test"))
-    plugin._stream_to_uid = {"s1": "u1"}
+    plugin._streams = SimpleNamespace(
+        uid_of=lambda sid: {"s1": "u1"}.get(sid, ""),
+        stream_of=lambda uid: "s1" if uid == "u1" else "",
+    )
     plugin._last_bot_sent = {}
     plugin._pending_round = {}
     plugin._proactive = SimpleNamespace()  # handle_post_send 不使用

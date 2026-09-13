@@ -37,6 +37,7 @@ from .config import MaiNarrativePluginConfig
 from .services import (
     NarrativeEngine,
     ProactiveScheduler,
+    StreamRegistry,
     Telemetry,
     build_context_block,
     build_injected_item,
@@ -70,9 +71,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._engine: Optional[NarrativeEngine] = None
         self._proactive: Optional[ProactiveScheduler] = None
         self._telemetry: Optional[Telemetry] = None
-        # uid -> 已学到的私聊 stream_id；stream_id -> uid（反向映射用于 hook 判定）
-        self._uid_to_stream: Dict[str, str] = {}
-        self._stream_to_uid: Dict[str, str] = {}
+        # uid↔stream 注册表（含 kv 持久化，防重启后主动消息失联）
+        self._streams: Optional[StreamRegistry] = None
         # stream_id -> 最后一次 bot 发送时刻（用户主动发起判定）
         self._last_bot_sent: Dict[str, datetime.datetime] = {}
         # stream_id -> 最近一次模式会话入站时刻（指标 2 对话轮次配对）
@@ -90,7 +90,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._telemetry = Telemetry(self)
         self._engine = NarrativeEngine(self)
         self._proactive = ProactiveScheduler(self)
-        self._restore_streams()  # 恢复 uid->stream 映射（防重启后主动消息失联）
+        # uid↔stream 注册表：启动时从 kv 回填（防重启后主动消息失联）
+        self._streams = StreamRegistry(self._store, self.ctx.logger)
+        self._streams.restore()
         await self._reconcile_all()
         self._watchdog = asyncio.create_task(self._watchdog_loop(), name="narrative-watchdog")
         self.ctx.logger.info(
@@ -173,50 +175,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
         """判断用户是否是剧本模式用户。"""
         return bool(user_id) and user_id in set(self._mode_user_ids())
 
-    def _record_stream(self, user_id: str, stream_id: str) -> None:
-        """登记 uid<->stream 映射（私聊主动开口与 hook 判定用）。
-
-        同时持久化到 store 的 kv（key=stream_map），解决主动消息依赖内存映射、
-        重启后或用户久未私聊时拿不到送达地址而静默停摆的问题。
-        """
-        if not user_id or not stream_id:
-            return
-        self._uid_to_stream[user_id] = stream_id
-        self._stream_to_uid[stream_id] = user_id
-        if self._store is not None:
-            try:
-                current_map = self._store.get_kv("stream_map") or {}
-                current_map[str(user_id)] = str(stream_id)
-                self._store.set_kv("stream_map", current_map)
-            except Exception as exc:
-                self.ctx.logger.debug("stream 映射持久化失败: %s", exc)
-
-    def _restore_streams(self) -> None:
-        """从 store 回填 uid->stream 映射（启动恢复，防重启后主动消息失联）。"""
-        if self._store is None:
-            return
-        try:
-            saved = self._store.get_kv("stream_map") or {}
-            for user_id, stream_id in saved.items():
-                uid = str(user_id)
-                sid = str(stream_id)
-                if uid and sid:
-                    self._uid_to_stream[uid] = sid
-                    self._stream_to_uid[sid] = uid
-        except Exception as exc:
-            self.ctx.logger.debug("stream 映射恢复失败: %s", exc)
-
-    def _stream_id_of(self, user_id: str) -> str:
-        """查询用户已知的私聊 stream_id。"""
-        return self._uid_to_stream.get(user_id, "")
-
     def _is_mode_session(self, session_id: str) -> bool:
         """判断会话是否为剧本模式会话（显式白名单或已学习映射）。"""
         if not session_id:
             return False
         if session_id in (str(item) for item in (self.config.narrative.mode_stream_ids or [])):
             return True
-        uid = self._stream_to_uid.get(session_id, "")
+        uid = self._streams.uid_of(session_id) if self._streams is not None else ""
         return self._is_mode_uid(uid)
 
     def _local_now(self) -> datetime.datetime:
@@ -270,7 +235,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
 
         if stream_id:
-            self._record_stream(user_id, stream_id)
+            self._streams.record(user_id, stream_id)
 
         # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）
         if bool(message.get("is_command")) or bool(message.get("is_notify")):
@@ -329,7 +294,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 (self._local_now() - pending_ts).total_seconds() <= _ROUND_PAIR_WINDOW_MINUTES * 60
             ):
                 # 反查 user_id，支持按用户拆轮次（A/B 对照需要）
-                paired_user_id = self._stream_to_uid.get(resolved_stream, "")
+                paired_user_id = self._streams.uid_of(resolved_stream)
                 self._telemetry.record(
                     "dialogue_depth", value=1, scope="rounds", user_id=paired_user_id
                 )
@@ -367,7 +332,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if any(is_injected_item(item) for item in items):
             return {"action": "continue", "modified_kwargs": kwargs}
 
-        user_id = self._stream_to_uid.get(session_id, "")
+        user_id = self._streams.uid_of(session_id)
         state = self._engine.load_self_state()
         branch = self._engine.load_branch_state(user_id) if user_id else None
         recent = self._store.recent_chronicle("self", limit=3)
@@ -486,7 +451,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             f"主动消息: {'开' if cfg.proactive.enabled else '关'}",
             creator_line,
             f"模式用户: {','.join(self._mode_user_ids()) or '无'} | "
-            f"已知会话: {len(self._uid_to_stream)}",
+            f"已知会话: {self._streams.known_count()}",
             f"心情: {inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）| "
             f"阶段: {inner['routine']['phase']}",
         ]
@@ -537,8 +502,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         deleted = self._store.delete_keys_with_prefix("")
         # 事件队列一并清空；编年史 append-only 刻意保留
         self._store.clear_all_events()
-        self._uid_to_stream.clear()
-        self._stream_to_uid.clear()
+        self._streams.clear()
         self._pending_round.clear()
         self._proactive.clear_sent()
         await self.ctx.send.text(
@@ -566,7 +530,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             "energy": state["state"]["mood"]["energy"],
             "routine_phase": state["state"]["routine"]["phase"],
             "mode_user_ids": self._mode_user_ids(),
-            "known_streams": len(self._uid_to_stream),
+            "known_streams": self._streams.known_count(),
             "chronicle_count": self._store.count_chronicle("self"),
         }
         summary["branches"] = {
