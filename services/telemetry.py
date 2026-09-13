@@ -9,21 +9,88 @@
 - state_diversity      状态多样性（mood 切换等，随快照采集）
 
 成本侧：事件/编年史的额外 LLM token 由各调用点自行 record 到 `llm_extra_tokens`。
+
+2026-09-13 体检（C5）：入站/出站的"何时记什么"判定（轮次配对、用户主动发起、
+消息长度）自 plugin.py hook 内联逻辑下沉至此——指标口径集中在单一模块，
+hook 只剩编排；跟踪状态的更新保持**无条件**（与下沉前一致），仅 CSV 写入受
+telemetry.enabled 门控，A/B 对照窗口的采样口径不受影响。
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
+import datetime
+
+from .message import outbound_text_len
 from .store import NarrativeStore
+
+# 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
+_USER_INITIATED_GAP_MINUTES = 5
+# 入站消息登记后，出站回复在该窗口内到达则配对为一次对话往返（指标 2；
+# 与指标 3 的 30 分钟回复窗口保持同一时间尺度）
+_ROUND_PAIR_WINDOW_MINUTES = 30
+_STAGE_EPOCH = datetime.datetime(1970, 1, 1)
 
 
 class Telemetry:
-    """薄封装：只在 telemetry.enabled 时把采样写入 CSV。"""
+    """验收采样：入站/出站采样判定 + CSV 写入（telemetry.enabled 门控）。"""
 
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
         self._store: NarrativeStore = plugin._store
+        # stream_id -> 最后一次 bot 发送时刻（用户主动发起判定）
+        self._last_bot_sent: Dict[str, datetime.datetime] = {}
+        # stream_id -> 最近一次模式会话入站时刻（指标 2 对话轮次配对）
+        self._pending_round: Dict[str, datetime.datetime] = {}
+
+    # ─── 入站/出站采样判定（hook 调用，判定逻辑单点在此） ────────
+
+    def note_inbound(
+        self,
+        stream_id: str,
+        user_id: str,
+        text: str,
+        now: datetime.datetime,
+    ) -> None:
+        """入站采样：轮次登记 + 用户主动发起判定 + 入站长度（指标 1/2）。"""
+        key = stream_id or user_id
+        # 指标 2 · 对话轮次：登记本轮入站，待出站回复配对成一次往返（scope=rounds）
+        self._pending_round[key] = now
+
+        # 验收指标 1：用户主动发起（距上一条 bot 消息超过阈值）
+        last_sent = self._last_bot_sent.get(key, _STAGE_EPOCH)
+        if (now - last_sent).total_seconds() / 60 > _USER_INITIATED_GAP_MINUTES:
+            self.record("user_initiated_freq", 1, user_id=user_id)
+        # 验收指标 2：入站消息长度
+        self.record("dialogue_depth", value=float(len(text)), user_id=user_id, scope="user_msg_len")
+
+    def note_outbound(
+        self,
+        stream_id: str,
+        user_id: str,
+        message: Any,
+        now: datetime.datetime,
+    ) -> None:
+        """出站采样：出站时刻登记 + 轮次配对 + bot 消息长度（指标 1/2 对照侧）。"""
+        if stream_id:
+            self._last_bot_sent[stream_id] = now
+            # 指标 2 · 对话轮次：本条出站若在窗口内接住一次模式会话入站，记一轮往返
+            pending_ts = self._pending_round.pop(stream_id, None)
+            if pending_ts is not None and (
+                (now - pending_ts).total_seconds() <= _ROUND_PAIR_WINDOW_MINUTES * 60
+            ):
+                # user_id 由调用方（hook）经 StreamRegistry 反查传入，支持按用户拆轮次
+                self.record("dialogue_depth", value=1, scope="rounds", user_id=user_id)
+        bot_text_len = outbound_text_len(message)
+        if bot_text_len is not None:
+            self.record("dialogue_depth", value=float(bot_text_len), scope="bot_msg_len")
+
+    def clear_pending_rounds(self) -> None:
+        """清空待配对轮次登记（状态重置用；_last_bot_sent 保留，与原 reset 语义一致）。"""
+        self._pending_round.clear()
+
+    # ─── 通用采样 ────────────────────────────────────────────────
 
     def record(
         self,

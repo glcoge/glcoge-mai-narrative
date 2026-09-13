@@ -52,13 +52,6 @@ from .services.message import (
 )
 from .services.store import NarrativeStore
 
-# 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
-_USER_INITIATED_GAP_MINUTES = 5
-# 入站消息登记后，出站回复在该窗口内到达则配对为一次对话往返（指标 2；
-# 与指标 3 的 30 分钟回复窗口保持同一时间尺度）
-_ROUND_PAIR_WINDOW_MINUTES = 30
-_STAGE_EPOCH = datetime.datetime(1970, 1, 1)
-
 
 class MaiNarrativePlugin(MaiBotPlugin):
     """剧本人设系统主插件。"""
@@ -73,10 +66,6 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._telemetry: Optional[Telemetry] = None
         # uid↔stream 注册表（含 kv 持久化，防重启后主动消息失联）
         self._streams: Optional[StreamRegistry] = None
-        # stream_id -> 最后一次 bot 发送时刻（用户主动发起判定）
-        self._last_bot_sent: Dict[str, datetime.datetime] = {}
-        # stream_id -> 最近一次模式会话入站时刻（指标 2 对话轮次配对）
-        self._pending_round: Dict[str, datetime.datetime] = {}
         # 看门狗任务：不依赖 on_config_update 回调，主动对齐"配置开关 ↔ 后台任务"
         self._watchdog: Optional[asyncio.Task] = None
 
@@ -247,15 +236,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
         self._engine.record_branch_feedback(user_id, now)
-        # 指标 2 · 对话轮次：登记本轮入站，待出站回复配对成一次往返（scope=rounds）
-        self._pending_round[stream_id or user_id] = now
-
-        # 验收指标 1：用户主动发起（距上一条 bot 消息超过阈值）
-        last_sent = self._last_bot_sent.get(stream_id or user_id, _STAGE_EPOCH)
-        if (now - last_sent).total_seconds() / 60 > _USER_INITIATED_GAP_MINUTES:
-            self._telemetry.record("user_initiated_freq", 1, user_id=user_id)
-        # 验收指标 2：入站消息长度
-        self._telemetry.record("dialogue_depth", value=float(len(plain)), user_id=user_id, scope="user_msg_len")
+        # 验收采样（指标 1/2 的判定与登记下沉 Telemetry，2026-09-13 C5）
+        self._telemetry.note_inbound(
+            stream_id=stream_id, user_id=user_id, text=plain, now=now
+        )
         # 验收指标 3：主动消息是否被接住
         if self._proactive.check_reply(user_id, now):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
@@ -286,23 +270,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         # 触发层追踪：部署后临时调 debug 日志级别，一轮对话即可确认本 hook 是否被派发
         self.ctx.logger.debug("narrative outbound: stream=%s", resolved_stream or "-")
-        if resolved_stream:
-            self._last_bot_sent[resolved_stream] = self._local_now()
-            # 指标 2 · 对话轮次：本条出站若在窗口内接住一次模式会话入站，记一轮往返
-            pending_ts = self._pending_round.pop(resolved_stream, None)
-            if pending_ts is not None and (
-                (self._local_now() - pending_ts).total_seconds() <= _ROUND_PAIR_WINDOW_MINUTES * 60
-            ):
-                # 反查 user_id，支持按用户拆轮次（A/B 对照需要）
-                paired_user_id = self._streams.uid_of(resolved_stream)
-                self._telemetry.record(
-                    "dialogue_depth", value=1, scope="rounds", user_id=paired_user_id
-                )
-        bot_text_len = outbound_text_len(message)
-        if bot_text_len is not None:
-            self._telemetry.record(
-                "dialogue_depth", value=float(bot_text_len), scope="bot_msg_len"
-            )
+        # 出站采样（出站时刻/轮次配对/bot 长度判定下沉 Telemetry，2026-09-13 C5）
+        self._telemetry.note_outbound(
+            stream_id=resolved_stream,
+            user_id=self._streams.uid_of(resolved_stream),
+            message=message,
+            now=self._local_now(),
+        )
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== Hook：剧本上下文注入 =====
@@ -503,7 +477,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 事件队列一并清空；编年史 append-only 刻意保留
         self._store.clear_all_events()
         self._streams.clear()
-        self._pending_round.clear()
+        self._telemetry.clear_pending_rounds()
         self._proactive.clear_sent()
         await self.ctx.send.text(
             f"已重置叙事状态（kv {deleted} 项、事件队列已清空；编年史保留未动）。", stream_id

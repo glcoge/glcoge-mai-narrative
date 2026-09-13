@@ -34,20 +34,24 @@ outbound_text_len = _MESSAGE.outbound_text_len
 MaiNarrativePlugin = _PLUGIN.MaiNarrativePlugin
 
 
-class _FakeTelemetry:
-    """记录 record() 调用的假 telemetry。"""
+class _FakeStore:
+    """捕获 append_metric 调用的假 store（真实 Telemetry 的写入目标）。"""
 
     def __init__(self) -> None:
-        self.records: list = []
+        self.metric_rows: list = []
 
-    def record(self, name: str, value: float = 1, user_id: str = "", scope: str = "") -> None:
-        self.records.append(
+    def append_metric(self, name, value, user_id="", scope="", ts=None) -> None:
+        self.metric_rows.append(
             SimpleNamespace(name=name, value=value, user_id=user_id, scope=scope)
         )
 
 
-def _make_plugin(*, narrative_enabled: bool = True) -> tuple:
-    """构造绕过 __init__ 的插件实例 + 假 telemetry（纯 handler 单测所需最小依赖）。"""
+def _make_plugin(*, narrative_enabled: bool = True, telemetry_enabled: bool = True) -> tuple:
+    """构造绕过 __init__ 的插件实例 + 真实 Telemetry（假 store 承接采样）。
+
+    C5 之后 hook 只调用 Telemetry.note_inbound/note_outbound，故 hook 回归测试
+    走真实 Telemetry，采样断言落在 store.metric_rows。
+    """
     plugin = MaiNarrativePlugin.__new__(MaiNarrativePlugin)
     # config 是 SDK 的只读 property（读 _plugin_config_instance），测试直接注入内层实例
     plugin._plugin_config_instance = SimpleNamespace(
@@ -58,20 +62,24 @@ def _make_plugin(*, narrative_enabled: bool = True) -> tuple:
             mode_stream_ids=[],
         ),
         plugin=SimpleNamespace(enabled=True),
-        telemetry=SimpleNamespace(enabled=True),
+        telemetry=SimpleNamespace(enabled=telemetry_enabled),
     )
-    telemetry = _FakeTelemetry()
+    store = _FakeStore()
+    logger = _stdlib_logging.getLogger("narrative-hook-test")
+    # Telemetry 只依赖 plugin.config / plugin._store / plugin.ctx.logger，用替身组装
+    telemetry = _PLUGIN.Telemetry(
+        SimpleNamespace(config=plugin._plugin_config_instance, _store=store,
+                        ctx=SimpleNamespace(logger=logger))
+    )
     plugin._telemetry = telemetry
     # ctx 同为只读 property（读 self._ctx），直接注入内层
-    plugin._ctx = SimpleNamespace(logger=_stdlib_logging.getLogger("narrative-hook-test"))
+    plugin._ctx = SimpleNamespace(logger=logger)
     plugin._streams = SimpleNamespace(
         uid_of=lambda sid: {"s1": "u1"}.get(sid, ""),
         stream_of=lambda uid: "s1" if uid == "u1" else "",
     )
-    plugin._last_bot_sent = {}
-    plugin._pending_round = {}
     plugin._proactive = SimpleNamespace()  # handle_post_send 不使用
-    return plugin, telemetry
+    return plugin, telemetry, store
 
 
 def _payload(stream_id: str = "s1") -> dict:
@@ -101,42 +109,42 @@ def test_outbound_hook_name_is_after_build_message():
 
 def test_rounds_paired_with_user_id():
     """入站 30 分钟内的出站应配对 1 轮，且记录里带 user_id（按用户拆轮次的前提）。"""
-    plugin, telemetry = _make_plugin()
+    plugin, telemetry, store = _make_plugin()
     baseline = plugin._local_now()
-    plugin._pending_round["s1"] = baseline - datetime.timedelta(minutes=1)
+    telemetry._pending_round["s1"] = baseline - datetime.timedelta(minutes=1)
 
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    rounds = [r for r in telemetry.records if r.scope == "rounds"]
+    rounds = [r for r in store.metric_rows if r.scope == "rounds"]
     assert len(rounds) == 1, f"应配对 1 轮，实际 {len(rounds)}"
     assert rounds[0].value == 1
     assert rounds[0].user_id == "u1", f"rounds 应带 user_id=u1，实际 {rounds[0].user_id!r}"
     # 配对后待办应被消费
-    assert "s1" not in plugin._pending_round
+    assert "s1" not in telemetry._pending_round
     # 出站时刻应更新 _last_bot_sent（指标 1 判定的依据）
-    assert "s1" in plugin._last_bot_sent
+    assert "s1" in telemetry._last_bot_sent
 
 
 def test_bot_msg_len_from_text_components():
     """bot_msg_len 应从 raw_message 的 text 组件提取（旧实现取不到会记出垃圾长度）。"""
-    plugin, telemetry = _make_plugin()
+    plugin, _telemetry, store = _make_plugin()
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    bot = [r for r in telemetry.records if r.scope == "bot_msg_len"]
+    bot = [r for r in store.metric_rows if r.scope == "bot_msg_len"]
     assert len(bot) == 1, f"应记录 1 条 bot_msg_len，实际 {len(bot)}"
     assert bot[0].value == 2.0, f"文本'对呀'长度应为 2，实际 {bot[0].value}"
 
 
 def test_round_window_expiry():
     """入站超过 30 分钟窗口才出站 → 不配对（防超窗污染）。"""
-    plugin, telemetry = _make_plugin()
+    plugin, telemetry, store = _make_plugin()
     baseline = plugin._local_now()
-    plugin._pending_round["s1"] = baseline - datetime.timedelta(minutes=40)
+    telemetry._pending_round["s1"] = baseline - datetime.timedelta(minutes=40)
 
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    assert not [r for r in telemetry.records if r.scope == "rounds"]
-    assert "s1" not in plugin._pending_round  # 超窗的待办同样被消费丢弃
+    assert not [r for r in store.metric_rows if r.scope == "rounds"]
+    assert "s1" not in telemetry._pending_round  # 超窗的待办同样被消费丢弃
 
 
 class _NoTouchEngine:
@@ -155,7 +163,7 @@ def test_injection_disabled_when_narrative_off():
     对照组窗口要求：剧本行为（注入/主动/创作/tick）全停，但入站/出站采样
     hook 不受影响（它们无本 gate）。mode 名单保留以维持采样。
     """
-    plugin, _telemetry = _make_plugin(narrative_enabled=False)
+    plugin, _telemetry, _store = _make_plugin(narrative_enabled=False)
     plugin._engine = _NoTouchEngine()
     plugin._store = _NoTouchEngine()
 
