@@ -13,9 +13,10 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 
 def _now_iso() -> str:
@@ -41,9 +42,25 @@ class NarrativeStore:
         connection.row_factory = sqlite3.Row
         return connection
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """独立连接 + 事务语义 + **用毕关闭**。
+
+        2026-09-13 体检发现：原先所有方法 ``with self._connect() as connection``
+        的写法只提交不关闭（sqlite3.Connection 上下文仅 commit/rollback），
+        连接依赖 GC 回收——Windows 上文件句柄不即时释放，narrative.db 会被
+        锁住（备份/复制失败）。统一走本入口：commit 语义不变，退出即关闭。
+        """
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _init_schema(self) -> None:
         """初始化表结构。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS kv (
@@ -86,7 +103,7 @@ class NarrativeStore:
 
     def get_kv(self, key: str) -> Optional[Dict[str, Any]]:
         """读取 JSON 化 kv 状态；不存在时返回 None。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT value FROM kv WHERE key = ?", (key,)
             ).fetchone()
@@ -100,7 +117,7 @@ class NarrativeStore:
 
     def set_kv(self, key: str, value: Dict[str, Any]) -> None:
         """写入 JSON 化 kv 状态。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO kv (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -109,7 +126,7 @@ class NarrativeStore:
 
     def get_kv_int(self, key: str, default: int = 0) -> int:
         """读取整数型 kv 计数。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT value FROM kv WHERE key = ?", (key,)
             ).fetchone()
@@ -122,7 +139,7 @@ class NarrativeStore:
 
     def set_kv_int(self, key: str, value: int) -> None:
         """写入整数型 kv 计数。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO kv (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -131,7 +148,7 @@ class NarrativeStore:
 
     def get_kv_str(self, key: str, default: str = "") -> str:
         """读取字符串型 kv 值（时间戳等，不再用 dict 包装）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT value FROM kv WHERE key = ?", (key,)
             ).fetchone()
@@ -141,7 +158,7 @@ class NarrativeStore:
 
     def set_kv_str(self, key: str, value: str) -> None:
         """写入字符串型 kv 值。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO kv (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -150,7 +167,7 @@ class NarrativeStore:
 
     def delete_keys_with_prefix(self, prefix: str) -> int:
         """删除 key 以指定前缀开头的全部记录（用于状态重置）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             cursor = connection.execute(
                 "DELETE FROM kv WHERE key LIKE ?",
                 (f"{prefix}%",),
@@ -170,7 +187,7 @@ class NarrativeStore:
         normalized_text = str(text or "").strip()
         if not normalized_text:
             return
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO chronicle (ts, scope, kind, text) VALUES (?, ?, ?, ?)",
                 (ts or _now_iso(), scope, kind, normalized_text),
@@ -178,7 +195,7 @@ class NarrativeStore:
 
     def recent_chronicle(self, scope: str, limit: int = 5) -> List[Dict[str, str]]:
         """读取指定作用域最近的编年史条目。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT ts, scope, kind, text FROM chronicle "
                 "WHERE scope = ? ORDER BY ts DESC LIMIT ?",
@@ -188,7 +205,7 @@ class NarrativeStore:
 
     def count_chronicle(self, scope: str) -> int:
         """统计指定作用域的编年史条目数。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS cnt FROM chronicle WHERE scope = ?",
                 (scope,),
@@ -203,7 +220,7 @@ class NarrativeStore:
         normalized = str(date or "").strip()
         if not normalized:
             return False
-        with self._connect() as connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT 1 FROM chronicle WHERE scope = ? AND kind = ? "
                 "AND ts LIKE ? LIMIT 1",
@@ -239,7 +256,7 @@ class NarrativeStore:
 
     def push_event(self, event: Dict[str, Any]) -> None:
         """入队一条事件（由头签发器的原料）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO events (ts, scope, kind, bysource, declared) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -254,7 +271,7 @@ class NarrativeStore:
 
     def list_events(self, scope: str, limit: int = 20) -> List[Dict[str, Any]]:
         """列出指定作用域的事件（新→旧）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT id, ts, scope, kind, bysource, declared FROM events "
                 "WHERE scope = ? ORDER BY ts DESC LIMIT ?",
@@ -264,12 +281,12 @@ class NarrativeStore:
 
     def clear_events(self, scope: str) -> None:
         """清空指定作用域的事件队列（已使用过的事件出队）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute("DELETE FROM events WHERE scope = ?", (scope,))
 
     def clear_events_before(self, scope: str, ts: str) -> None:
         """清理指定作用域早于 ts 的事件（事件队列有界）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute(
                 "DELETE FROM events WHERE scope = ? AND ts < ?",
                 (scope, ts),
@@ -277,7 +294,7 @@ class NarrativeStore:
 
     def clear_all_events(self) -> None:
         """清空全部事件队列（状态重置用）。"""
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute("DELETE FROM events")
 
     # ─── 每日快照 ───────────────────────────────────────────────
