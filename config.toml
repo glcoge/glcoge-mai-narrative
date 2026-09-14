@@ -44,7 +44,26 @@ silent_end = "08:00"
 random_minutes = [60, 240]
 daily_max = 2
 default_active_window = ["09:00-22:00"]
-user_active_windows = {}
+
+# 按用户窗口规则（覆盖默认窗口）：一条规则 = QQ 号 × 生效星期 × 时段
+#   星期记法（ISO）：1=周一 2=周二 3=周三 4=周四 5=周五 6=周六 7=周日
+#   某 QQ 只要有规则，就**只**按规则走，不再使用 default_active_window
+#   星期全部留空（days = []）= 对该用户永不主动
+#   同一 QQ 可写多条（工作日一条 + 周末一条），任一条命中即开口
+#   注意：仍受全局静默期 silent_start/end 约束（两者取交集）
+#
+# 例：工作日只在 20:20~次日 05:00 开口，周末 09:00~22:00 照常
+# [[proactive.user_window_rules]]
+# user_id = "3892809830"
+# days = ["1", "2", "3", "4", "5"]
+# start = "20:20"
+# end = "05:00"
+#
+# [[proactive.user_window_rules]]
+# user_id = "3892809830"
+# days = ["6", "7"]
+# start = "09:00"
+# end = "22:00"
 
 # ===== 模型路由（按模型名调用已注册模型，MaiBot ≥1.2.5） =====
 [llm]

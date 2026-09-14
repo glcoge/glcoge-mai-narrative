@@ -18,6 +18,9 @@ from .engine import parse_clock
 # 主动消息后 30 分钟内用户回复，记为"被接住"
 _PROACTIVE_REPLY_WINDOW_MINUTES = 30
 
+# ISO 星期取值：1=周一 … 7=周日（与 datetime.isoweekday() 对齐）
+_VALID_WEEKDAYS = frozenset({"1", "2", "3", "4", "5", "6", "7"})
+
 
 def parse_window(value: str) -> Optional[Tuple[datetime.time, datetime.time]]:
     """解析窗口字符串 ``HH:MM-HH:MM``；失败返回 None。"""
@@ -43,20 +46,68 @@ def in_silent(now: datetime.time, silent_start: str, silent_end: str) -> bool:
     return now >= start or now < end
 
 
+def _in_window(now: datetime.time, start: datetime.time, end: datetime.time) -> bool:
+    """单个区间判定，支持跨天（如 20:20-05:00）：右开区间。"""
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end
+
+
 def in_windows(now: datetime.time, windows: List[str]) -> bool:
-    """是否落在任一活跃窗口内。"""
+    """是否落在任一活跃窗口内（无星期维度，供 default_active_window 使用）。"""
     for window_text in windows:
         window = parse_window(window_text)
         if window is None:
             continue
-        start, end = window
-        if start <= end:
-            if start <= now < end:
-                return True
-        else:  # 跨天窗口（如 22:00-02:00）
-            if now >= start or now < end:
-                return True
+        if _in_window(now, window[0], window[1]):
+            return True
     return False
+
+
+def rule_matches_now(now: datetime.datetime, rule: Any) -> bool:
+    """按用户规则是否命中当前时刻：先判星期，再判时间窗（支持跨天）。
+
+    星期按**当前时刻**判定（2026-09-14 决策）：周五 20:20 起的窗口过了 24:00 即
+    失效，不再算作周五规则的延续——否则会污染"周末照常"这类需求。
+    ``days`` 为空 → 永不命中（配合"有规则即覆盖默认"实现"永不主动"，修复旧版
+    "空列表反而回退默认窗口"的反直觉行为）。
+    """
+    days = {str(day).strip() for day in (getattr(rule, "days", None) or [])}
+    if str(now.isoweekday()) not in days:
+        return False
+    window = parse_window(f"{getattr(rule, 'start', '')}-{getattr(rule, 'end', '')}")
+    if window is None:
+        return False
+    return _in_window(now.time(), window[0], window[1])
+
+
+def validate_rules(rules: Any) -> List[str]:
+    """校验按用户窗口规则，返回人可读的错误列表（空列表 = 全部合法）。
+
+    用于启动期 WARN：非法条目运行期会被跳过，但必须说清"哪一条、错在哪"——
+    静默失效是最贵的失败模式（参考 ``[llm].creation_task`` 教训）。
+    """
+    errors: List[str] = []
+    for index, rule in enumerate(rules or [], start=1):
+        user_id = str(getattr(rule, "user_id", "") or "").strip()
+        if not user_id.isdigit():
+            errors.append(f"第 {index} 条: QQ 号必须是纯数字（当前 {user_id!r}）")
+        bad_days = [
+            str(day).strip()
+            for day in (getattr(rule, "days", None) or [])
+            if str(day).strip() not in _VALID_WEEKDAYS
+        ]
+        if bad_days:
+            errors.append(
+                f"第 {index} 条: 星期取值非法 {bad_days}（只可填 1-7，1=周一、7=周日）"
+            )
+        start = str(getattr(rule, "start", "") or "").strip()
+        end = str(getattr(rule, "end", "") or "").strip()
+        if parse_window(f"{start}-{end}") is None:
+            errors.append(
+                f"第 {index} 条: 时刻非法（开始 {start!r} / 结束 {end!r}，应为 HH:MM）"
+            )
+    return errors
 
 
 class ProactiveScheduler:
@@ -139,8 +190,7 @@ class ProactiveScheduler:
                 self._next_fire.pop(user_id, None)
                 continue
 
-            windows = self._active_windows_for(user_id)
-            if not in_windows(now.time(), windows):
+            if not self._allowed_now(user_id, now):
                 self._next_fire.pop(user_id, None)
                 continue
 
@@ -245,13 +295,36 @@ class ProactiveScheduler:
             return values[0], values[1]
         return 60, 240
 
-    def _active_windows_for(self, user_id: str) -> List[str]:
-        """每用户活跃窗口：优先用户配置，否则默认窗口。"""
+    def _rules_for(self, user_id: str) -> List[Any]:
+        """该用户的窗口规则（可能为空 → 走默认窗口）。"""
         cfg = self._plugin.config
-        user_windows = (cfg.proactive.user_active_windows or {}).get(user_id)
-        if user_windows:
-            return list(user_windows)
-        return list(cfg.proactive.default_active_window or [])
+        uid = str(user_id).strip()
+        # getattr 兜底：热重载期间可能拿到尚未收敛到新字段的配置对象
+        rules = getattr(cfg.proactive, "user_window_rules", None) or []
+        return [
+            rule
+            for rule in rules
+            if str(getattr(rule, "user_id", "") or "").strip() == uid
+        ]
+
+    def _allowed_now(self, user_id: str, now: datetime.datetime) -> bool:
+        """当前时刻是否允许对该用户主动开口。
+
+        - 有按用户规则 → **完全覆盖**默认窗口，任一规则命中即可；全不命中就绝不打扰
+          （含"规则存在但 days 为空" = 永不主动）。
+        - 无规则 → 退回 ``default_active_window``（无星期维度）。
+        """
+        rules = self._rules_for(user_id)
+        if rules:
+            return any(rule_matches_now(now, rule) for rule in rules)
+        return in_windows(now.time(), self._plugin.config.proactive.default_active_window or [])
 
 
-__all__ = ["ProactiveScheduler", "in_silent", "in_windows", "parse_window"]
+__all__ = [
+    "ProactiveScheduler",
+    "in_silent",
+    "in_windows",
+    "parse_window",
+    "rule_matches_now",
+    "validate_rules",
+]

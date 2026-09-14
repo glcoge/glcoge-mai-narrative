@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, List
+from typing import ClassVar, List, Literal
 
 from maibot_sdk import Field, PluginConfigBase
 
@@ -208,6 +208,51 @@ class NarrativeSection(PluginConfigBase):
     )
 
 
+class UserWindowRule(PluginConfigBase):
+    """按用户活跃窗口规则：一个 QQ 号 × 若干星期几 × 一个时段。
+
+    为什么从 ``user_active_windows: dict`` 换成结构化列表：
+    裸 ``dict``（以及 ``dict[str, X]``）在 WebUI 插件配置页会落到 FieldRenderer 的
+    default 分支 → 单行输入框渲染成 ``[object Object]``，**无法编辑**。
+    ``List[PluginConfigBase 子类]`` 则会被 SDK 展开成带标签的卡片行（可增删），
+    彻底消灭引号/冒号/括号/分隔符的手写语法。
+    """
+
+    user_id: str = Field(
+        default="",
+        description="QQ 号（纯数字）。留空或非法则该条永不命中。",
+        json_schema_extra={
+            "label": "QQ 号",
+            "hint": "纯数字，例 3892809830",
+            "placeholder": "3892809830",
+            "order": 1,
+        },
+    )
+    days: List[Literal["1", "2", "3", "4", "5", "6", "7"]] = Field(
+        default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7"],
+        description="生效星期（ISO 记法：1=周一 … 7=周日）。全部取消勾选 = 永不主动。",
+        json_schema_extra={
+            "label": "生效星期",
+            "hint": "1=周一、2=周二 … 7=周日；可多选",
+            "order": 2,
+        },
+    )
+    start: str = Field(
+        default="09:00",
+        description="开始时刻（HH:MM）。",
+        json_schema_extra={"label": "开始时刻", "hint": "HH:MM，例 20:20", "order": 3},
+    )
+    end: str = Field(
+        default="22:00",
+        description="结束时刻（HH:MM）。支持跨天（如 20:20-05:00）。",
+        json_schema_extra={
+            "label": "结束时刻",
+            "hint": "HH:MM；跨天例：开始 20:20 / 结束 05:00",
+            "order": 4,
+        },
+    )
+
+
 class ProactiveSection(PluginConfigBase):
     """主动消息调度设置（事件驱动 + 活跃窗口 + 随机计时 + 静默时段）。"""
 
@@ -257,12 +302,17 @@ class ProactiveSection(PluginConfigBase):
             "order": 6,
         },
     )
-    user_active_windows: dict = Field(
-        default_factory=dict,
-        description="按用户覆盖活跃窗口。key=QQ 号，value=窗口列表。",
+    user_window_rules: List[UserWindowRule] = Field(
+        default_factory=list,
+        description=(
+            "按用户窗口规则（覆盖默认窗口）。一条规则 = QQ 号 × 生效星期 × 时段；"
+            "同一 QQ 可配多条（如工作日一条、周末一条）。"
+            "某 QQ 只要有规则，就**只**按规则走，不再使用默认活跃窗口；"
+            "星期全不勾选 = 对该用户永不主动。"
+        ),
         json_schema_extra={
-            "label": "按用户窗口",
-            "hint": '例 {"10001": ["10:00-23:00"]}',
+            "label": "按用户窗口规则",
+            "hint": "一条一行：QQ 号 / 生效星期(1=周一…7=周日) / 开始 / 结束",
             "order": 7,
         },
     )
@@ -333,12 +383,17 @@ class CreatorModelSection(PluginConfigBase):
     )
     api_key: str = Field(
         default="",
-        description="API Key（明文存插件配置，与 MaiBot model_config.toml 现状一致）。",
+        description=(
+            "API Key（明文存插件配置，与 MaiBot model_config.toml 现状一致；"
+            "x-widget=password 只在 WebUI 上打码显示，不加密 config.toml）。"
+        ),
         json_schema_extra={
             "label": "API Key",
             "hint": "Bearer 令牌；留空则不发 Authorization 头",
             "placeholder": "sk-…",
-            "password": True,
+            # 旧写法 "password": True 是死元数据（前端 FieldRenderer 不读它），
+            # 真正生效的是 x-widget → ui_type
+            "x-widget": "password",
             "order": 3,
         },
     )
@@ -390,6 +445,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
 
 
 __all__ = [
+    "UserWindowRule",
     "PluginSection",
     "IdentitySection",
     "NarrativeSection",

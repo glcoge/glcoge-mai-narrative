@@ -44,6 +44,7 @@ from .services import (
     is_injected_item,
 )
 from .services.engine import local_now
+from .services.proactive import validate_rules
 from .services.message import (
     extract_user_id,
     is_private_chat,
@@ -96,6 +97,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled:
             self.ctx.logger.info("mai-narrative 已禁用（plugin.enabled=false），仅保留命令")
         self._warn_deprecated_config_keys()
+        self._warn_window_rule_problems()
         data_dir = self.ctx.paths.data_dir / "narrative"
         self._store = NarrativeStore(data_dir)
         self._telemetry = Telemetry(self)
@@ -135,6 +137,24 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "请改用 [llm].creation_model（填已注册模型名，详见 README「创作模型路由」）。",
                 llm_raw["creation_task"],
             )
+        proactive_raw = raw_config.get("proactive")
+        if isinstance(proactive_raw, dict) and proactive_raw.get("user_active_windows"):
+            self.ctx.logger.warning(
+                "检测到已废弃配置键 [proactive].user_active_windows（dict 形态在 WebUI 显示为 "
+                "[object Object] 且无法编辑，已不再生效，会退化为默认窗口）。"
+                "请改用 [proactive].user_window_rules（数组，字段 user_id/days/start/end）。"
+            )
+
+    def _warn_window_rule_problems(self) -> None:
+        """启动期校验按用户窗口规则：非法条目运行期会被静默跳过，必须提前点名。
+
+        与 ``_warn_deprecated_config_keys`` 同源纪律（参考 ``[llm].creation_task``
+        教训）：静默失效是最贵的失败模式——用户以为配了免打扰，实际一条都没生效。
+        """
+        for problem in validate_rules(self.config.proactive.user_window_rules):
+            self.ctx.logger.warning(
+                "[proactive].user_window_rules 配置有误 → %s（该条运行期将被跳过）", problem
+            )
 
     def _plugin_version(self) -> str:
         """从插件自带的 _manifest.json 读版本号（加载日志不再写死版本漂移文案）。"""
@@ -171,6 +191,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
             "mai-narrative 配置更新: scope=%s version=%s（任务按新配置重排）",
             scope, version,
         )
+        # 窗口规则改完立刻生效（调度器每 30s 重读），非法条目必须当场点名
+        self._warn_window_rule_problems()
         await self._reconcile_all()
 
     async def _watchdog_loop(self) -> None:
