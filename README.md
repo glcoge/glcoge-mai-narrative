@@ -47,7 +47,8 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 **路线 A：按模型名路由（默认，推荐）** —— `[llm] creation_model` 填一个**已在主程序注册的模型名**（WebUI 模型列表可查看复制），只填模型名、**无需把模型分配给任何任务**（MaiBot ≥1.2.5 修复 #2031 后支持按名调用，模型名查全局列表）。留空则用主程序默认模型。
 
 - 推理模型关思考：直接在该模型的 `extra_params` 配 `{thinking = {type = "disabled"}}`（WebUI 模型编辑页可配），插件侧零改动。
-- 配置名写错不会静默：调用失败日志会明确报 `未找到名为 'X' 的模型`；`/narrative status` 会列出可用模型与当前路线。
+- 配置名写错不会静默：调用失败日志会明确报 `未找到名为 'X' 的模型`，并附 `[llm].creation_model` 的值与"去 WebUI 模型列表核对该名称是否已注册"的提示。
+- ⚠ `/narrative status` 末尾那行是**宿主可用任务名**（`utils`/`planner`/`replyer`/…），**不是模型名**——宿主未向插件开放"已注册模型名"查询能力（`llm.get_available_models()` 返回的是任务列表）。模型名一律去 WebUI「模型列表」复制。
 
 **路线 B：插件直连**（`[creator_model]` 段）—— 需要独立供应商 / 独立 api_key / 独立额度时才用：插件自己 POST 到 OpenAI 兼容端点，**body 固定携带 `thinking={type:"disabled"}`**：
 

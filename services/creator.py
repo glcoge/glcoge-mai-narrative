@@ -20,6 +20,8 @@ class CreatorClient:
 
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
+        # 按名路由提示只打一次（见 _log_route_hint_once）
+        self._route_hint_logged = False
 
     async def generate(self, prompt: str) -> str:
         """生成一段文本；失败返回空串（当前是唯一常规 LLM 调用点）。
@@ -94,7 +96,7 @@ class CreatorClient:
         model_name = str(cfg.llm.creation_model or "").strip()
         payload_kwargs: dict[str, Any] = {"task_name": "utils"}
         if model_name:
-            await self._warn_if_model_unknown(model_name)
+            self._log_route_hint_once(model_name)
             payload_kwargs["model_name"] = model_name
         else:
             self._plugin.ctx.logger.info(
@@ -112,29 +114,32 @@ class CreatorClient:
                 timeout=30,
             )
         except Exception as exc:
-            self._plugin.ctx.logger.warning("创作模型调用失败: %s", exc)
+            self._plugin.ctx.logger.warning(
+                "创作模型调用失败: %s（[llm].creation_model=%r，请去 WebUI「模型列表」"
+                "核对该模型名是否已注册且拼写一致）",
+                exc,
+                model_name,
+            )
             return ""
         if isinstance(result, dict):
             return str(result.get("response") or result.get("content") or "").strip()
         return ""
 
-    async def _warn_if_model_unknown(self, model_name: str) -> None:
-        """配置的模型名不在已注册列表时告警（附可用列表）；查询失败不阻塞调用。"""
-        try:
-            available = await self._plugin.ctx.llm.get_available_models()
-        except Exception as exc:
-            self._plugin.ctx.logger.debug("获取可用模型列表失败: %s", exc)
+    def _log_route_hint_once(self, model_name: str) -> None:
+        """按名路由首次生效时打一条说明（每个进程一次，避免刷屏）。
+
+        不做预校验的原因：宿主 ``ctx.llm.get_available_models()`` 返回的是**任务名**
+        （utils/planner/…）而不是注册模型名，拿它比对模型名必然 100% 误报。
+        模型名是否有误只能等主程序在调用时报错（"未找到名为 'X' 的模型"）。
+        """
+        if self._route_hint_logged:
             return
-        names = [str(item) for item in (available or [])]
-        if model_name not in names:
-            preview = ", ".join(names[:8]) or "（空）"
-            self._plugin.ctx.logger.warning(
-                "创作模型 %r 不在已注册模型列表中（可用: %s%s），调用将失败；"
-                "请核对 WebUI 模型列表中的名称",
-                model_name,
-                preview,
-                "…" if len(names) > 8 else "",
-            )
+        self._route_hint_logged = True
+        self._plugin.ctx.logger.info(
+            "创作模型按名路由: %s（宿主未开放已注册模型名列表，无法预先校验；"
+            "名称有误会在调用时报错）",
+            model_name,
+        )
 
 
 __all__ = ["CreatorClient"]

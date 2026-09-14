@@ -8,6 +8,13 @@
 
 直连路线（[creator_model]）保持不变：独立供应商/独立额度场景仍需它。
 
+⚠ 2026-09-14 修正（宿主能力语义澄清）：``ctx.llm.get_available_models()`` 返回的
+**不是注册模型名，而是任务名**（链路：plugin_runtime/capabilities/core.py:755 →
+services/service_task_resolver.py:12 返回 ``model_task_config`` 的 TaskConfig 键）。
+因此"用任务列表校验模型名"必然 100% 误报——原 ``_warn_if_model_unknown`` 对任何
+合法模型名都会打 WARN 并谎称"调用将失败"。改为**事后诊断**：不再预检，
+调用失败时日志带模型名 + 排查指引（真拼错时主程序会报"未找到名为 'X' 的模型"）。
+
 运行（项目根）：
 
     .venv/Scripts/python.exe -m pytest plugins/glcoge-mai-narrative/pytests/test_creator_route.py -q
@@ -102,6 +109,8 @@ def _make_client(
     plugin._telemetry = telemetry
     client = CreatorClient(plugin)
     handler = _ListHandler()
+    # 路由提示是 info 级，默认 root 级别 WARNING 会吞掉 → 显式放行 DEBUG
+    plugin.ctx.logger.setLevel(_stdlib_logging.DEBUG)
     plugin.ctx.logger.addHandler(handler)
     return client, plugin.ctx.llm, handler, telemetry
 
@@ -144,7 +153,9 @@ def test_model_name_route_payload():
     assert "model" not in call, "不得再用旧式 model= 传任务名"
     assert call.get("temperature") == 0.9
     assert call.get("max_tokens") == 256
-    assert llm.availability_queries == 1, "应校验模型名是否已注册"
+    assert llm.availability_queries == 0, (
+        "宿主只提供任务名列表，无法校验模型名 → 不应再查询 get_available_models"
+    )
 
 
 def test_empty_creation_model_uses_default():
@@ -181,19 +192,37 @@ def test_generate_records_token_cost():
     assert tokens >= 1, "token 估算至少为 1"
 
 
-def test_unknown_model_name_warns_but_still_calls():
-    """配置的模型名不在已注册列表 → 告警（含可用列表），但仍尝试调用。"""
+def test_model_route_hint_logged_once():
+    """按名路由生效 → 首次打一条 info（说明无法预校验），且**不重复刷屏**。
+
+    背景：宿主 ``get_available_models()`` 只给任务名，无法校验模型名（见模块 docstring）。
+    """
     client, llm, handler, _telemetry = _make_client(
-        creation_model="typo-model", available=["model-a", "model-b"]
+        creation_model="my-model", available=["utils", "planner"]
+    )
+
+    asyncio.run(client.generate("提示1"))
+    asyncio.run(client.generate("提示2"))
+
+    hints = [m for m in handler.messages if "按名路由" in m]
+    assert len(hints) == 1, f"路由提示应只打一次，实际: {handler.messages}"
+    assert "my-model" in hints[0], "提示应含实际使用的模型名"
+    assert llm.availability_queries == 0, "不应查询任务列表做预校验"
+
+
+def test_model_call_failure_logs_model_name():
+    """调用失败 → warning 带模型名 + 排查指引（宿主不预检，只能事后诊断）。"""
+    client, _llm, handler, _telemetry = _make_client(
+        creation_model="typo-model",
+        raise_on_generate=RuntimeError("未找到名为 'typo-model' 的模型"),
     )
     result = asyncio.run(client.generate("提示"))
 
-    assert result == "生成结果", "告警不应阻断调用（模型可能是刚注册的）"
-    assert llm.availability_queries == 1
-    assert any("不在已注册模型列表" in msg for msg in handler.messages), (
-        f"应输出'模型未注册'告警，实际日志: {handler.messages}"
-    )
-    assert any("model-a" in msg for msg in handler.messages), "告警应附可用模型列表"
+    assert result == "", "失败应返回空串不抛（创作是附加动作）"
+    warnings = [m for m in handler.messages if "创作模型调用失败" in m]
+    assert len(warnings) == 1, f"应有一条失败告警，实际: {handler.messages}"
+    assert "typo-model" in warnings[0], "失败日志应带出模型名，便于核对"
+    assert "WebUI" in warnings[0], "失败日志应给出排查指引（去 WebUI 模型列表核对）"
 
 
 # ===== 独立运行入口 =====

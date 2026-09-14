@@ -52,6 +52,27 @@ from .services.message import (
 )
 from .services.store import NarrativeStore
 
+# status 中可用列表的展示上限（超出截断，避免刷屏）
+_AVAILABLE_SHOW_LIMIT = 10
+
+
+def format_available_tasks_line(names: Optional[List[str]]) -> str:
+    """把宿主 ``llm.get_available_models()`` 的结果格式化为 status 展示行；空则空串。
+
+    ⚠ 宿主该能力返回的是**任务名**（utils/planner/replyer/…）而非注册模型名：
+    ``plugin_runtime/capabilities/core.py`` → ``services/service_task_resolver.py``
+    返回的是 ``model_task_config`` 的 TaskConfig 键。原先标成"可用模型"，用户会照抄
+    任务名去填 ``[llm].creation_model``；故如实标注为「可用任务」并指引去 WebUI 查模型名。
+    """
+    items = [str(item).strip() for item in (names or [])]
+    items = [item for item in items if item]
+    if not items:
+        return ""
+    shown = ", ".join(items[:_AVAILABLE_SHOW_LIMIT])
+    if len(items) > _AVAILABLE_SHOW_LIMIT:
+        shown += "…"
+    return f"可用任务（非模型名）: {shown}｜creation_model 请填 WebUI「模型列表」中的模型名"
+
 
 class MaiNarrativePlugin(MaiBotPlugin):
     """剧本人设系统主插件。"""
@@ -474,15 +495,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
             count = self._store.get_kv_int(f"proactive:count:{uid}:{today}")
             lines.append(f"今日主动[{uid}]: {count}")
         lines.append(f"数据目录: {self.ctx.paths.data_dir / 'narrative'}")
-        # 可用模型列表（供 [llm].creation_model 按名路由填写参考）；失败不影响 status
+        # 宿主只开放「任务名」列表（非模型名），仅作连通性参考；失败不影响 status
         try:
-            available_models = await self.ctx.llm.get_available_models()
-            names = [str(item) for item in (available_models or [])]
-            if names:
-                shown = ", ".join(names[:10]) + ("…" if len(names) > 10 else "")
-                lines.append(f"可用模型: {shown}")
+            available = await self.ctx.llm.get_available_models()
+            line = format_available_tasks_line([str(item) for item in (available or [])])
+            if line:
+                lines.append(line)
         except Exception as exc:
-            self.ctx.logger.debug("获取可用模型列表失败: %s", exc)
+            self.ctx.logger.debug("获取可用任务列表失败: %s", exc)
         await self.ctx.send.text("\n".join(lines), stream_id)
 
     async def _cmd_reset(self, param: str, stream_id: str) -> None:
