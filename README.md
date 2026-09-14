@@ -66,6 +66,19 @@ v0.1 最小切片：**单人单私聊"剧本模式"**（先只让你的 QQ 参�
 - API Key 明文存插件配置（与 model_config.toml 现状一致）；如需更安全可后续改环境变量引用。
 - 历史备注：v0.1.3~v0.1.4 的回退路线是 `[llm] creation_task`（task 名路由），因 #2031（model_name 被吞入任务名解析）只能按 task 复用；#2031 已随 MaiBot 1.2.5 修复（维护者提交 `008019c2`），v0.1.5 起改为按模型名路由，`creation_task` 字段废弃。
 
+## 精力规则（v0.1.5 起：基线回归，可调）
+
+v0.1.5 重写了世界时钟的精力规则（修复无互动日 mood 贴地 0.05 卡死）：不再每 tick 无条件衰减，改为**向基线双向回归**——低于基线回升、高于基线回落，另加深夜睡眠恢复与互动提振。`[narrative]` 段四参数可调（旧 config.toml 缺字段自动走默认值，兼容）：
+
+| 参数 | 默认 | 语义 |
+|---|---|---|
+| `energy_baseline` | 0.45 | 精力基线：无互动时每 tick 向该值回归（双向） |
+| `energy_baseline_pull` | 0.3 | 基线回归系数；**0 = 老版单调衰减行为**（A/B 回退开关） |
+| `energy_sleep_recovery` | 0.1 | 深夜（23:00-05:00）每 tick 额外恢复量；深夜平衡点 ≈ 基线 + 恢复量/pull ≈ 0.78（轻快档下沿），早晨自然满状态 |
+| `energy_interaction_boost` | 0.12 | 近 2 小时内有互动时每 tick 额外提振量 |
+
+纯规则零 LLM，调参只影响生活状态呈现与注入文案；调参后观察 `/narrative status` 与指标 4（状态多样性）再定。
+
 ## 数据目录
 
 `data/plugins/glcoge.mai-narrative/narrative/`
