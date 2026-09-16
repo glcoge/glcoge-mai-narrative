@@ -18,10 +18,10 @@ enabled = false
 # v0.1 最小切片：只填你自己的 QQ 号（私聊剧本模式）
 mode_user_ids = []
 mode_stream_ids = []
+# 世界时钟 tick 间隔（分钟）。⚠️ 有效值 30-240，小于 30 会按 30 计
 clock_tick_minutes = 30
+# 时区偏移（UTC+）。⚠️ 服务器系统时区为 UTC 时本项无效，请直接改服务器系统时区
 timezone_offset_hours = 8
-event_max_daily = 6
-event_max_per_user_daily = 3
 chronicle_enabled = true
 daily_chronicle_time = "23:30"
 # 精力规则（v0.1.5）：修复无互动日 mood 贴地卡死；A/B 期间可调

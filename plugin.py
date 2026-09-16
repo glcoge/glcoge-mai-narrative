@@ -144,6 +144,20 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "[object Object] 且无法编辑，已不再生效，会退化为默认窗口）。"
                 "请改用 [proactive].user_window_rules（数组，字段 user_id/days/start/end）。"
             )
+        # 用键存在性而非真值判断：这两个字段的合法取值包含 0
+        narrative_raw = raw_config.get("narrative")
+        if isinstance(narrative_raw, dict):
+            stale = [
+                key
+                for key in ("event_max_daily", "event_max_per_user_daily")
+                if key in narrative_raw
+            ]
+            if stale:
+                self.ctx.logger.warning(
+                    "检测到已移除的配置键 %s（代码从未读取过，事件队列靠 3 天过期兜底，"
+                    "并非靠它们限流）。残留值不再生效，可从 config.toml 删除。",
+                    "、".join(f"[narrative].{key}" for key in stale),
+                )
 
     def _warn_window_rule_problems(self) -> None:
         """启动期校验按用户窗口规则：非法条目运行期会被静默跳过，必须提前点名。
@@ -401,6 +415,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
     )
     async def block_expression_select(self, **kwargs: Any) -> Dict[str, Any]:
         """剧本模式会话直接 abort，让表达选择整体跳过。"""
+        # 隔离是"剧本模式"专属行为：任一开关关闭时放行（continue，不是 abort）。
+        # 2026-09-16 前无此判断，插件/剧本关闭期间仍会 abort 表达选择。
+        cfg = self.config
+        if not (cfg.plugin.enabled and cfg.narrative.enabled):
+            return {"action": "continue", "modified_kwargs": kwargs}
         session_id = str(kwargs.get("session_id") or "")
         if self._is_mode_session(session_id):
             return {"action": "abort", "modified_kwargs": kwargs}
@@ -416,6 +435,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
     )
     async def block_expression_upsert(self, **kwargs: Any) -> Dict[str, Any]:
         """剧本模式会话 abort 单条写入。"""
+        # 同 block_expression_select：任一开关关闭即放行，交还给主程序处理
+        cfg = self.config
+        if not (cfg.plugin.enabled and cfg.narrative.enabled):
+            return {"action": "continue", "modified_kwargs": kwargs}
         session_id = str(kwargs.get("session_id") or "")
         if self._is_mode_session(session_id):
             return {"action": "abort", "modified_kwargs": kwargs}

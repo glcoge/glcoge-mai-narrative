@@ -280,6 +280,12 @@ class NarrativeEngine:
             await self.maybe_generate_life_fragment(current)
         except Exception as exc:
             self._plugin.ctx.logger.error("生活片段生成异常: %s", exc, exc_info=True)
+        # 每日编年史压缩（2026-09-16 接线；此前是死代码，从未被调用）
+        # 同样包 try/except：创作层异常不得影响规则 tick
+        try:
+            await self.maybe_daily_chronicle(current)
+        except Exception as exc:
+            self._plugin.ctx.logger.error("编年史压缩异常: %s", exc, exc_info=True)
 
     def _apply_state_rules(self, state: Dict[str, Any], now: datetime) -> None:
         """纯规则：精力衰减/回升、心情映射、作息阶段、日程到点。"""
@@ -367,6 +373,11 @@ class NarrativeEngine:
 
     def record_branch_feedback(self, user_id: str, now: datetime) -> None:
         """支线层反馈：信任/熟悉度小步增长；里程碑只进不退。"""
+        # 与紧邻的 record_interaction 保持一致：任一开关关闭即不再推进关系值。
+        # （此前本函数无 gate，剧本关闭期间关系值/里程碑仍在涨）
+        cfg = self._plugin.config
+        if not cfg.plugin.enabled or not cfg.narrative.enabled:
+            return
         branch = self.load_branch_state(user_id)
         inner = branch["state"]
         inner["last_interaction_ts"] = now.isoformat(timespec="seconds")
@@ -445,7 +456,13 @@ class NarrativeEngine:
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
 
     async def maybe_daily_chronicle(self, now: Optional[datetime] = None) -> None:
-        """当日有互动时，用轻量模型生成一条"今日小结"写入编年史。"""
+        """当日有互动时，用轻量模型生成一条"今日小结"写入编年史（kind=daily）。
+
+        日期归属（2026-09-16 接线时修正）：目标日期 = **触发点所属的那一天**。
+        旧写法是 ``current.time() < trigger → return``，但 tick 间隔 30 分钟，
+        若错过 ``[trigger, 24:00)`` 窗口（典型：23:30 触发、tick 落在 00:00），
+        判定就会一直不成立 → **功能永不执行**。故过了午夜要能补写昨天。
+        """
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             return
@@ -456,33 +473,40 @@ class NarrativeEngine:
             return
 
         current = now or self._local_now()
+        target_date = current.date()
         if current.time() < trigger:
-            return
-        today = current.strftime("%Y-%m-%d")
-        if self._store.get_kv_int(f"chronicle:done:{today}") > 0:
+            target_date = target_date - timedelta(days=1)
+        date_text = target_date.strftime("%Y-%m-%d")
+
+        # 幂等统一走 store 的标准键。旧代码手写的 ``chronicle:done:{today}``
+        # 与 is_chronicle_done 用的 ``chronicle:{scope}:{kind}:{date}`` 是两套并存。
+        if self._store.is_chronicle_done(_SELF_SCOPE, "daily", date_text):
             return
 
         state = self.load_self_state()
-        if state["state"].get("last_talk_date") != today:
-            return  # 今天没说过话，不写
+        if state["state"].get("last_talk_date") != date_text:
+            return  # 那天没说过话，不写
 
         materials: List[str] = []
         for user_id in (cfg.narrative.mode_user_ids or []):
             for item in self._store.list_events(f"branch:{user_id}", limit=50):
-                if str(item.get("ts", "")).startswith(today):
+                if str(item.get("ts", "")).startswith(date_text):
                     materials.append(str(item.get("bysource", "")))
 
         persona = await self._load_native_personality()
-
-        prompt = self._build_chronicle_prompt(current, state, materials, persona=persona)
+        # prompt 里的日期取自入参 now，故传目标日期而非当前时刻
+        target_dt = datetime.combine(target_date, trigger)
+        prompt = self._build_chronicle_prompt(target_dt, state, materials, persona=persona)
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("编年史 prompt: %s", prompt[:300])
 
         text = await self._creator.generate(prompt)
         if text:
-            self._store.append_chronicle(_SELF_SCOPE, "daily", text, current.isoformat(timespec="seconds"))
-            self._plugin.ctx.logger.info("编年史今日小结已写入: %s", today)
-        self._store.set_kv_int(f"chronicle:done:{today}", 1)
+            self._store.append_chronicle(
+                _SELF_SCOPE, "daily", text, target_dt.isoformat(timespec="seconds")
+            )
+            self._plugin.ctx.logger.info("编年史今日小结已写入: %s", date_text)
+        self._store.mark_chronicle_done(_SELF_SCOPE, "daily", date_text)
 
     async def _load_native_personality(self) -> str:
         """读取主程序原生 [personality].personality（人设唯一来源，失败降级为空串）。"""
@@ -554,9 +578,13 @@ class NarrativeEngine:
         pending.append({"ts": current.isoformat(timespec="seconds"), "text": text})
         focus["pending_events"] = pending[-5:]
         self.save_self_state(state)
-        self._store.append_chronicle(
-            _SELF_SCOPE, "life", text, current.isoformat(timespec="seconds")
-        )
+        # 生活片段照常生成（pending_events 是主动消息的由头来源，不能断），
+        # 仅"写入编年史"这一步受 chronicle_enabled 约束（2026-09-16：
+        # 此前该开关管不到 life，名不副实）
+        if cfg.narrative.chronicle_enabled:
+            self._store.append_chronicle(
+                _SELF_SCOPE, "life", text, current.isoformat(timespec="seconds")
+            )
 
         # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
         self._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))

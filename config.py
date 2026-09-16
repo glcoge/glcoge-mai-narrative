@@ -138,20 +138,9 @@ class NarrativeSection(PluginConfigBase):
             "order": 5,
         },
     )
-    event_max_daily: int = Field(
-        default=6,
-        ge=0,
-        le=50,
-        description="每日事件队列上限（全局），防止事件刷屏。",
-        json_schema_extra={"label": "每日事件上限", "hint": "0-50", "order": 5},
-    )
-    event_max_per_user_daily: int = Field(
-        default=3,
-        ge=0,
-        le=20,
-        description="每用户每日事件上限。",
-        json_schema_extra={"label": "每用户事件上限", "hint": "0-20", "order": 6},
-    )
+    # 2026-09-16 移除 event_max_daily / event_max_per_user_daily：
+    # 全仓从未读取过（push_event 无限入队），文案却承诺"防止事件刷屏"。
+    # 事件队列实际靠 _dequeue_expired_branch_events 的 3 天过期兜底。
     chronicle_enabled: bool = Field(
         default=True,
         description="编年史总开关（append-only 散文日记，供对话注入与日记插件握手）。",
