@@ -2,7 +2,9 @@
 
 设计共识（grill-me 会话）：
 - 锚定层（identity）由用户手动配置，运行时只读 —— 对应设计树 R4.1"锚定层"。
-- 分级路由复用 MaiBot 内部 task（replyer/planner/learner/utils）—— 对应 R5。
+- 创作模型按**已注册模型名**路由（`[llm].creation_model`），或走 `[creator_model]`
+  直连 —— 对应 R5。注：宿主 `ctx.llm.generate(model=...)` 现在只认模型名，
+  不认 task 名（2026-09-15 真机证实）。
 - v0.1 最小切片：单人单私聊"剧本模式"。
 """
 
@@ -22,11 +24,15 @@ class PluginSection(PluginConfigBase):
 
     enabled: bool = Field(
         default=False,
-        description="是否启用插件。关闭后所有剧本行为（注入/主动/隔离）都不生效。",
+        description=(
+            "是否启用插件。关闭后停止：对话注入、主动消息、创作层、世界时钟 tick、"
+            "表达学习隔离、支线关系值推进。⚠️ 这是插件自设的软开关，false 时插件仍会"
+            "加载、hook 仍会触发，只是各入口自查后跳过；要彻底不加载请在 WebUI 禁用插件。"
+        ),
         json_schema_extra={"label": "启用插件", "order": 1},
     )
     config_version: str = Field(
-        default="0.1.2",
+        default="0.1.3",
         description="配置文件版本号，由 SDK 自动维护。",
         json_schema_extra={"label": "配置版本", "disabled": True, "order": 2},
     )
@@ -64,20 +70,20 @@ class IdentitySection(PluginConfigBase):
     )
     values: List[str] = Field(
         default_factory=list,
-        description="价值观底线：任何话题都必须遵守，不可更改。",
+        description="价值观底线：注入对话时遵守。⚠️ 渲染时只取前 5 条，超出部分不注入。",
         json_schema_extra={
             "label": "价值观底线",
-            "hint": '例 ["不撒谎","尊重每个玩家"]',
+            "hint": '例 ["不撒谎","尊重每个玩家"]；注入时只取前 5 条',
             "item_type": "string",
             "order": 2,
         },
     )
     world_rules: List[str] = Field(
         default_factory=list,
-        description="世界观规则/禁忌：世界内不可打破的设定。",
+        description="世界观规则/禁忌：世界内不可打破的设定。⚠️ 渲染时只取前 5 条。",
         json_schema_extra={
             "label": "世界观规则",
-            "hint": '例 ["这个世界没有魔法","本市没有第 13 区"]',
+            "hint": '例 ["这个世界没有魔法","本市没有第 13 区"]；注入时只取前 5 条',
             "item_type": "string",
             "order": 3,
         },
@@ -93,7 +99,11 @@ class NarrativeSection(PluginConfigBase):
 
     enabled: bool = Field(
         default=False,
-        description="剧本模式总开关。关闭时插件完全无副作用（仅命令可用）。",
+        description=(
+            "剧本模式总开关。关闭后停止：对话注入、主动消息、创作层、世界时钟 tick、"
+            "表达学习隔离、支线关系值推进。⚠️ 遥测采样仍继续（A/B 对照需要），"
+            "命令仍可用。"
+        ),
         json_schema_extra={"label": "剧本模式", "order": 1},
     )
     mode_user_ids: List[str] = Field(
@@ -122,7 +132,12 @@ class NarrativeSection(PluginConfigBase):
         ge=5,
         le=240,
         description="世界时钟 tick 间隔（分钟）。规则驱动，默认免 LLM。",
-        json_schema_extra={"label": "时钟 tick 间隔", "hint": "分钟；5-240", "order": 4},
+        json_schema_extra={
+            "label": "时钟 tick 间隔",
+            # 代码里有硬下限：engine.py 用 max(30, ...) 兜底，填 5~29 会静默按 30 跑
+            "hint": "分钟；有效 30-240（小于 30 会按 30 计）",
+            "order": 4,
+        },
     )
     timezone_offset_hours: int = Field(
         default=8,
@@ -130,11 +145,12 @@ class NarrativeSection(PluginConfigBase):
         le=14,
         description=(
             "剧本时区偏移（小时，UTC+）。影响作息阶段/注入时间/主动窗口/编年史日期。"
-            "服务器时区与本地不一致时必须配置正确，否则作息会错位。"
+            "⚠️ 仅当服务器系统时区既非 UTC、又与剧本时区不一致时才真正生效；"
+            "服务器为 UTC 时本项**无效**（引擎直接信墙钟），请直接改服务器系统时区。"
         ),
         json_schema_extra={
             "label": "时区偏移",
-            "hint": "例：UTC+8=8、UTC-5=-5",
+            "hint": "例：UTC+8=8、UTC-5=-5；⚠️ 服务器为 UTC 时不生效",
             "order": 5,
         },
     )
@@ -143,7 +159,11 @@ class NarrativeSection(PluginConfigBase):
     # 事件队列实际靠 _dequeue_expired_branch_events 的 3 天过期兜底。
     chronicle_enabled: bool = Field(
         default=True,
-        description="编年史总开关（append-only 散文日记，供对话注入与日记插件握手）。",
+        description=(
+            "编年史总开关（append-only 散文日记，供对话注入与日记插件握手）。"
+            "关闭后三种写入全部停止：生活片段(life)、每日小结(daily)、日记握手(diary)。"
+            "生活片段本身仍会照常生成（它是主动消息的由头来源）。"
+        ),
         json_schema_extra={"label": "编年史", "order": 7},
     )
     # ── 精力规则参数（v0.1.5：修复无互动日 mood 贴地卡死，A/B 可调） ──
@@ -158,8 +178,12 @@ class NarrativeSection(PluginConfigBase):
         default=0.3,
         ge=0.0,
         le=1.0,
-        description="基线回归系数：每 tick 向基线靠拢的比例（0=老版单调衰减行为，越大回摆越快）。",
-        json_schema_extra={"label": "基线回归系数", "hint": "0-1；默认 0.3", "order": 9},
+        description=(
+            "基线回归系数：每 tick 向基线靠拢的比例，越大回摆越快。"
+            "0 = 关闭基线回归（精力不再向基线回落，只升不降）。"
+            "⚠️ 不是「老版单调衰减」—— 旧版已废弃，0 现在是冻结语义。"
+        ),
+        json_schema_extra={"label": "基线回归系数", "hint": "0-1；0=冻结精力，默认 0.3", "order": 9},
     )
     energy_sleep_recovery: float = Field(
         default=0.1,
@@ -178,22 +202,39 @@ class NarrativeSection(PluginConfigBase):
     )
     daily_chronicle_time: str = Field(
         default="23:30",
-        description="每日编年史压缩触发时间（HH:MM）。当日有互动时用轻量模型写一条「今日小结」。",
-        json_schema_extra={"label": "编年史压缩时间", "hint": "HH:MM；留空=不自动压缩", "order": 8},
+        description=(
+            "每日编年史压缩触发时间（HH:MM）。目标日期 = 触发点所属那天，"
+            "当日有互动时用轻量模型写一条「今日小结」(kind=daily)。"
+            "⚠️ 触发后由世界时钟 tick 驱动，最长滞后一个 tick 间隔；"
+            "若 tick 错过该时间点，次日首次 tick 会补写昨天。"
+        ),
+        json_schema_extra={
+            "label": "编年史压缩时间",
+            "hint": "HH:MM；留空=不自动压缩；受 [narrative].chronicle_enabled 约束",
+            "order": 8,
+        },
     )
     life_fragment_interval_minutes: int = Field(
         default=240,
         ge=30,
         le=1440,
-        description="生活片段生成的间隔（分钟）。创作层消费器每隔 N 分钟可能用轻量模型生成一段 bot 的「生活片段」；间隔越大越省 token。",
+        description=(
+            "生活片段生成的间隔（分钟）。创作层每隔 N 分钟可能用轻量模型生成一段"
+            "「生活片段」；间隔越大越省 token。"
+            "⚠️ 实际检查粒度 = 世界时钟 tick（clock_tick_minutes），"
+            "间隔小于 tick 间隔时以 tick 为准。"
+        ),
         json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440", "order": 9},
     )
     life_fragment_daily_max: int = Field(
         default=3,
         ge=0,
         le=12,
-        description="每日生活片段生成上限（防超支；连同编年史合计遵守成本 30% 红线）。",
-        json_schema_extra={"label": "生活片段日上限", "hint": "0-12", "order": 10},
+        description=(
+            "每日生活片段生成上限。这是当前**唯一的成本控制手段**"
+            "（另有 [daily_chronicle_time] 每日一次的编年史压缩）。"
+        ),
+        json_schema_extra={"label": "生活片段日上限", "hint": "0-12；0=不生成", "order": 10},
     )
 
 
@@ -251,7 +292,10 @@ class ProactiveSection(PluginConfigBase):
 
     enabled: bool = Field(
         default=False,
-        description="主动消息总开关。关闭时 bot 永不主动开口。",
+        description=(
+            "主动消息总开关。关闭时 bot 不会主动开口。"
+            "⚠️ 还需同时开启 [plugin].enabled 与 [narrative].enabled 才会真正生效。"
+        ),
         json_schema_extra={"label": "启用主动消息", "order": 1},
     )
     silent_start: str = Field(
@@ -269,7 +313,8 @@ class ProactiveSection(PluginConfigBase):
         description="活跃窗口内随机开口间隔范围（分钟）。",
         json_schema_extra={
             "label": "随机间隔范围",
-            "hint": "[最小, 最大] 分钟",
+            # 只取前两项且须 最小≤最大，否则静默回落 60-240
+            "hint": "[最小, 最大] 分钟；只取前两项，须 最小≤最大，否则回落 60-240",
             "item_type": "number",
             "order": 4,
         },
@@ -308,7 +353,7 @@ class ProactiveSection(PluginConfigBase):
 
 
 class LLMSection(PluginConfigBase):
-    """模型路由（复用 MaiBot 内部 task）。"""
+    """模型路由（按已注册模型名，非 task 名）。"""
 
     __ui_label__: ClassVar[str] = "模型路由"
     __ui_icon__: ClassVar[str] = "cpu"
@@ -338,7 +383,7 @@ class LLMSection(PluginConfigBase):
     )
     show_prompt: bool = Field(
         default=False,
-        description="是否在日志打印创作 prompt（调试用）。",
+        description="是否在日志打印创作 prompt（调试用）。当前作用于生活片段与编年史压缩两处。",
         json_schema_extra={"label": "日志打印 prompt", "order": 3},
     )
 
@@ -348,7 +393,8 @@ class CreatorModelSection(PluginConfigBase):
 
     启用后，生活片段/编年史压缩直接 POST 到 ``base_url``（/chat/completions），
     body 固定携带 ``thinking = {type: "disabled"}``（生成短文本无需思维链；
-    推理模型不禁思考会挤占 max_tokens 导致正文截断）。留空关闭时回退 MaiBot task 路由。
+    推理模型不禁思考会挤占 max_tokens 导致正文截断）。关闭时回退
+    ``[llm].creation_model`` 按**模型名**路由。
     """
 
     __ui_label__: ClassVar[str] = "创作模型直连"
@@ -357,7 +403,7 @@ class CreatorModelSection(PluginConfigBase):
 
     enabled: bool = Field(
         default=False,
-        description="启用插件直连创作模型（关=回退 MaiBot task 路由）。",
+        description="启用插件直连创作模型（关=回退 [llm].creation_model 按模型名路由）。",
         json_schema_extra={"label": "启用直连", "order": 1},
     )
     base_url: str = Field(
@@ -395,7 +441,11 @@ class CreatorModelSection(PluginConfigBase):
         default=384,
         ge=64,
         le=8192,
-        description="最大输出 token（默认 384；创作正文短，384 足够且含余量）。",
+        description=(
+            "最大输出 token（默认 384；创作正文短，384 足够且含余量）。"
+            "⚠️ 仅 [creator_model].enabled=true 的直连路径生效；"
+            "回退到 [llm].creation_model 按名路由时固定用 256。"
+        ),
         json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 5},
     )
     timeout_seconds: float = Field(
@@ -416,7 +466,11 @@ class TelemetrySection(PluginConfigBase):
 
     enabled: bool = Field(
         default=True,
-        description="是否写入 metrics CSV（data/plugins/glcoge.mai-narrative/metrics/）。",
+        description=(
+            "是否写入 metrics CSV（data/plugins/glcoge.mai-narrative/narrative/metrics/）。"
+            "⚠️ 还需 [plugin].enabled=true 才会真正写入。"
+            "关闭只影响 CSV 落盘，跟踪状态照常更新（A/B 口径依赖此语义）。"
+        ),
         json_schema_extra={"label": "启用采样", "order": 1},
     )
 
