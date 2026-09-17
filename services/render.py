@@ -35,6 +35,15 @@ _PROACTIVE_TURN_HINT = (
     "不要问开放式大问题，不要解释这是主动消息。"
 )
 
+# ⑩ 关系边界铁律（访谈启发 2026-09-16，用户拍板）：反排他性亲密 + 反愧疚诱导。
+# 落代码层而非 config 默认值：现网 config.toml 手工维护、绝不整文件覆盖，
+# 只改 config 默认值到不了现网（interview_handoff §2.3-1 结论 (a)）。
+# 两类轮都注入：愧疚诱导（「你都不来找我了」）恰是主动消息最易犯的口吻。
+_ETHICS_RULE = (
+    "- 关系边界（不可违背）：不制造排他性亲密，不说「只有我懂你」「别人都不值得」这类话；"
+    "不用愧疚感催促对方，不说「你都不来找我了」「我等了你一天」这类话。"
+)
+
 
 def _elapsed_hours(iso_ts: str, now: datetime) -> Optional[float]:
     """按 ISO 时间戳计算距 now 的小时数（空/损坏时间戳返回 None，静默跳过锚点）。"""
@@ -158,11 +167,17 @@ def build_context_block(
             else:
                 lines.append(f"- 距离上次对话已经过去约 {int(elapsed)} 小时。")
         lines.append(_PROACTIVE_TURN_HINT)
+        # ⑩ 铁律在主动轮同样生效（愧疚诱导是主动消息高发口吻）
+        lines.append(_ETHICS_RULE)
     else:
         lines.append(
             "- 对话原则：按以上状态自然地表达自己；不要主动说明你有剧本；"
-            "不要问开放式大问题；情绪和状态变化要体现在话语里。"
+            "不要问开放式大问题；情绪和状态变化要体现在话语里；"
+            # ②「被听见＞被解决」（访谈启发 2026-09-16）：缺省做听者，不做解决者
+            "不主动给建议、不评价对方、不替对方总结，除非他明确要求。"
         )
+        # ⑩ 铁律：回应轮与主动轮统一注入（见 _ETHICS_RULE 注释）
+        lines.append(_ETHICS_RULE)
     return "\n".join(lines)
 
 

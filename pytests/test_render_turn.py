@@ -125,6 +125,47 @@ def test_reply_round_keeps_original_principles():
     assert "对话原则" in text
 
 
+def test_reply_round_listener_stance():
+    """② 被听见＞被解决（访谈启发 2026-09-16）：回应轮对话原则须补听者立场——
+    不主动给建议、不评价对方、不替对方总结，除非对方明确要求。"""
+    text = _render(round_kind="reply")
+
+    assert "不主动给建议" in text, "对话原则缺「不主动给建议」"
+    assert "不评价对方" in text, "对话原则缺「不评价对方」"
+    assert "不替对方总结" in text, "对话原则缺「不替对方总结」"
+    assert "除非他明确要求" in text, "听者立场须带「除非他明确要求」豁免口"
+
+
+def test_proactive_round_no_listener_clutter():
+    """② 听者立场只属回应轮；主动轮保持由头锚点结构，不混入对话原则行。"""
+    text = _render(round_kind="proactive", bysource="刚做了个梦被人喊名字")
+
+    assert "不主动给建议" not in text, "听者立场不应出现在主动轮（对话原则行专属）"
+
+
+# ===== ⑩ 关系边界铁律（反排他性亲密 + 反愧疚诱导）=====
+
+
+def test_ethics_rule_in_reply_round():
+    """⑩ 铁律必须注入回应轮：禁排他性亲密（只有我懂你）+ 禁愧疚催促。"""
+    text = _render(round_kind="reply")
+
+    assert "关系边界" in text, "回应轮缺关系边界铁律"
+    assert "排他性亲密" in text and "只有我懂你" in text, "缺反排他性亲密约束"
+    assert "愧疚" in text and "你都不来找我了" in text, "缺反愧疚诱导约束"
+
+
+def test_ethics_rule_in_proactive_round():
+    """⑩ 铁律必须注入主动轮——愧疚诱导（「你都不来找我了」）是主动消息高发口吻。"""
+    text = _render(round_kind="proactive", bysource="刚做了个梦被人喊名字")
+
+    assert "关系边界" in text, "主动轮缺关系边界铁律"
+    assert "排他性亲密" in text, "主动轮缺反排他性亲密约束"
+    assert "愧疚" in text, "主动轮缺反愧疚诱导约束"
+    # 铁律必须在禁复读规则之后（先行为约束，后边界约束，保持 hint 结构完整）
+    assert text.index("不要重复") < text.index("关系边界"), "铁律应排在主动轮硬规则之后"
+
+
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":
