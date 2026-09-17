@@ -40,8 +40,15 @@ def _make_engine(
     pull: float = 0.3,
     sleep_recovery: float = 0.1,
     boost: float = 0.12,
+    urge_enabled: bool = True,
+    urge_base: float = 0.7,
+    urge_regain: float = 0.15,
 ):
-    """构造只含纯规则所需依赖的 engine（绕过 __init__，不建 store/creator）。"""
+    """构造只含纯规则所需依赖的 engine（绕过 __init__，不建 store/creator）。
+
+    v0.1.8 起补 proactive 组：_apply_state_rules 里的 share_urge 基线回归
+    需要 urge_* 参数（默认 urge_enabled=True 时回归生效）。
+    """
     cfg = SimpleNamespace(
         narrative=SimpleNamespace(
             enabled=True,
@@ -50,7 +57,15 @@ def _make_engine(
             energy_baseline_pull=pull,
             energy_sleep_recovery=sleep_recovery,
             energy_interaction_boost=boost,
-        )
+        ),
+        proactive=SimpleNamespace(
+            urge_enabled=urge_enabled,
+            urge_base=urge_base,
+            urge_regain=urge_regain,
+            urge_gain=0.1,
+            urge_decay=0.25,
+            urge_branch_floor=0.4,
+        ),
     )
     engine = NarrativeEngine.__new__(NarrativeEngine)
     engine._plugin = SimpleNamespace(config=cfg)
@@ -142,6 +157,47 @@ def test_active_interaction_maintains():
     assert energies[-1] >= 0.60, (
         f"8h 持续互动后精力 {energies[-1]:.2f}，应维持 ≥0.60"
     )
+
+
+# ===== share_urge self 层基线回归（v0.1.8 第一步） =====
+
+
+def test_urge_regresses_to_baseline():
+    """被冷落砸低的分享欲，随 tick 向基线双向回归（同 energy 模式）。"""
+    engine = _make_engine(urge_base=0.7, urge_regain=0.15)
+    state = _make_state(0.60)
+    state["state"]["urge"] = 0.3  # 模拟刚被冷落过的低谷
+
+    now = datetime.datetime(2026, 9, 9, 10, 0, 0)
+    for _ in range(10):
+        engine._apply_state_rules(state, now)
+        now += datetime.timedelta(minutes=30)
+
+    urge = float(state["state"]["urge"])
+    assert urge > 0.45, f"10 tick 后分享欲 {urge} 应显著回温（>0.45）"
+    assert urge < 0.7, f"尚未到基线前不应越过基线（实际 {urge}）"
+
+
+def test_urge_regression_disabled_when_switch_off():
+    """urge_enabled=False：tick 不写 urge 字段（完全旧行为，状态零污染）。"""
+    engine = _make_engine(urge_enabled=False)
+    state = _make_state(0.60)
+    state["state"]["urge"] = 0.3
+
+    engine._apply_state_rules(state, datetime.datetime(2026, 9, 9, 10, 0, 0))
+
+    assert state["state"]["urge"] == 0.3, "开关关闭时 tick 不得改动分享欲"
+
+
+def test_urge_missing_field_defaults_to_base():
+    """旧数据无 urge 字段：首个 tick 以基线为起点惰性初始化。"""
+    engine = _make_engine(urge_base=0.7, urge_regain=0.15)
+    state = _make_state(0.60)
+    assert "urge" not in state["state"]
+
+    engine._apply_state_rules(state, datetime.datetime(2026, 9, 9, 10, 0, 0))
+
+    assert state["state"]["urge"] == 0.7, "缺字段时应以 urge_base 惰性初始化"
 
 
 def test_energy_clamped():

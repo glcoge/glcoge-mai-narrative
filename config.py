@@ -350,6 +350,54 @@ class ProactiveSection(PluginConfigBase):
             "order": 7,
         },
     )
+    # ── 分享欲 share_urge（v0.1.8 第一步：动机驱动时机，规则层零 LLM） ──
+    # 设计：随机计时器只作"最小间隔闸门"，到点后按分享欲采样决定是否真的开口。
+    # 合成 = self 层基线漂移 × branch 层对人系数 × 精力因子（相乘，clamp [0,1]）。
+    # 只作用于主动开口时机；用户主动来找时回复路径绝不设门（访谈启发⑦边界）。
+    urge_enabled: bool = Field(
+        default=True,
+        description=(
+            "分享欲采样开关（share_urge 第一步）。开启后到点不必然开口，"
+            "而是按分享欲采样；关闭则回到旧行为（到点必发）。"
+            "只影响 bot 主动找你的时机，不影响你找它时的回复。"
+        ),
+        json_schema_extra={"label": "分享欲采样", "order": 8},
+    )
+    urge_base: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="self 层基线分享欲：无事件时分享欲每 tick 向该值回归（双向）。",
+        json_schema_extra={"label": "基线分享欲", "hint": "0-1；默认 0.7", "order": 9},
+    )
+    urge_gain: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="正反馈步长：主动消息被接住 +1×该值；用户主动发起对话 +0.5×该值。",
+        json_schema_extra={"label": "正反馈步长", "hint": "0-1；默认 0.1", "order": 10},
+    )
+    urge_decay: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description="负反馈步长：主动消息超 30 分钟未被回复（被冷落）时每条 -该值。",
+        json_schema_extra={"label": "冷落衰减", "hint": "0-1；默认 0.25", "order": 11},
+    )
+    urge_regain: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="基线回归系数：每 tick 分享欲向基线靠拢的比例（同精力基线回归语义）。",
+        json_schema_extra={"label": "基线回归系数", "hint": "0-1；默认 0.15", "order": 12},
+    )
+    urge_branch_floor: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="branch 层对人系数下限：长期被冷落也不会低于该值（防彻底饿死）。",
+        json_schema_extra={"label": "对人系数下限", "hint": "0-1；默认 0.4", "order": 13},
+    )
 
 
 class LLMSection(PluginConfigBase):

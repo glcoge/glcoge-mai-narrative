@@ -145,6 +145,29 @@ def test_creator_api_key_is_masked():
     assert field["ui_type"] == "password"
 
 
+def test_share_urge_fields_defaults_and_types():
+    """v0.1.8 share_urge 六参数：存在、默认值正确、全部是 switch/number 可渲染类型。
+
+    urge 参数直接决定主动开口频率（A/B 可调纪律），默认值被误改会让
+    部署前后行为漂移无据可查，这里锁死出厂值。
+    """
+    fields = dict((name, f) for _, name, f in _all_fields())
+    expected = {
+        "urge_enabled": (True, "switch"),
+        "urge_base": (0.7, "number"),
+        "urge_gain": (0.1, "number"),
+        "urge_decay": (0.25, "number"),
+        "urge_regain": (0.15, "number"),
+        "urge_branch_floor": (0.4, "number"),
+    }
+    missing = [name for name in expected if name not in fields]
+    assert not missing, f"share_urge 字段缺失（可能被误删）: {missing}"
+    for name, (default, ui_type) in expected.items():
+        field = fields[name]
+        assert field.get("default") == default, f"{name} 默认值漂移: {field.get('default')!r}"
+        assert field.get("ui_type") == ui_type, f"{name} ui_type 异常: {field.get('ui_type')!r}"
+
+
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":

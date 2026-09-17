@@ -18,6 +18,11 @@ from .engine import parse_clock
 # 主动消息后 30 分钟内用户回复，记为"被接住"
 _PROACTIVE_REPLY_WINDOW_MINUTES = 30
 
+# share_urge（v0.1.8 第一步）采样未过后的重试间隔范围（分钟）：短延迟重试而非
+# 重置完整随机间隔，避免分享欲高时错过整段活跃窗口；也不密集轮询骚扰判定。
+# 第一步暂不入 config（对行为影响小），后续按真机数据再定。
+_URGE_RETRY_RANGE = (30, 60)
+
 # ISO 星期取值：1=周一 … 7=周日（与 datetime.isoweekday() 对齐）
 _VALID_WEEKDAYS = frozenset({"1", "2", "3", "4", "5", "6", "7"})
 
@@ -180,6 +185,13 @@ class ProactiveScheduler:
             if not stream_id:
                 continue
 
+            # 被冷落结算（v0.1.8 share_urge）：30 分钟回复窗口过期未回 →
+            # 弹出过期记录并按条罚一次（弹出即天然防重复惩罚）。放在窗口/
+            # 上限检查之前：即便已超日上限或不在窗口，冷落反馈照样生效。
+            expired = self._expire_sent(user_id, now)
+            for _ in range(expired):
+                self._plugin._engine.record_urge_feedback(user_id, "ignored")
+
             today = now.strftime("%Y-%m-%d")
             day_count = self._plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
             if day_count >= max(0, int(cfg.proactive.daily_max)):
@@ -201,6 +213,18 @@ class ProactiveScheduler:
                 continue
 
             if now < next_at:
+                continue
+
+            # share_urge 采样（v0.1.8 第一步）：计时器到点只是"最小间隔闸门"，
+            # 真正开口还要看此刻想不想说（动机驱动时机）。未过 → 短延迟重试。
+            urge = self._plugin._engine.compute_share_urge(user_id)
+            if random.random() >= urge:
+                low, high = _URGE_RETRY_RANGE
+                self._next_fire[user_id] = now + datetime.timedelta(minutes=random.randint(low, high))
+                self._plugin.ctx.logger.debug(
+                    "主动消息分享欲未过: uid=%s urge=%.2f → %d-%d 分钟后重试",
+                    user_id, urge, low, high,
+                )
                 continue
 
             self._next_fire[user_id] = None
@@ -279,6 +303,24 @@ class ProactiveScheduler:
         ]
         self._sent_at[user_id] = active[-2:]
         return bool(active)
+
+    def _expire_sent(self, user_id: str, now: datetime.datetime) -> int:
+        """弹出已过 30 分钟回复窗口的发送记录，返回过期条数（每条 = 一次冷落）。
+
+        与 ``check_reply`` 共用 ``_sent_at``：check_reply 只保留窗口内记录用于
+        "被接住"判定（由用户回复触发），过期条目的"冷落"惩罚由本方法在
+        调度循环里统一结算，两者各取所需、不会重复计数。
+        """
+        sent_list = self._sent_at.get(user_id, [])
+        if not sent_list:
+            return 0
+        active = [
+            item
+            for item in sent_list
+            if (now - item).total_seconds() / 60 <= _PROACTIVE_REPLY_WINDOW_MINUTES
+        ]
+        self._sent_at[user_id] = active
+        return len(sent_list) - len(active)
 
     def clear_sent(self) -> None:
         """清空主动消息发送记录（状态重置用）。"""

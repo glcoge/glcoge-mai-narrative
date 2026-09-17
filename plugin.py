@@ -322,6 +322,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 验收指标 3：主动消息是否被接住
         if self._proactive.check_reply(user_id, now):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
+            # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
+            self._engine.record_urge_feedback(user_id, "caught")
+        elif self._telemetry.is_user_initiated(stream_id or user_id, now):
+            # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
+            self._engine.record_urge_feedback(user_id, "user_initiated")
         self.ctx.logger.debug("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
         return {"action": "continue", "modified_kwargs": kwargs}
 

@@ -319,6 +319,16 @@ class NarrativeEngine:
 
         inner["routine"]["phase"] = routine_phase(now.hour)
 
+        # share_urge self 层回归（v0.1.8 第一步）：每 tick 向基线双向回归
+        # （同 energy 基线回归模式）。事件驱动的升降在 record_urge_feedback，
+        # 此处只管"时间回归"——被冷落的低谷随时间自然回温。
+        pro = self._plugin.config.proactive
+        if pro.urge_enabled:
+            urge_base = float(pro.urge_base)
+            urge = float(inner.get("urge", urge_base))
+            urge += (urge_base - urge) * float(pro.urge_regain)
+            inner["urge"] = round(max(0.05, min(1.0, urge)), 3)
+
     @staticmethod
     def _hours_since(iso_ts: str, now: datetime) -> float:
         """计算 ISO 时间戳距今的小时数。"""
@@ -405,6 +415,91 @@ class NarrativeEngine:
                     inner["milestones"] = milestones
                 break
         self.save_branch_state(user_id, branch)
+
+    # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ────
+
+    def record_urge_feedback(self, user_id: str, event: str) -> None:
+        """分享欲事件反馈（规则层零 LLM，第一步方案）。
+
+        event 取值：
+        - ``"caught"``：主动消息 30 分钟内被回复 → self/branch 双升（聊得起来，更想聊）；
+        - ``"ignored"``：主动消息超窗未回 → self/branch 双降（别热脸贴冷屁股）；
+        - ``"user_initiated"``：用户主动发起对话（非回复主动消息）→ 仅 self 层小升（被需要感）。
+
+        被接住/被冷落的判定与防重复结算由 ProactiveScheduler 负责（_sent_at 弹出即罚一次）。
+        """
+        cfg = self._plugin.config
+        if not cfg.plugin.enabled or not cfg.narrative.enabled:
+            return
+        pro = cfg.proactive
+        if not pro.urge_enabled:
+            return
+
+        gain = float(pro.urge_gain)
+        decay = float(pro.urge_decay)
+
+        # self 层：state["state"]["urge"]，clamp [0.05, 1.0]
+        state = self.load_self_state()
+        inner = state["state"]
+        urge = float(inner.get("urge", float(pro.urge_base)))
+        if event == "caught":
+            urge += gain
+        elif event == "ignored":
+            urge -= decay
+        elif event == "user_initiated":
+            urge += gain * 0.5
+        else:
+            # 未知事件立即暴露（项目 debug 规范：不兜底掩盖调用方笔误）
+            raise ValueError(f"未知的分享欲事件类型: {event!r}")
+        inner["urge"] = round(max(0.05, min(1.0, urge)), 3)
+        self.save_self_state(state)
+
+        # branch 层：对特定对象的分享欲系数，clamp [urge_branch_floor, 1.0]；
+        # user_initiated 只说明"被需要"，不改对人系数。
+        if event in ("caught", "ignored"):
+            branch = self.load_branch_state(user_id)
+            factor = float(branch["state"].get("urge_factor", 1.0))
+            if event == "caught":
+                factor += gain * 0.5
+            else:
+                factor -= decay
+            branch["state"]["urge_factor"] = round(
+                max(float(pro.urge_branch_floor), min(1.0, factor)), 3
+            )
+            self.save_branch_state(user_id, branch)
+
+    def compute_share_urge(self, user_id: str) -> float:
+        """合成当前分享欲 ∈ [0,1]：self 层 × branch 层 × 精力因子（相乘）。
+
+        - self 层（``state["state"]["urge"]``）：基线漂移 + 事件升降，tick 回归维护；
+        - branch 层（``branch["state"]["urge_factor"]``）：对该用户的亲近系数，缺省 1.0 中性；
+        - 精力因子：精力低于基线时按比例拖累（累了不想说话），下限 0.4。
+
+        只作用于主动开口的时机采样；**回复路径绝不调用本方法**——用户主动来找时
+        bot 永不设门（访谈启发⑦ Agency Window 边界）。
+        开关任一关闭（plugin / narrative / proactive.urge_enabled）→ 返回 1.0，
+        即旧行为（到点必发）。
+        """
+        cfg = self._plugin.config
+        if not cfg.plugin.enabled or not cfg.narrative.enabled:
+            return 1.0
+        pro = cfg.proactive
+        if not pro.urge_enabled:
+            return 1.0
+
+        state = self.load_self_state()
+        inner = state["state"]
+        self_urge = float(inner.get("urge", float(pro.urge_base)))
+
+        branch = self.load_branch_state(user_id)
+        branch_factor = float(branch["state"].get("urge_factor", 1.0))
+
+        energy = float(inner["mood"].get("energy", 0.55))
+        energy_baseline = max(float(cfg.narrative.energy_baseline), 0.05)
+        energy_factor = max(0.4, min(1.0, energy / energy_baseline))
+
+        urge = self_urge * branch_factor * energy_factor
+        return round(max(0.0, min(1.0, urge)), 3)
 
     # ─── 由头签发（主动消息的内容之源） ──────────────────────────
 

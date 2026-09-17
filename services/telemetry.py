@@ -46,6 +46,15 @@ class Telemetry:
 
     # ─── 入站/出站采样判定（hook 调用，判定逻辑单点在此） ────────
 
+    def is_user_initiated(self, key: str, now: datetime.datetime) -> bool:
+        """只读判定：距上一条 bot 消息超过阈值 = 用户主动发起。
+
+        供指标 1（note_inbound）与 share_urge（plugin 入站 hook）共用口径，
+        不改动任何跟踪状态。
+        """
+        last_sent = self._last_bot_sent.get(key, _STAGE_EPOCH)
+        return (now - last_sent).total_seconds() / 60 > _USER_INITIATED_GAP_MINUTES
+
     def note_inbound(
         self,
         stream_id: str,
@@ -59,8 +68,7 @@ class Telemetry:
         self._pending_round[key] = now
 
         # 验收指标 1：用户主动发起（距上一条 bot 消息超过阈值）
-        last_sent = self._last_bot_sent.get(key, _STAGE_EPOCH)
-        if (now - last_sent).total_seconds() / 60 > _USER_INITIATED_GAP_MINUTES:
+        if self.is_user_initiated(key, now):
             self.record("user_initiated_freq", 1, user_id=user_id)
         # 验收指标 2：入站消息长度
         self.record("dialogue_depth", value=float(len(text)), user_id=user_id, scope="user_msg_len")
