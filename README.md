@@ -19,7 +19,7 @@
 2. WebUI 插件页启用本插件，填写 `[identity]` **锚定层**（只填原生三段没有的维度）：`world` 世界观、`values` 价值观底线、`world_rules` 世界观规则/禁忌。
 3. `[narrative] mode_user_ids` 填入你的 QQ 号；`[narrative] enabled = true`。
 4. 需要主动开口时：`[proactive] enabled = true`，并按需调窗口/每日上限。
-5. （v0.1.3）创作层默认开启：`[narrative] life_fragment_interval_minutes = 240`（生活片段生成间隔，分钟）、`life_fragment_daily_max = 3`（每日上限）。间隔越短、上限越高，主动消息由头越"有生活"，token 成本也越高。
+5. （v0.1.3）创作层默认开启：`[narrative] life_fragment_interval_minutes = 120`（生活片段生成间隔，分钟）、`life_fragment_daily_max = 6`（每日上限）。间隔越短、上限越高，主动消息由头越"有生活"，token 成本也越高。（2026-09-21 由 240/3 放宽：实测创作层仅占 token 总量 ~0.1%，原值过度保守。）
 6. 保存配置（热重载自动生效）；重启后任务自动重排。
 7. 私聊里 `/narrative status` 查看状态；`/narrative reset yes` 重置状态（编年史保留）。
 

@@ -43,7 +43,7 @@ from .services import (
     build_injected_item,
     is_injected_item,
 )
-from .services.engine import local_now
+from .services.engine import INJECT_TEXT_CAP, local_now
 from .services.proactive import validate_rules
 from .services.message import (
     extract_user_id,
@@ -681,12 +681,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
                     str(
                         list(inner.get("focus", {}).get("pending_events", []))[-1]
                         .get("text", "")
-                    )[:60]
+                    )[:INJECT_TEXT_CAP]
                     if inner.get("focus", {}).get("pending_events")
                     else ""
                 ),
                 "recent_chronicle": [
-                    str(entry.get("text", ""))[:60]
+                    str(entry.get("text", ""))[:INJECT_TEXT_CAP]
                     for entry in self._store.recent_chronicle("self", limit=3)
                     if str(entry.get("text", "")).strip()
                 ],

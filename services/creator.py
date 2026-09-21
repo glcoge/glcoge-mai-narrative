@@ -62,7 +62,7 @@ class CreatorClient:
             "messages": [
                 {"role": "user", "content": prompt},
             ],
-            "max_tokens": int(creator.max_tokens or 384),
+            "max_tokens": int(creator.max_tokens or 1024),
             "temperature": float(cfg.llm.temperature),
             # 关闭思考：生成短文本无需思维链，防止推理模型挤占 max_tokens
             "thinking": {"type": "disabled"},
@@ -108,7 +108,9 @@ class CreatorClient:
                 self._plugin.ctx.llm.generate(
                     prompt,
                     temperature=cfg.llm.temperature,
-                    max_tokens=256,
+                    # 2026-09-21：与外层直连统一取 [creator_model].max_tokens（原固定 256，
+                    # major 档 400 字会截断）
+                    max_tokens=int(cfg.creator_model.max_tokens or 1024),
                     **payload_kwargs,
                 ),
                 timeout=30,

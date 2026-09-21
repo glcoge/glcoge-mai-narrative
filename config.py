@@ -215,7 +215,7 @@ class NarrativeSection(PluginConfigBase):
         },
     )
     life_fragment_interval_minutes: int = Field(
-        default=240,
+        default=120,
         ge=30,
         le=1440,
         description=(
@@ -223,18 +223,36 @@ class NarrativeSection(PluginConfigBase):
             "「生活片段」；间隔越大越省 token。"
             "⚠️ 实际检查粒度 = 世界时钟 tick（clock_tick_minutes），"
             "间隔小于 tick 间隔时以 tick 为准。"
+            "（2026-09-21：默认由 240 → 120。实测创作层仅占总量 ~0.1%，"
+            "30% 红线有约两个数量级余量，原默认值过度保守。）"
         ),
         json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440", "order": 9},
     )
     life_fragment_daily_max: int = Field(
-        default=3,
+        default=6,
         ge=0,
         le=12,
         description=(
-            "每日生活片段生成上限。这是当前**唯一的成本控制手段**"
+            "每日生活片段生成上限。这是当前主要的成本控制手段"
             "（另有 [daily_chronicle_time] 每日一次的编年史压缩）。"
+            "（2026-09-21：默认由 3 → 6。实测每日调用恒被压在上限上，"
+            "放宽后成本仍 <总量的 0.2%。）"
         ),
         json_schema_extra={"label": "生活片段日上限", "hint": "0-12；0=不生成", "order": 10},
+    )
+    life_fragment_detail_enabled: bool = Field(
+        default=True,
+        description=(
+            "按事件重要度分级创作详略（2026-09-21 新增）。开启后生活片段分三档："
+            "minor（无素材，40~90 字）／normal（有素材，80~180 字）／"
+            "major（命中里程碑·状态极端·素材密集，200~400 字，要求写细）。"
+            "关闭则回到旧行为（一律 40~90 字，渲染引用仍截 56 字）。"
+        ),
+        json_schema_extra={
+            "label": "分级详略",
+            "hint": "关=旧行为（统一 40~90 字）",
+            "order": 11,
+        },
     )
 
 
@@ -486,13 +504,14 @@ class CreatorModelSection(PluginConfigBase):
         json_schema_extra={"label": "模型 ID", "hint": "服务商侧 model 字段", "order": 4},
     )
     max_tokens: int = Field(
-        default=384,
+        default=1024,
         ge=64,
         le=8192,
         description=(
-            "最大输出 token（默认 384；创作正文短，384 足够且含余量）。"
-            "⚠️ 仅 [creator_model].enabled=true 的直连路径生效；"
-            "回退到 [llm].creation_model 按名路由时固定用 256。"
+            "最大输出 token（默认 1024）。"
+            "（2026-09-21 由 384 上调：生活片段分档后 major 档可达 400 字，"
+            "384 会截断正文。）"
+            "⚠️ 直连与按名路由两条路径均使用本值。"
         ),
         json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 5},
     )

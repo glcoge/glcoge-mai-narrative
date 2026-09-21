@@ -42,6 +42,30 @@ _STAGE_THRESHOLDS: List[Tuple[float, str]] = [
     (30, "熟人"),
 ]
 
+# ─── 生活片段详略分档（2026-09-21 新增，按事件重要度决定创作长度） ──────────
+# 动机：此前所有生活片段一律 40~90 字，重要的事（关系里程碑、状态极端、密集对话）
+# 与无事发生时同等篇幅 → 「一笔带过」。改为三档，major 档要求写细。
+_FRAGMENT_TIER_LENGTH = {
+    "flat": "40~90",    # 分级关闭：旧行为
+    "minor": "40~90",   # 无素材：纯状态切片
+    "normal": "80~180",  # 有对话素材
+    "major": "200~400",  # 命中重要度信号
+}
+# prompt 里每条素材的展示上限（字符）；入库时统一保留 _FRAGMENT_MATERIAL_STORE_CAP
+_FRAGMENT_TIER_MATERIAL_CAP = {"flat": 80, "minor": 80, "normal": 120, "major": 300}
+_FRAGMENT_MATERIAL_STORE_CAP = 300
+# 素材密度阈值：窗口内对话素材 ≥ 该条数即判 major
+_FRAGMENT_MATERIAL_DENSITY = 4
+
+# 消费端注入上限（2026-09-21）：所有把「生活片段 / 编年史 / 由头」送进模型的的地方
+# 统一取该值。原为 40~120 字的分散硬编码上限，major 档（可达 400 字）会被截断，
+# 且每次调创作长度都要回头改截断值。1024 是防失控的天花板，不是调节旋钮，
+# 故不进配置（真正的旋钮已暴露：频率、日上限、分级开关、max_tokens）。
+INJECT_TEXT_CAP = 1024
+# 状态极端阈值（energy）
+_FRAGMENT_ENERGY_LOW = 0.25
+_FRAGMENT_ENERGY_HIGH = 0.9
+
 
 def parse_clock(value: str) -> Optional[time]:
     """解析 HH:MM 字符串为 time；失败返回 None。"""
@@ -377,7 +401,9 @@ class NarrativeEngine:
                 "ts": current.isoformat(timespec="seconds"),
                 "scope": f"branch:{user_id}",
                 "kind": "dialogue_material",
-                "bysource": normalized[:80] or "（一条消息）",
+                # 2026-09-21：保留长度 80 → 300 字符。入库时不知道未来是否重要，
+                # 统一多留原文，由创作层按档位决定展示多少（见 _FRAGMENT_TIER_MATERIAL_CAP）
+                "bysource": normalized[:_FRAGMENT_MATERIAL_STORE_CAP] or "（一条消息）",
             }
         )
 
@@ -523,7 +549,7 @@ class NarrativeEngine:
         for item in pending[-2:]:
             fragment = str(item.get("text", "") or "").strip()
             if fragment:
-                candidates.append(f"最近一段生活：{fragment[:60]}")
+                candidates.append(f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}")
 
         stage = str(branch["identity"].get("stage", "陌生人"))
         milestones = list(branch["state"].get("milestones", []))
@@ -640,11 +666,13 @@ class NarrativeEngine:
 
         # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
         last_ts = self._store.get_kv_str("life_fragment:last_ts")
+        window_start = current - timedelta(minutes=int(cfg.narrative.life_fragment_interval_minutes))
         if last_ts:
             try:
                 last_dt = datetime.fromisoformat(last_ts)
                 if (current - last_dt).total_seconds() < int(cfg.narrative.life_fragment_interval_minutes) * 60:
                     return
+                window_start = last_dt
             except (TypeError, ValueError):
                 pass
 
@@ -657,8 +685,10 @@ class NarrativeEngine:
                     materials.append(source_text)
 
         state = self.load_self_state()
+        # 详略档位：按事件重要度决定本次创作长度（flat=分级关闭，回旧行为）
+        tier = self._life_fragment_tier(current, state, window_start)
         persona = await self._load_native_personality()
-        prompt = self._build_life_fragment_prompt(current, state, materials, persona=persona)
+        prompt = self._build_life_fragment_prompt(current, state, materials, persona=persona, tier=tier)
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("生活片段 prompt: %s", prompt[:300])
 
@@ -684,7 +714,49 @@ class NarrativeEngine:
         # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
         self._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))
         self._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
-        self._plugin.ctx.logger.info("生活片段已生成（今日 %s/%s）: %s", day_count + 1, cfg.narrative.life_fragment_daily_max, text[:40])
+        self._plugin.ctx.logger.info(
+            "生活片段已生成（今日 %s/%s，档位 %s）: %s",
+            day_count + 1,
+            cfg.narrative.life_fragment_daily_max,
+            tier,
+            text[:40],
+        )
+
+    def _life_fragment_tier(
+        self, now: datetime, state: Dict[str, Any], window_start: datetime
+    ) -> str:
+        """判定本次生活片段的详略档位（flat/minor/normal/major）。
+
+        2026-09-21 定案的三信号组合（纯规则，零额外 LLM 调用）：
+        ① 关系里程碑：窗口内支线 ``milestones`` 有新增（关系阶段晋升，强信号）；
+        ② 状态极端：self 层 energy ≤ 低阈 或 ≥ 高阈；
+        ③ 素材密度：窗口内对话素材条数 ≥ 阈值。
+
+        任一命中 → major；无命中但有素材 → normal；无素材 → minor。
+        ``[narrative].life_fragment_detail_enabled=false`` 时返回 flat（旧行为）。
+        """
+        cfg = self._plugin.config
+        if not cfg.narrative.life_fragment_detail_enabled:
+            return "flat"
+
+        energy = float(state["state"]["mood"].get("energy", 0.0))
+        if energy <= _FRAGMENT_ENERGY_LOW or energy >= _FRAGMENT_ENERGY_HIGH:
+            return "major"
+
+        start_iso = window_start.isoformat(timespec="seconds")
+        material_count = 0
+        for user_id in (cfg.narrative.mode_user_ids or []):
+            branch = self.load_branch_state(user_id)
+            for item in branch["state"].get("milestones") or []:
+                if str(item.get("ts", "")) >= start_iso:
+                    return "major"
+            for event in self._store.list_events(f"branch:{user_id}", limit=20):
+                if str(event.get("ts", "")) >= start_iso and str(event.get("bysource", "")).strip():
+                    material_count += 1
+
+        if material_count >= _FRAGMENT_MATERIAL_DENSITY:
+            return "major"
+        return "normal" if material_count else "minor"
 
     def _build_life_fragment_prompt(
         self,
@@ -692,8 +764,9 @@ class NarrativeEngine:
         state: Dict[str, Any],
         materials: Sequence[str],
         persona: str = "",
+        tier: str = "flat",
     ) -> str:
-        """构造生活片段生成 prompt（40~90 字第一人称内心活动/小事/感慨）。"""
+        """构造生活片段生成 prompt（档位决定长度与素材展示量）。"""
         cfg = self._plugin.config
         identity = cfg.identity
         inner = state["state"]
@@ -710,13 +783,25 @@ class NarrativeEngine:
                 f"心情{inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）。"
             ),
         ]
+        material_cap = _FRAGMENT_TIER_MATERIAL_CAP.get(tier, 80)
         if materials:
-            chunks.append("最近发生的对话与小事：\n- " + "\n- ".join(materials[-6:]))
-        chunks.append(
-            "请以第一人称写一段 40~90 字的生活片段：你此刻心里的一段念头、"
-            "一件正在想的小事、一句生活里的感慨。要有生活气息和画面感，"
-            "只输出正文，不要任何标题/引号/表情/动作旁白。"
-        )
+            shown = [text[:material_cap] for text in materials[-6:]]
+            chunks.append("最近发生的对话与小事：\n- " + "\n- ".join(shown))
+
+        length = _FRAGMENT_TIER_LENGTH.get(tier, "40~90")
+        if tier == "major":
+            chunks.append(
+                f"请以第一人称写一段 {length} 字的生活片段，把这件事写细："
+                "起因是什么、你当下的具体感受、眼前的细节画面，"
+                "以及你因此悄悄变化的一点认知。要有生活气息和画面感，"
+                "只输出正文，不要任何标题/引号/表情/动作旁白。"
+            )
+        else:
+            chunks.append(
+                f"请以第一人称写一段 {length} 字的生活片段：你此刻心里的一段念头、"
+                "一件正在想的小事、一句生活里的感慨。要有生活气息和画面感，"
+                "只输出正文，不要任何标题/引号/表情/动作旁白。"
+            )
         return "\n".join(chunks)
 
     def _build_chronicle_prompt(

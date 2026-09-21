@@ -32,9 +32,13 @@ energy_baseline = 0.45
 energy_baseline_pull = 0.3
 energy_sleep_recovery = 0.1
 energy_interaction_boost = 0.12
-# 创作层：生活片段生成间隔（分钟）与每日上限（防超支，遵守成本 30% 红线）
-life_fragment_interval_minutes = 240
-life_fragment_daily_max = 3
+# 创作层：生活片段生成间隔（分钟）与每日上限
+# 2026-09-21 调整：120/6（原 240/3）。实测创作层占总量 ~0.1%，30% 红线余量约两个数量级。
+life_fragment_interval_minutes = 120
+life_fragment_daily_max = 6
+# 按事件重要度分级创作详略：minor 40~90 / normal 80~180 / major 200~400 字。
+# 命中信号：窗口内新增关系里程碑 · energy 极端 · 窗口内对话素材 ≥4 条。关=回旧行为（统一 40~90 字）。
+life_fragment_detail_enabled = true
 
 # ===== 主动消息 =====
 [proactive]
@@ -83,7 +87,7 @@ enabled = false
 base_url = ""
 api_key = ""
 model_id = ""
-max_tokens = 384
+max_tokens = 1024
 timeout_seconds = 30.0
 
 # ===== 验收采样 =====

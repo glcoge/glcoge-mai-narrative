@@ -129,6 +129,8 @@ def _make_engine(
             mode_user_ids=["10001"],
             life_fragment_daily_max=3,
             life_fragment_interval_minutes=240,
+            # 2026-09-21 新增：分级详略开关（关=旧行为，本文件不测档位）
+            life_fragment_detail_enabled=False,
         ),
         llm=SimpleNamespace(show_prompt=False),
         identity=SimpleNamespace(world="一座海边小城", values=[], world_rules=[], immutable_traits=[]),

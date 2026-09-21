@@ -152,7 +152,9 @@ def test_model_name_route_payload():
     assert call.get("model_name") == "my-thinking-off-model", "应按名指定模型"
     assert "model" not in call, "不得再用旧式 model= 传任务名"
     assert call.get("temperature") == 0.9
-    assert call.get("max_tokens") == 256
+    # 2026-09-21：按名路由不再固定 256，改为取 [creator_model].max_tokens
+    # （major 档 400 字会被 256 截断）；fixture 该值为 384。
+    assert call.get("max_tokens") == 384, "按名路由应使用 [creator_model].max_tokens"
     assert llm.availability_queries == 0, (
         "宿主只提供任务名列表，无法校验模型名 → 不应再查询 get_available_models"
     )

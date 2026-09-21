@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .engine import daylight_hint
+from .engine import INJECT_TEXT_CAP, daylight_hint
 
 _EXTRA_ITEM = "_narrative_life_context"
 
@@ -117,7 +117,7 @@ def build_context_block(
 
     if recent_entries:
         recent_text = "；".join(
-            str(entry.get("text", "")).strip()[:48]
+            str(entry.get("text", "")).strip()[:INJECT_TEXT_CAP]
             for entry in recent_entries[:3]
             if str(entry.get("text", "")).strip()
         )
@@ -125,6 +125,8 @@ def build_context_block(
             lines.append(f"- 你最近的生活：{recent_text}")
 
     # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
+    # 2026-09-21：上限统一取 INJECT_TEXT_CAP（1024）。旧的 56/120 字会把 major 档
+    # （可达 400 字）的细节截掉，等于白写；1024 只作防失控天花板，条数仍限最近 2 条。
     pending_events = list(inner.get("focus", {}).get("pending_events", []))
     fragments = [
         str(item.get("text", "")).strip()
@@ -132,7 +134,10 @@ def build_context_block(
         if str(item.get("text", "") or "").strip()
     ]
     if fragments:
-        lines.append("- 你心里正挂念的生活片段：\n" + "\n".join(f"    - {fragment[:56]}" for fragment in fragments))
+        lines.append(
+            "- 你心里正挂念的生活片段：\n"
+            + "\n".join(f"    - {fragment[:INJECT_TEXT_CAP]}" for fragment in fragments)
+        )
 
     if branch is not None:
         stage = str(branch["identity"].get("stage", "陌生人"))
