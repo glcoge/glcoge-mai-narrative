@@ -460,11 +460,14 @@ class NarrativeEngine:
         """分享欲事件反馈（规则层零 LLM，第一步方案）。
 
         event 取值：
-        - ``"caught"``：主动消息 30 分钟内被回复 → self/branch 双升（聊得起来，更想聊）；
-        - ``"ignored"``：主动消息超窗未回 → self/branch 双降（别热脸贴冷屁股）；
+        - ``"caught"``：主动消息在承接窗口（16h）内被接住 → self/branch 双升（聊得起来，更想聊）；
+        - ``"ignored"``：主动消息**已确认送达**但超窗无人接住 → self/branch 双降（别热脸贴冷屁股）；
         - ``"user_initiated"``：用户主动发起对话（非回复主动消息）→ 仅 self 层小升（被需要感）。
 
-        被接住/被冷落的判定与防重复结算由 ProactiveScheduler 负责（_sent_at 弹出即罚一次）。
+        被接住/被冷落的判定与防重复结算由 ProactiveScheduler 负责：每条主动开口在
+        ``_sent_records`` 里只有一条记录，承接即标 ``consumed``、超窗出队时按
+        ``delivered`` 分流（未送达的不罚），因此天然不会重复计数、也不会罚到
+        压根没发出去的开口。
         """
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:

@@ -4,9 +4,19 @@
 - user_initiated_freq  用户主动发起频率（由谁起头标记）
 - dialogue_depth       对话深度，按 scope 区分：user_msg_len/bot_msg_len=单条消息长度、
                        rounds=对话往返轮次（v0.1.4 补齐，入站登记+出站 30 分钟内配对成 1 轮）
-- proactive_sent       主动消息发出计数
-- proactive_replied    主动消息 30 分钟内被回复计数
-- state_diversity      状态多样性（mood 切换等，随快照采集）
+- proactive_sent         主动开口**触发**计数（漏斗第一层，未确认送达）
+- proactive_delivered    主动开口**确认送达**计数（承接率的真分母）
+- proactive_undelivered  超窗仍未被确认送达的主动开口（沉默 / 发送失败）
+- proactive_trigger_failed  触发被主程序拒绝（流不存在 / 未排队）
+- proactive_replied      一次被接住的承接；**value = 延迟分钟数**（连续量）
+- state_diversity        状态多样性（mood 切换等，随快照采集）
+
+⚠️ 2026-09-22 口径变更：`proactive_replied` 的 value 从恒 1 改为**延迟分钟**。
+用 `count(*)` 统计次数的脚本不受影响；用 `sum(value)` 的脚本会失真（得到的是
+总延迟分钟）。30min / 2h / 6h / 16h 等口径一律在分析层对 value 做筛选：
+`count(*) where value <= 30`。原 `proactive_replied_24h` 已废弃——它与 30min
+口径共用一条判定链，一条用户消息只会落进其中一个分支，导致 24h 分子被系统性
+吞掉（A2 报告里的 24% 即由此而来，真实值 78%）。
 
 成本侧：事件/编年史的额外 LLM token 由各调用点自行 record 到 `llm_extra_tokens`。
 

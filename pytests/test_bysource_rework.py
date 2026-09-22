@@ -3,7 +3,7 @@
 覆盖三项：
 - **B 去复用**：已用作由头的片段不再二次使用（kv `bysource:used:{user_id}`，按用户隔离）
 - **C 质量门槛**：minor 档（无素材的纯状态切片）不单独作由头 → 宁可跳过本轮
-- **G 迟来承接**：24 小时内回复记为 `check_late_reply`，每条只计一次
+- **G 承接结算**：`resolve_catch` 返回延迟分钟，每条主动消息至多结算一次
 
 运行（项目根）：
     .venv/Scripts/python.exe -m pytest plugins/glcoge-mai-narrative/pytests/test_bysource_rework.py -q
@@ -211,64 +211,156 @@ def _make_scheduler():
     sched._task = None
     sched._running = False
     sched._next_fire = {}
-    sched._sent_at = {}
-    sched._sent_long = {}
+    sched._sent_records = {}
     sched._pending_at = {}
     return sched
 
 
-def test_late_reply_within_24h():
-    """5 小时后回复：30 分钟口径不算，24 小时口径算一次。"""
+def _sent_delivered(sched, uid="10001", stream="stream-1", ts=_NOW, bysource="由头"):
+    """登记一次**已确认送达**的主动开口（承接判定的前置条件）。"""
+    sched.record_sent(uid, stream, ts, bysource)
+    sched.mark_delivered(stream)
+
+
+def test_catch_returns_latency_minutes():
+    """承接结算返回**延迟分钟**，而不是布尔值——口径在分析层切。"""
     sched = _make_scheduler()
-    sent_at = _NOW
-    sched._sent_long["10001"] = [sent_at]
+    _sent_delivered(sched)
 
-    replied_at = sent_at + datetime.timedelta(hours=5)
-    assert sched.check_late_reply("10001", replied_at) is True
-    assert sched.check_late_reply("10001", replied_at) is False, "同一条只计一次"
+    latency = sched.resolve_catch("10001", _NOW + datetime.timedelta(hours=5))
 
-
-def test_no_late_reply_after_24h():
-    sched = _make_scheduler()
-    sent_at = _NOW
-    sched._sent_long["10001"] = [sent_at]
-    assert sched.check_late_reply("10001", sent_at + datetime.timedelta(hours=25)) is False
+    assert latency is not None, "窗口内应命中"
+    assert abs(latency - 300.0) < 1e-6, f"延迟应为 300 分钟（实际 {latency}）"
 
 
-def test_late_tracks_record_sent():
-    """触发主动开口时，24h 记录与 30min 记录同时登记。"""
-    sched = _make_scheduler()
-    sched.record_sent("10001", "stream-1", _NOW, "由头")
-    assert sched._sent_at.get("10001")
-    assert sched._sent_long.get("10001"), "迟来承接需要 24h 记录"
+def test_undelivered_is_not_catchable():
+    """未确认送达的开口**不可被承接**——否则贪心归属会把用户随手发的消息错记成回应。
 
-
-def test_replied_in_30min_not_counted_twice():
-    """已被 30min 口径记为"被接住"的消息，不得再被 24h 口径重复计数。
-
-    plugin.py 的判定链是 check_reply → elif check_late_reply；若 30min 命中时不从
-    _sent_long 弹出对应条目，用户下一条 inbound 会把同一条主动消息再记一次
-    proactive_replied_24h，指标系统性偏高、无法与 A2 基线（30min 口径 24%）对照。
+    离线回放实证（analysis/17-replay.txt）：不加这道门槛时承接率 50/44 = 114%，
+    其中 16 条是错记；加上后 34/44 = 77%，与手算基准 78% 吻合。
     """
     sched = _make_scheduler()
-    sched.record_sent("10001", "stream-1", _NOW, "由头")
-    replied_at = _NOW + datetime.timedelta(minutes=5)
+    sched.record_sent("10001", "stream-1", _NOW, "由头")  # 故意不 mark_delivered
 
-    assert sched.check_reply("10001", replied_at) is True, "30min 口径应命中"
-    assert sched.check_late_reply("10001", replied_at + datetime.timedelta(hours=2)) is False, (
-        "同一条消息不应既算 30min 接住、又算 24h 迟来承接"
+    assert sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=5)) is None, (
+        "没发出去的开口不该被算作被接住"
     )
 
 
-def test_30min_ack_pops_only_one_entry():
-    """多条主动消息时，一次 30min 承接只抵消**最新**一条，其余仍在 24h 窗口内有效。"""
+def test_catch_only_once_per_message():
+    """一条主动消息至多结算一次（取代 30min/24h 抢同一条的旧病）。"""
+    sched = _make_scheduler()
+    _sent_delivered(sched)
+
+    assert sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=5)) is not None
+    assert sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=6)) is None, (
+        "同一条消息不应被结算第二次"
+    )
+
+
+def test_no_catch_beyond_window():
+    """超窗（16 小时）不结算——由 settle_expired 走冷落/未送达口径。"""
+    sched = _make_scheduler()
+    _sent_delivered(sched)
+    assert sched.resolve_catch("10001", _NOW + datetime.timedelta(hours=17)) is None
+
+
+def test_catch_picks_latest_unconsumed():
+    """多条主动消息：结算最近一条未被承接的，其余仍在窗口内可结算。"""
     sched = _make_scheduler()
     sched.record_sent("10001", "stream-1", _NOW, "由头甲")
     sched.record_sent("10001", "stream-1", _NOW + datetime.timedelta(minutes=10), "由头乙")
-    assert len(sched._sent_long["10001"]) == 2
+    sched.mark_delivered("stream-1")
+    sched.mark_delivered("stream-1")
 
-    assert sched.check_reply("10001", _NOW + datetime.timedelta(minutes=12)) is True
-    assert len(sched._sent_long["10001"]) == 1, "一次承接只应抵消一条记录"
+    # 第二次开口后 2 分钟回复 → 结算"由头乙"（延迟 2 分钟）
+    latency = sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=12))
+    assert abs(latency - 2.0) < 1e-6, f"应结算最新一条（实际 {latency}）"
+
+    # 再由头甲仍在窗口内 → 下一条 inbound 结算它（延迟 20 分钟）
+    latency2 = sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=20))
+    assert abs(latency2 - 20.0) < 1e-6, f"应接着结算更早一条（实际 {latency2}）"
+
+    assert sched.resolve_catch("10001", _NOW + datetime.timedelta(minutes=21)) is None
+
+
+def test_mark_delivered_respects_grace_window():
+    """宽限期外不认领：防止主动轮里 bot 连发多条时误标更早的开口。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW, "由头")
+
+    assert sched.mark_delivered("stream-1", _NOW + datetime.timedelta(minutes=30)) is False, (
+        "超出 10 分钟宽限期不应认领"
+    )
+    assert sched.mark_delivered("stream-1", _NOW + datetime.timedelta(minutes=3)) is True
+
+
+def test_record_sent_tracks_single_record():
+    """登记一次主动开口只产生**一条**记录（旧实现是两条并行队列）。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW, "由头")
+    records = sched._sent_records.get("10001") or []
+    assert len(records) == 1, f"应为单条记录（实际 {len(records)}）"
+    assert records[0].delivered is False, "登记时尚未确认送达"
+    assert records[0].consumed is False
+
+
+def test_mark_delivered_flags_latest_for_stream():
+    """送达确认打在该会话最近一条未确认的记录上。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW, "由头甲")
+    sched.record_sent("10001", "stream-1", _NOW + datetime.timedelta(minutes=10), "由头乙")
+
+    assert sched.mark_delivered("stream-1") is True
+    records = sched._sent_records["10001"]
+    assert records[0].delivered is False, "更早那条不应被误标"
+    assert records[1].delivered is True, "应标在最新一条上"
+
+    assert sched.mark_delivered("stream-1") is True, "次新那条仍待确认，应继续命中"
+    assert records[0].delivered is True
+    assert sched.mark_delivered("stream-1") is False, "全部确认过后不应再命中"
+
+
+def test_settle_expired_ignored_only_when_delivered():
+    """超窗结算：已送达无人接住 → 冷落；未送达 → undelivered，**不罚冷落**。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW - datetime.timedelta(hours=20), "甲")
+    sched.record_sent("10001", "stream-1", _NOW - datetime.timedelta(hours=19), "乙")
+    sched.mark_delivered("stream-1")  # 只确认了最新一条（乙）
+
+    ignored, undelivered = sched.settle_expired("10001", _NOW)
+
+    assert (ignored, undelivered) == (1, 1), f"应 1 冷落 + 1 未送达（实际 {ignored}, {undelivered}）"
+    assert not sched._sent_records["10001"], "结算后应出队，下轮不重复惩罚"
+
+
+def test_settle_expired_skips_consumed():
+    """已被接住的记录超窗后不再计冷落。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW - datetime.timedelta(hours=18), "甲")
+    sched.mark_delivered("stream-1")
+    assert sched.resolve_catch("10001", _NOW - datetime.timedelta(hours=17)) is not None
+
+    ignored, undelivered = sched.settle_expired("10001", _NOW)
+    assert (ignored, undelivered) == (0, 0), "已承接的不应再罚"
+
+
+def test_settle_expired_keeps_fresh():
+    """窗口内的记录保留，不参与结算。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW - datetime.timedelta(hours=1), "甲")
+    sched.mark_delivered("stream-1")
+
+    assert sched.settle_expired("10001", _NOW) == (0, 0)
+    assert len(sched._sent_records["10001"]) == 1, "窗口内记录应保留"
+
+
+def test_trigger_accepted():
+    """触发返回值判定：正常排队算成功，success=False / 缺 task_id 算被拒。"""
+    assert _PROACTIVE._trigger_accepted({"queued": True, "task_id": "t1"}) is True
+    assert _PROACTIVE._trigger_accepted({"success": False}) is False
+    assert _PROACTIVE._trigger_accepted({}) is False
+    assert _PROACTIVE._trigger_accepted(None) is False
 
 
 if __name__ == "__main__":

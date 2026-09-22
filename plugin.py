@@ -319,14 +319,17 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._telemetry.note_inbound(
             stream_id=stream_id, user_id=user_id, text=plain, now=now
         )
-        # 验收指标 3：主动消息是否被接住
-        if self._proactive.check_reply(user_id, now):
-            self._telemetry.record("proactive_replied", 1, user_id=user_id)
+        # 验收指标 3：主动消息是否被接住（单指标 + 延迟分钟，2026-09-22 定案）
+        #
+        # 原先是 check_reply(30min) → elif check_late_reply(24h) 的判定链：一条用户
+        # 消息只会落进其中一个分支，同时满足时 24h 的分子被吞掉，指标系统性低估
+        # （A2 报告里的 24% 就是这么来的，真实值 78%）。改为单一入口 + 延迟连续量：
+        # 有没有被接住用 count(*) 数，多快被接住用 avg(value) 看，口径在分析层切。
+        latency = self._proactive.resolve_catch(user_id, now)
+        if latency is not None:
+            self._telemetry.record("proactive_replied", latency, user_id=user_id)
             # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
             self._engine.record_urge_feedback(user_id, "caught")
-        elif self._proactive.check_late_reply(user_id, now):
-            # 迟来承接（24h）：学生作息窄，30 分钟口径会低估；此指标与 30min 并列看
-            self._telemetry.record("proactive_replied_24h", 1, user_id=user_id)
         elif self._telemetry.is_user_initiated(stream_id or user_id, now):
             # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
             self._engine.record_urge_feedback(user_id, "user_initiated")
@@ -357,10 +360,18 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         # 触发层追踪：部署后临时调 debug 日志级别，一轮对话即可确认本 hook 是否被派发
         self.ctx.logger.debug("narrative outbound: stream=%s", resolved_stream or "-")
+        uid = self._streams.uid_of(resolved_stream)
+        # 主动开口送达确认（2026-09-22）：proactive_sent 记的是"触发"，而触发后
+        # 模型可能选择沉默、也可能 reply 工具失败——只有真正出站了才算数，它才是
+        # 承接率的真分母，也只有它才会因无人回应而罚冷落。
+        if self._proactive is not None and self._proactive.mark_delivered(
+            resolved_stream, self._local_now()
+        ):
+            self._telemetry.record("proactive_delivered", 1, user_id=uid, scope="proactive")
         # 出站采样（出站时刻/轮次配对/bot 长度判定下沉 Telemetry，2026-09-13 C5）
         self._telemetry.note_outbound(
             stream_id=resolved_stream,
-            user_id=self._streams.uid_of(resolved_stream),
+            user_id=uid,
             message=message,
             now=self._local_now(),
         )

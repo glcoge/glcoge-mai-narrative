@@ -78,7 +78,8 @@ def _make_plugin(*, narrative_enabled: bool = True, telemetry_enabled: bool = Tr
         uid_of=lambda sid: {"s1": "u1"}.get(sid, ""),
         stream_of=lambda uid: "s1" if uid == "u1" else "",
     )
-    plugin._proactive = SimpleNamespace()  # handle_post_send 不使用
+    # handle_post_send 会调用 mark_delivered 做主动开口送达确认（2026-09-22）
+    plugin._proactive = SimpleNamespace(mark_delivered=lambda sid, now=None: False)
     return plugin, telemetry, store
 
 

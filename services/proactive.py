@@ -11,18 +11,27 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .engine import parse_clock
 
-# 主动消息后 30 分钟内用户回复，记为"被接住"
-_PROACTIVE_REPLY_WINDOW_MINUTES = 30
+# 承接窗口 = 冷落窗口（2026-09-22 定案，取代原先 30min / 24h 双口径）**16 小时**。
+#
+# 依据（全周期 1152 条聊天记录实测）：承接延迟的中位数是 4.2 小时，用 30 分钟做
+# 窗口会让约六成的成功承接先被判成"冷落"、罚完才发生——这是分享欲净下降的
+# 结构性来源，与由头质量、送达率都无关。故统一为**单一窗口**：
+#   窗口内被接住 → caught(+gain)；窗口内无人接住 → ignored(-decay)。
+# 窗口内外的口径（30min / 2h / 6h / 16h）由分析层对延迟分钟做筛选得出，
+# 插件里只保留这一个阈值。
+_PROACTIVE_CATCH_WINDOW_MINUTES = 16 * 60
 
-# 迟来承接窗口（2026-09-22 issue-bysource-rework P1）：
-# 测试者多为学生，可即时回复的窗口很窄，30 分钟口径系统性低估承接率。
-# 故并行记录 24 小时内的回复，作为「24h 承接率」指标（与 30min 口径并列看）。
-_PROACTIVE_LATE_WINDOW_HOURS = 24
-_LATE_KEEP_PER_USER = 10
+# 每用户保留的主动开口记录条数上限（有界，防内存无增长界）
+_SENT_KEEP_PER_USER = 10
+
+# 送达确认宽限期（分钟）：只认领这期间内触发的开口，避免主动轮里 bot 连发多条时
+# 把更早一次开口误标成"这次送达了"。
+_DELIVER_CONFIRM_GRACE_MINUTES = 10
 
 # share_urge（v0.1.8 第一步）采样未过后的重试间隔范围（分钟）：短延迟重试而非
 # 重置完整随机间隔，避免分享欲高时错过整段活跃窗口；也不密集轮询骚扰判定。
@@ -121,6 +130,41 @@ def validate_rules(rules: Any) -> List[str]:
     return errors
 
 
+@dataclass
+class _SentRecord:
+    """一次主动开口的完整生命周期记录。
+
+    2026-09-22 定案：取代原先 ``_sent_at``（30min）+ ``_sent_long``（24h）两条并行
+    队列。两条队列必然要回答"这一条算谁的"，而这个问题每回答一次就可能答错一次
+    （当天上午刚答错过一次方向）。改为**一条记录 + 连续量**：
+
+    - ``delivered``：出站侧确认真的发出去了（未送达的不进承接率分母，也不罚冷落）；
+    - ``consumed``：已被一次承接结算掉（每条至多结算一次，天然防重复计数）；
+    - 延迟分钟由 ``resolve_catch`` 在结算时算出并交给分析层，插件内无第二个阈值。
+    """
+
+    ts: datetime.datetime
+    stream_id: str
+    delivered: bool = False
+    consumed: bool = False
+    # 侧信道由头（渲染层消费），不参与任何指标判定
+    bysource: str = field(default="")
+
+
+def _trigger_accepted(result: Any) -> bool:
+    """主动任务是否真的被主程序接受（用于区分"已排队"与"白跑一趟"）。
+
+    宿主正常返回 ``{"stream_id", "task_id", "queued": True}``；被拒时可能返回
+    ``success=False`` 或缺少 ``task_id``/``queued``。**不把 None 当成功**——异常
+    已被 ``_fire`` 的 except 捕获并置为 None，此处只做显式判定。
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("success") is False:
+        return False
+    return bool(result.get("queued")) or bool(result.get("task_id"))
+
+
 class ProactiveScheduler:
     """主动消息调度器：以 asyncio 周期任务驱动。"""
 
@@ -130,10 +174,8 @@ class ProactiveScheduler:
         self._running = False
         # uid -> 下一次开口时刻；窗口外或已用完上限时为 None
         self._next_fire: Dict[str, datetime.datetime] = {}
-        # uid -> 最近主动消息时刻列表（30 分钟回复判定）
-        self._sent_at: Dict[str, List[datetime.datetime]] = {}
-        # uid -> 主动消息时刻列表（24 小时迟来承接判定，2026-09-22 新增）
-        self._sent_long: Dict[str, List[datetime.datetime]] = {}
+        # uid -> 主动开口记录（承接判定 / 冷落结算 / 送达确认共用一份）
+        self._sent_records: Dict[str, List[_SentRecord]] = {}
         # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
         self._pending_at: Dict[str, Dict[str, Any]] = {}
 
@@ -193,12 +235,18 @@ class ProactiveScheduler:
             if not stream_id:
                 continue
 
-            # 被冷落结算（v0.1.8 share_urge）：30 分钟回复窗口过期未回 →
-            # 弹出过期记录并按条罚一次（弹出即天然防重复惩罚）。放在窗口/
-            # 上限检查之前：即便已超日上限或不在窗口，冷落反馈照样生效。
-            expired = self._expire_sent(user_id, now)
-            for _ in range(expired):
+            # 窗口到期结算（share_urge）：超窗无人接住 → 按条罚一次冷落。
+            # 只罚**已确认送达**的——没发出去的消息用户根本没看到，罚它只会让
+            # 分享欲无谓下跌（v0.1.8 沉默螺旋的一部分就来自这里）。未送达的
+            # 单列 undelivered 供漏斗分析。放在窗口/上限检查之前：即便已超日
+            # 上限或不在窗口，冷落反馈照样生效。
+            ignored, undelivered = self.settle_expired(user_id, now)
+            for _ in range(ignored):
                 self._plugin._engine.record_urge_feedback(user_id, "ignored")
+            for _ in range(undelivered):
+                self._plugin._telemetry.record(
+                    "proactive_undelivered", 1, user_id=user_id, scope="proactive"
+                )
 
             today = now.strftime("%Y-%m-%d")
             day_count = self._plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
@@ -251,18 +299,40 @@ class ProactiveScheduler:
             )
             return
         intent = "按剧本生活主动开口"
+        # msg_id 硬要求（2026-09-22）：主程序 reply 工具强制要求一个上下文里真实
+        # 存在的 msg_id，而主动开口没有"被回复的那条消息"，模型极易漏传——实测
+        # 68 次主动 reply 里漏传 11 次，占 09-09 之后全部失败的 100%（送达率被
+        # 卡在 76%）。主程序已在主动回合前回填真实用户消息（runtime.py:372），
+        # 锚点是有的，缺的只是把要求讲明白。
+        # ⚠️ 陷阱：主动任务自身带 id="proactive:<plugin>:<ts>"（runtime.py:679），
+        # 模型会误当成 msg_id 抄——已实证 2 次，故在此点名禁止。
+        reason = (
+            f"{bysource}\n"
+            "（开口时必须调用 reply 工具并传入 msg_id：取上下文里最近一条用户消息"
+            '前缀中的 msg_id="..." 数字；不要使用 proactive: 开头的 id，那不是可回复的消息。）'
+        )
         plugin.ctx.logger.info(
             "主动消息触发: uid=%s stream=%s 由头=%s", user_id, stream_id, bysource
         )
         try:
-            await plugin.ctx.maisaka.proactive.trigger(
+            result = await plugin.ctx.maisaka.proactive.trigger(
                 stream_id,
                 intent=intent,
-                reason=bysource,
+                reason=reason,
                 metadata={"source": "glcoge.mai-narrative", "user_id": user_id},
             )
         except Exception as exc:
             plugin.ctx.logger.warning("主动消息触发失败: %s", exc)
+            result = None
+        if not _trigger_accepted(result):
+            # 触发被拒（流不存在 / 被限流 / 返回异常）却不记账，会让 proactive_sent
+            # 凭空虚增——分母里混进压根没排上队的轮次。
+            plugin.ctx.logger.warning(
+                "主动消息触发被拒: uid=%s stream=%s result=%r", user_id, stream_id, result
+            )
+            plugin._telemetry.record(
+                "proactive_trigger_failed", 1, user_id=user_id, scope="proactive"
+            )
             return
 
         today = now.strftime("%Y-%m-%d")
@@ -278,16 +348,40 @@ class ProactiveScheduler:
         now: datetime.datetime,
         bysource: str,
     ) -> None:
-        """登记一次主动开口：发送时刻（30 分钟回复判定）+ 侧信道由头（渲染层消费）。"""
-        self._sent_at.setdefault(user_id, []).append(now)
+        """登记一次主动开口。**此时尚未确认送达**，delivered 由出站侧回填。"""
+        records = self._sent_records.setdefault(user_id, [])
+        records.append(_SentRecord(ts=now, stream_id=stream_id, bysource=bysource))
+        self._sent_records[user_id] = records[-_SENT_KEEP_PER_USER:]
         self._pending_at[stream_id] = {
             "ts": now,
             "bysource": bysource,
         }
-        # 迟来承接（24h）：与 30 分钟口径并行，_sent_long 单独保留发送时刻
-        long_list = self._sent_long.setdefault(user_id, [])
-        long_list.append(now)
-        self._sent_long[user_id] = long_list[-_LATE_KEEP_PER_USER:]
+
+    def mark_delivered(self, stream_id: str, now: Optional[datetime.datetime] = None) -> bool:
+        """出站确认：该会话最近一次未确认送达的主动开口，确实发出去了。
+
+        只有被标记的记录才会计入 ``proactive_delivered``（承接率的真分母），
+        也只有它才能被承接、才会因无人回应而罚冷落。返回是否命中了一条待确认记录。
+
+        ``now`` 用于**宽限期判定**：只认领最近 ``_DELIVER_CONFIRM_GRACE_MINUTES``
+        分钟内触发的开口。主动轮里 bot 可能连发多条，若不设宽限，第二条出站消息
+        会把更早一次（早已结算完毕的）开口误标成"这次送达了"。
+        """
+        if not stream_id:
+            return False
+        latest: Optional[_SentRecord] = None
+        for records in self._sent_records.values():
+            for rec in records:
+                if rec.stream_id != stream_id or rec.delivered:
+                    continue
+                if latest is None or rec.ts > latest.ts:
+                    latest = rec
+        if latest is None:
+            return False
+        if now is not None and (now - latest.ts).total_seconds() > _DELIVER_CONFIRM_GRACE_MINUTES * 60:
+            return False
+        latest.delivered = True
+        return True
 
     def consume_pending(self, session_id: str, window_seconds: int = 30) -> Tuple[str, str]:
         """主动轮判定：本会话 window_seconds 内刚触发过主动消息 → 返回 ("proactive", 由头)。
@@ -303,78 +397,69 @@ class ProactiveScheduler:
             return "proactive", str(entry.get("bysource", "") or "")
         return "reply", ""
 
-    def check_reply(self, user_id: str, now: datetime.datetime) -> bool:
-        """主动消息 30 分钟内收到用户回复 → 记一次"被接住"。
+    def resolve_catch(self, user_id: str, now: datetime.datetime) -> Optional[float]:
+        """入站承接结算：返回本次承接的**延迟分钟数**，无可结算记录则返回 None。
 
-        2026-09-22 修复（迟来承接去重）：命中时**同步弹出迟来承接队列的最新一条**。
-        判定链是 ``check_reply → elif check_late_reply``（见 plugin.py 入站 hook），
-        若不在这里弹出，同一条主动消息会先算 30min「被接住」，再被下一次 inbound
-        算成 24h「迟来承接」，使 proactive_replied_24h 系统性偏高、无法与 30min
-        基线对照。一次承接只抵消一条，其余记录仍在 24h 窗口内有效。
+        取**最近一条**未被承接、且仍在窗口内的主动消息，命中即标记 ``consumed`` ——
+        每条主动消息至多结算一次，所以不存在"两个口径抢同一条"的问题。
+
+        ⚠️ **只归属已确认送达的开口**（2026-09-22 离线回放实证，见
+        ``analysis/17-replay.txt``）：不设这个门槛时，用户本来就在聊天、随手发的
+        下一条消息会被贪心规则错记成"对我们主动开口的回应"，回放里因此多出
+        16 条假承接，承接率 50/44 = **114%**。加上门槛后为 34/44 = 77%，与手算
+        基准 78% 吻合。
+
+        返回的是连续量而非布尔值：30 分钟 / 2 小时 / 6 小时 / 16 小时这些口径
+        全部由分析层对延迟分钟做筛选得出，插件里不再维护第二个计数器。
+
+        延迟为负（时钟回拨 / 由头时间戳异常）时按 0 计，不产生负延迟样本。
         """
-        sent_list = self._sent_at.get(user_id, [])
-        if not sent_list:
-            return False
-        active = [
-            item
-            for item in sent_list
-            if (now - item).total_seconds() / 60 <= _PROACTIVE_REPLY_WINDOW_MINUTES
-        ]
-        self._sent_at[user_id] = active[-2:]
-        if active:
-            self._pop_latest_late(user_id)
-        return bool(active)
-
-    def _pop_latest_late(self, user_id: str) -> None:
-        """弹出迟来承接队列的**最新**一条（已被 30min 口径计过数的那次发送）。"""
-        entries = self._sent_long.get(user_id, [])
-        if entries:
-            self._sent_long[user_id] = entries[:-1]
-
-    def check_late_reply(self, user_id: str, now: datetime.datetime) -> bool:
-        """24 小时内收到回复 → 一次"迟来承接"（每条主动消息只计一次）。
-
-        与 30 分钟口径**互不排斥**：已在 30 分钟内记为"被接住"的消息，会由
-        ``check_reply`` 从本队列弹出，因此**不会**被这里重复计数（见该方法注释）。
-        """
-        entries = self._sent_long.get(user_id, [])
-        if not entries:
-            return False
-        keep: List[datetime.datetime] = []
-        hit = False
-        for item in entries:
-            fresh = (now - item).total_seconds() <= _PROACTIVE_LATE_WINDOW_HOURS * 3600
-            if fresh and not hit:
-                hit = True  # 弹出该条，后续不再计数
+        records = self._sent_records.get(user_id, [])
+        for rec in reversed(records):
+            if rec.consumed or not rec.delivered:
                 continue
-            if fresh:
-                keep.append(item)
-            # 超过 24 小时的记录直接丢弃
-        self._sent_long[user_id] = keep[-_LATE_KEEP_PER_USER:]
-        return hit
+            elapsed = (now - rec.ts).total_seconds() / 60
+            if elapsed > _PROACTIVE_CATCH_WINDOW_MINUTES:
+                # 最近的这条已超窗，更早的只会更旧
+                break
+            rec.consumed = True
+            return max(0.0, elapsed)
+        return None
 
-    def _expire_sent(self, user_id: str, now: datetime.datetime) -> int:
-        """弹出已过 30 分钟回复窗口的发送记录，返回过期条数（每条 = 一次冷落）。
+    def settle_expired(self, user_id: str, now: datetime.datetime) -> Tuple[int, int]:
+        """窗口到期结算，返回 ``(冷落条数, 未送达条数)``。
 
-        与 ``check_reply`` 共用 ``_sent_at``：check_reply 只保留窗口内记录用于
-        "被接住"判定（由用户回复触发），过期条目的"冷落"惩罚由本方法在
-        调度循环里统一结算，两者各取所需、不会重复计数。
+        - **已送达且无人接住** → 计一次冷落（分享欲 -decay）；
+        - **未送达** → 计一次 undelivered，**不参与冷落结算**：用户没看到，
+          罚它只会让分享欲无谓下跌；
+        - 已被承接的记录直接出队，不再计数。
+
+        结算即出队，下一轮不会重复惩罚（等价于旧实现的"弹出即罚一次"）。
         """
-        sent_list = self._sent_at.get(user_id, [])
-        if not sent_list:
-            return 0
-        active = [
-            item
-            for item in sent_list
-            if (now - item).total_seconds() / 60 <= _PROACTIVE_REPLY_WINDOW_MINUTES
-        ]
-        self._sent_at[user_id] = active
-        return len(sent_list) - len(active)
+        records = self._sent_records.get(user_id, [])
+        if not records:
+            return 0, 0
+        keep: List[_SentRecord] = []
+        ignored = 0
+        undelivered = 0
+        for rec in records:
+            if (now - rec.ts).total_seconds() / 60 <= _PROACTIVE_CATCH_WINDOW_MINUTES:
+                keep.append(rec)
+                continue
+            if rec.consumed:
+                # 已按承接结算过（caught），不再参与任何到期结算——否则同一条
+                # 开口会既算承接又算未送达，漏斗各层之和超过开口总数。
+                continue
+            if rec.delivered:
+                ignored += 1
+            else:
+                undelivered += 1
+        self._sent_records[user_id] = keep[-_SENT_KEEP_PER_USER:]
+        return ignored, undelivered
 
     def clear_sent(self) -> None:
         """清空主动消息发送记录（状态重置用）。"""
-        self._sent_at.clear()
-        self._sent_long.clear()
+        self._sent_records.clear()
 
     # ─── 内部 ────────────────────────────────────────────────────
 

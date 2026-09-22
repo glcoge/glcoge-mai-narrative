@@ -2,7 +2,10 @@
 
 设计定案（2026-09-17 用户拍板，基于 issue-share-urge.md 四个开放问题）：
 - 两层相乘：self 层基线漂移 × branch 层对人系数 × 精力因子，clamp [0,1]；
-- 冷落窗口 30min（沿用 _PROACTIVE_REPLY_WINDOW_MINUTES，与"被接住"同窗）；
+- 承接窗口 = 冷落窗口 **16 小时**（2026-09-22 改，原 30min）：实测承接延迟中位
+  4.2 小时，30min 窗口会把六成成功承接先判成"冷落"再罚一次，是沉默螺旋的结构性
+  来源。窗口内被接住 → +gain；超窗无人接住（且**已确认送达**）→ -decay；
+  未送达的不罚，单列 proactive_undelivered；
 - 第一步不做峰值即时触发：保留随机计时器作最小间隔闸门，到点后按分享欲采样，
   未过则 30-60 分钟短延迟重试；
 - 与 Agency Window 不重复门控：share_urge 只作用于主动开口时机，
@@ -149,9 +152,16 @@ def _make_scheduler(
         compute_share_urge=lambda uid: (urge if urge_enabled else 1.0),
         record_urge_feedback=lambda uid, event: urge_events.append((uid, event)),
     )
+    # 指标采集替身：proactive_undelivered / proactive_trigger_failed 由调度循环写入
+    metrics: List[Any] = []
     plugin = SimpleNamespace(
         config=cfg,
         _engine=engine,
+        _telemetry=SimpleNamespace(
+            record=lambda name, value=1, user_id="", scope="": metrics.append(
+                (name, value, user_id, scope)
+            )
+        ),
         _streams=SimpleNamespace(stream_of=lambda uid: f"stream-{uid}"),
         _store=_FakeStore(),
         _local_now=lambda: now,
@@ -162,8 +172,9 @@ def _make_scheduler(
     scheduler._task = None
     scheduler._running = False
     scheduler._next_fire: Dict[str, Any] = {}
-    scheduler._sent_at: Dict[str, List[datetime.datetime]] = {}
+    scheduler._sent_records: Dict[str, Any] = {}
     scheduler._pending_at: Dict[str, Any] = {}
+    scheduler._metrics = metrics
 
     async def fake_fire(user_id: str, stream_id: str, ts: datetime.datetime) -> None:
         fired.append(user_id)
@@ -304,29 +315,47 @@ def test_compute_gate_returns_full():
 # ===== scheduler 层：冷落结算与采样接线 =====
 
 
-def test_expire_sent_counts_ignored():
-    """_expire_sent：弹出过期条目并返回条数，窗口内记录保留。"""
+def test_settle_expired_counts_ignored():
+    """settle_expired：超窗且已送达 → 计冷落；窗口内记录保留。"""
     scheduler, _, _ = _make_scheduler()
-    fresh = _NOW - datetime.timedelta(minutes=10)
-    expired = _NOW - datetime.timedelta(minutes=31)
-    scheduler._sent_at[_UID] = [expired, fresh, expired]
+    fresh = _NOW - datetime.timedelta(hours=1)
+    expired = _NOW - datetime.timedelta(hours=17)
+    # 先登记超窗那条并确认送达，再登记窗口内那条（mark_delivered 打在最新一条上）
+    scheduler.record_sent(_UID, f"stream-{_UID}", expired, "甲")
+    scheduler.mark_delivered(f"stream-{_UID}")
+    scheduler.record_sent(_UID, f"stream-{_UID}", fresh, "乙")
 
-    count = scheduler._expire_sent(_UID, _NOW)
+    ignored, undelivered = scheduler.settle_expired(_UID, _NOW)
 
-    assert count == 2, f"两条过期记录应计 2 次冷落（实际 {count}）"
-    assert scheduler._sent_at[_UID] == [fresh], "窗口内记录应保留"
+    assert (ignored, undelivered) == (1, 0), f"应计 1 次冷落（实际 {ignored}, {undelivered}）"
+    assert len(scheduler._sent_records[_UID]) == 1, "窗口内记录应保留"
 
 
 def test_check_once_settles_ignored_feedback():
-    """调度循环：过期条目 → 引擎收到 ignored 反馈（弹出即罚，不重复）。"""
+    """调度循环：超窗已送达条目 → 引擎收到 ignored 反馈（出队即罚，不重复）。"""
     scheduler, _, urge_events = _make_scheduler()
-    scheduler._sent_at[_UID] = [_NOW - datetime.timedelta(minutes=45)]
+    scheduler.record_sent(_UID, f"stream-{_UID}", _NOW - datetime.timedelta(hours=20), "甲")
+    scheduler.mark_delivered(f"stream-{_UID}")
 
     asyncio.run(scheduler._check_once())
     asyncio.run(scheduler._check_once())  # 第二轮不得重复惩罚
 
     assert urge_events == [(_UID, "ignored")], (
         f"过期条目应恰好结算一次冷落（实际 {urge_events}）"
+    )
+
+
+def test_check_once_undelivered_is_not_punished():
+    """未送达的超窗条目 → 记 undelivered，**不罚冷落**（用户没看到，不该罚）。"""
+    scheduler, _, urge_events = _make_scheduler()
+    scheduler.record_sent(_UID, f"stream-{_UID}", _NOW - datetime.timedelta(hours=20), "甲")
+    # 故意不 mark_delivered：模拟模型选择沉默 / reply 工具失败
+
+    asyncio.run(scheduler._check_once())
+
+    assert urge_events == [], f"未送达不应产生冷落惩罚（实际 {urge_events}）"
+    assert scheduler._metrics == [("proactive_undelivered", 1, _UID, "proactive")], (
+        f"应记一条 undelivered（实际 {scheduler._metrics}）"
     )
 
 
