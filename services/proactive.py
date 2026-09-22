@@ -18,6 +18,12 @@ from .engine import parse_clock
 # 主动消息后 30 分钟内用户回复，记为"被接住"
 _PROACTIVE_REPLY_WINDOW_MINUTES = 30
 
+# 迟来承接窗口（2026-09-22 issue-bysource-rework P1）：
+# 测试者多为学生，可即时回复的窗口很窄，30 分钟口径系统性低估承接率。
+# 故并行记录 24 小时内的回复，作为「24h 承接率」指标（与 30min 口径并列看）。
+_PROACTIVE_LATE_WINDOW_HOURS = 24
+_LATE_KEEP_PER_USER = 10
+
 # share_urge（v0.1.8 第一步）采样未过后的重试间隔范围（分钟）：短延迟重试而非
 # 重置完整随机间隔，避免分享欲高时错过整段活跃窗口；也不密集轮询骚扰判定。
 # 第一步暂不入 config（对行为影响小），后续按真机数据再定。
@@ -126,6 +132,8 @@ class ProactiveScheduler:
         self._next_fire: Dict[str, datetime.datetime] = {}
         # uid -> 最近主动消息时刻列表（30 分钟回复判定）
         self._sent_at: Dict[str, List[datetime.datetime]] = {}
+        # uid -> 主动消息时刻列表（24 小时迟来承接判定，2026-09-22 新增）
+        self._sent_long: Dict[str, List[datetime.datetime]] = {}
         # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
         self._pending_at: Dict[str, Dict[str, Any]] = {}
 
@@ -276,6 +284,10 @@ class ProactiveScheduler:
             "ts": now,
             "bysource": bysource,
         }
+        # 迟来承接（24h）：与 30 分钟口径并行，_sent_long 单独保留发送时刻
+        long_list = self._sent_long.setdefault(user_id, [])
+        long_list.append(now)
+        self._sent_long[user_id] = long_list[-_LATE_KEEP_PER_USER:]
 
     def consume_pending(self, session_id: str, window_seconds: int = 30) -> Tuple[str, str]:
         """主动轮判定：本会话 window_seconds 内刚触发过主动消息 → 返回 ("proactive", 由头)。
@@ -304,6 +316,28 @@ class ProactiveScheduler:
         self._sent_at[user_id] = active[-2:]
         return bool(active)
 
+    def check_late_reply(self, user_id: str, now: datetime.datetime) -> bool:
+        """24 小时内收到回复 → 一次"迟来承接"（每条主动消息只计一次）。
+
+        与 30 分钟口径**互不排斥**：同一条消息若已在 30 分钟内被记为"被接住"，
+        这里不再重复计数（命中即弹出，天然防重复）。
+        """
+        entries = self._sent_long.get(user_id, [])
+        if not entries:
+            return False
+        keep: List[datetime.datetime] = []
+        hit = False
+        for item in entries:
+            fresh = (now - item).total_seconds() <= _PROACTIVE_LATE_WINDOW_HOURS * 3600
+            if fresh and not hit:
+                hit = True  # 弹出该条，后续不再计数
+                continue
+            if fresh:
+                keep.append(item)
+            # 超过 24 小时的记录直接丢弃
+        self._sent_long[user_id] = keep[-_LATE_KEEP_PER_USER:]
+        return hit
+
     def _expire_sent(self, user_id: str, now: datetime.datetime) -> int:
         """弹出已过 30 分钟回复窗口的发送记录，返回过期条数（每条 = 一次冷落）。
 
@@ -325,6 +359,7 @@ class ProactiveScheduler:
     def clear_sent(self) -> None:
         """清空主动消息发送记录（状态重置用）。"""
         self._sent_at.clear()
+        self._sent_long.clear()
 
     # ─── 内部 ────────────────────────────────────────────────────
 

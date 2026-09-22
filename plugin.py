@@ -324,6 +324,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self._telemetry.record("proactive_replied", 1, user_id=user_id)
             # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
             self._engine.record_urge_feedback(user_id, "caught")
+        elif self._proactive.check_late_reply(user_id, now):
+            # 迟来承接（24h）：学生作息窄，30 分钟口径会低估；此指标与 30min 并列看
+            self._telemetry.record("proactive_replied_24h", 1, user_id=user_id)
         elif self._telemetry.is_user_initiated(stream_id or user_id, now):
             # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
             self._engine.record_urge_feedback(user_id, "user_initiated")

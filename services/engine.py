@@ -66,6 +66,9 @@ INJECT_TEXT_CAP = 1024
 _FRAGMENT_ENERGY_LOW = 0.25
 _FRAGMENT_ENERGY_HIGH = 0.9
 
+# 由头去复用：已用作由头的生活片段 ts 集合（逗号分隔，有界 8 条）
+_BYSOURCE_USED_KEY = "bysource:used"
+
 
 def parse_clock(value: str) -> Optional[time]:
     """解析 HH:MM 字符串为 time；失败返回 None。"""
@@ -538,41 +541,63 @@ class NarrativeEngine:
         3. 情绪/作息（疲惫想倾诉、深夜清醒）。
 
         没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
+
+        2026-09-22 由头返工（issue-bysource-rework P1）：
+        - **去复用**：已当作由头用过的片段不再二次使用（kv `bysource:used`）；
+        - **质量门槛**：minor 档（无素材的纯状态切片）不单独作由头——内容太薄，
+          发出去大概率没人接。宁可跳过本轮。
         """
         current = now or self._local_now()
         cfg = self._plugin.config
         state = self.load_self_state()
         branch = self.load_branch_state(user_id)
 
-        candidates: List[str] = []
+        used_raw = self._store.get_kv_str(_BYSOURCE_USED_KEY)
+        used = {item.strip() for item in (used_raw or "").split(",") if item.strip()}
+
+        # (候选文本, 片段 ts)；非片段来源 ts 为空串，用于选中后登记"已用"
+        candidates: List[Tuple[str, str]] = []
         pending = list(state["state"]["focus"].get("pending_events", []))
         for item in pending[-2:]:
             fragment = str(item.get("text", "") or "").strip()
-            if fragment:
-                candidates.append(f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}")
+            if not fragment:
+                continue
+            ts = str(item.get("ts", "") or "").strip()
+            # 去复用：同一片段不作二次由头
+            if ts and ts in used:
+                continue
+            # 质量门槛：minor 档（无素材）不单独作由头
+            if str(item.get("tier", "") or "").strip() == "minor":
+                continue
+            candidates.append((f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts))
 
         stage = str(branch["identity"].get("stage", "陌生人"))
         milestones = list(branch["state"].get("milestones", []))
         if milestones and stage != "陌生人":
             latest_milestone = milestones[-1]
-            candidates.append(f"想起我们之间那件事：{latest_milestone.get('desc', '')}")
+            candidates.append((f"想起我们之间那件事：{latest_milestone.get('desc', '')}", ""))
 
         if not candidates:
             mood = str(state["state"]["mood"].get("label", "平静"))
             if mood in ("低落", "疲惫"):
-                candidates.append(f"今天有点{mood}，想找人聊聊")
+                candidates.append((f"今天有点{mood}，想找人聊聊", ""))
             phase = str(state["state"]["routine"].get("phase", ""))
             if phase == "深夜":
-                candidates.append("夜深了，我还不想睡，想跟你说点什么")
+                candidates.append(("夜深了，我还不想睡，想跟你说点什么", ""))
             elif phase == "清晨":
-                candidates.append("刚醒，今天莫名的想先跟你说句话")
+                candidates.append(("刚醒，今天莫名的想先跟你说句话", ""))
 
         if not candidates:
             return ""  # 无可借由的生活素材：本轮主动取消（宁可缺席，不干聊）
 
         # 场景感补全：确定性选一个（按小时稳定），避免同一天重复同一由头
         seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
-        return candidates[seed % len(candidates)]
+        chosen, chosen_ts = candidates[seed % len(candidates)]
+        if chosen_ts:
+            # 登记已用（有界 8 条）：下次该片段不再作由头
+            used.add(chosen_ts)
+            self._store.set_kv_str(_BYSOURCE_USED_KEY, ",".join(sorted(used)[-8:]))
+        return chosen
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
 
@@ -700,7 +725,14 @@ class NarrativeEngine:
         inner = state["state"]
         focus = inner.setdefault("focus", {})
         pending = list(focus.get("pending_events", []))
-        pending.append({"ts": current.isoformat(timespec="seconds"), "text": text})
+        # tier 随片段落库：由头签发要按档位做质量门槛（minor 不单独作由头，见 build_bysource）
+        pending.append(
+            {
+                "ts": current.isoformat(timespec="seconds"),
+                "text": text,
+                "tier": tier,
+            }
+        )
         focus["pending_events"] = pending[-5:]
         self.save_self_state(state)
         # 生活片段照常生成（pending_events 是主动消息的由头来源，不能断），
