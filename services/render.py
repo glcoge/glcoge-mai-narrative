@@ -18,7 +18,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .engine import INJECT_TEXT_CAP, daylight_hint
+from .engine import (
+    INJECT_TEXT_CAP,
+    daylight_hint,
+    minutes_since_clock,
+    minutes_until_clock,
+)
 
 _EXTRA_ITEM = "_narrative_life_context"
 
@@ -75,6 +80,44 @@ def is_injected_item(item: Any) -> bool:
     return str(item_id or "").startswith(_EXTRA_ITEM)
 
 
+def build_sleep_hint(plugin: Any, state: Dict[str, Any], now: datetime) -> str:
+    """睡眠相关的一句话状态提示（v0.1.10）；不需要提示时返回空串。
+
+    优先级：被吵醒 > 刚醒 > 临近入睡。睡着且没被吵醒 → 空串（不注入任何睡眠提示）。
+
+    ⚠️ 只描述**状态**，不规定措辞。文案层面的硬约束（该怎么说、该不该说）已由
+    0944cae 的回退结论确认：人格/表达类约束不写死在代码里，交给
+    ``[personality]`` / ``[identity]`` 承载。
+    """
+    cfg = plugin.config.narrative
+    routine = state["state"].get("routine", {})
+    asleep = str(routine.get("sleep_state", "awake")) == "asleep"
+
+    if asleep:
+        # 被吵醒：睡着 + 收到消息后 woken_awake_minutes 内
+        woken_ts = str(routine.get("last_woken_ts", "") or "")
+        if not woken_ts:
+            return ""
+        try:
+            elapsed = (now - datetime.fromisoformat(woken_ts)).total_seconds() / 60
+        except (TypeError, ValueError):
+            return ""
+        if elapsed < int(cfg.woken_awake_minutes):
+            return "你本来已经睡了，被这条消息吵醒，脑子还有点迷糊，精神头不太够。"
+        return ""
+
+    # 刚醒：起床后 60 分钟内（按 wake_time 纯时刻推算，零额外状态）
+    since_wake = minutes_since_clock(cfg.wake_time, now)
+    if since_wake is not None and since_wake <= 60:
+        return "你刚醒不久，还有点没睡醒。"
+
+    # 临近入睡：距 sleep_time 不足配置窗口
+    to_sleep = minutes_until_clock(cfg.sleep_time, now)
+    if to_sleep is not None and to_sleep <= int(cfg.sleep_pre_sleep_hint_minutes):
+        return "你有点困了，准备睡了。"
+    return ""
+
+
 def build_context_block(
     plugin: Any,
     state: Dict[str, Any],
@@ -110,6 +153,11 @@ def build_context_block(
         f"- 此刻：{now.strftime('%Y-%m-%d %H:%M')}，你正处于{phase}（{daylight_hint(now.hour)}），"
         f"心情{mood['label']}，精力 {mood['energy'] * 10:.0f}/10",
     ]
+
+    # 睡眠态提示（v0.1.10）：被吵醒 / 刚醒 / 临近入睡，三选一；无关时整行不加
+    sleep_hint = build_sleep_hint(plugin, state, now)
+    if sleep_hint:
+        lines.append(f"- {sleep_hint}")
 
     if recent_entries:
         recent_text = "；".join(
@@ -179,5 +227,6 @@ def build_context_block(
 __all__ = [
     "build_context_block",
     "build_injected_item",
+    "build_sleep_hint",
     "is_injected_item",
 ]

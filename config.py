@@ -189,8 +189,12 @@ class NarrativeSection(PluginConfigBase):
         default=0.1,
         ge=0.0,
         le=1.0,
-        description="深夜（23:00-05:00）每 tick 额外恢复量：睡觉回血，早晨自然满状态。"
-        "深夜平衡点 = 基线 + 恢复量/回归系数（默认 0.45+0.1/0.3≈0.78，落在轻快档下沿）。",
+        description=(
+            "睡眠中每 tick 额外恢复量：睡觉回血，早晨自然满状态。"
+            "平衡点 = 基线 + 恢复量/回归系数（默认 0.45+0.1/0.3≈0.78，落在轻快档下沿）。"
+            "（2026-09-22：判定由「深夜相位」改为「睡眠态」——旧写法只在 23:00-05:00 回血，"
+            "05:00 到起床之间睡着却不回血，属漏网；且 23:00-23:30 明明还醒着反而回血。）"
+        ),
         json_schema_extra={"label": "睡眠恢复", "hint": "每 tick 恢复量；默认 0.1", "order": 10},
     )
     energy_interaction_boost: float = Field(
@@ -215,30 +219,31 @@ class NarrativeSection(PluginConfigBase):
         },
     )
     life_fragment_interval_minutes: int = Field(
-        default=120,
+        default=60,
         ge=30,
         le=1440,
         description=(
             "生活片段生成的间隔（分钟）。创作层每隔 N 分钟可能用轻量模型生成一段"
             "「生活片段」；间隔越大越省 token。"
             "⚠️ 实际检查粒度 = 世界时钟 tick（clock_tick_minutes），"
-            "间隔小于 tick 间隔时以 tick 为准。"
-            "（2026-09-21：默认由 240 → 120。实测创作层仅占总量 ~0.1%，"
-            "30% 红线有约两个数量级余量，原默认值过度保守。）"
+            "实际间隔会被向上取整到 tick 的整数倍（tick=30 时填 45 等同 60）。"
+            "⚠️ 间隔与日上限必须配套看：睡眠态启用后清醒窗口约 16.5 小时，"
+            "间隔 120 时理论产能只有 8 条，日上限填再大也吃不到。"
+            "（2026-09-21：默认 240 → 120；2026-09-22：120 → 60，配合日上限 16。）"
         ),
-        json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440", "order": 9},
+        json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440；需 ≤60 才吃满日上限 16", "order": 9},
     )
     life_fragment_daily_max: int = Field(
-        default=6,
+        default=16,
         ge=0,
-        le=12,
+        le=24,
         description=(
-            "每日生活片段生成上限。这是当前主要的成本控制手段"
-            "（另有 [daily_chronicle_time] 每日一次的编年史压缩）。"
-            "（2026-09-21：默认由 3 → 6。实测每日调用恒被压在上限上，"
-            "放宽后成本仍 <总量的 0.2%。）"
+            "每日生活片段生成上限（不含「起床补一段」，后者是状态转换的必然产物、"
+            "豁免本上限）。成本控制手段之一（另有每日一次的编年史压缩）。"
+            "（2026-09-21：默认 3 → 6；2026-09-22：6 → 16，上限校验 12 → 24。"
+            "实测每日调用恒被压在上限上，成本仍远低于总量 1%。）"
         ),
-        json_schema_extra={"label": "生活片段日上限", "hint": "0-12；0=不生成", "order": 10},
+        json_schema_extra={"label": "生活片段日上限", "hint": "0-24；0=不生成", "order": 10},
     )
     life_fragment_detail_enabled: bool = Field(
         default=True,
@@ -253,6 +258,96 @@ class NarrativeSection(PluginConfigBase):
             "hint": "关=旧行为（统一 40~90 字）",
             "order": 11,
         },
+    )
+
+    # ── 睡眠态（v0.1.10，2026-09-22）─────────────────────────────────────
+    # 真源说明：自我层 state 里也有 sleep_time / wake_time 两个键，但那是 v0.1 遗留的
+    # **死字段**（全仓从未读取），本段配置才是唯一真源；state 里那两个键保留只为
+    # 兼容旧存档，不再被任何代码读取。
+    sleep_time: str = Field(
+        default="23:30",
+        description=(
+            "入睡时刻（HH:MM）。到点进入睡眠态：停止生成生活片段、不主动开口、每 tick 回精力；"
+            "深夜收到消息会「被吵醒」（瞬时，不改变睡眠状态，只是这一轮有点迷糊）。"
+            "⚠️ 留空 = 关闭整个睡眠态（bot 全天不睡，回 v0.1.9 及以前的行为）。"
+        ),
+        json_schema_extra={
+            "label": "入睡时刻",
+            "hint": "HH:MM；留空=不睡觉（关闭睡眠态）",
+            "order": 12,
+        },
+    )
+    wake_time: str = Field(
+        default="07:00",
+        description=(
+            "起床时刻（HH:MM）。醒来时补写一段「刚醒」的生活片段"
+            "（豁免间隔闸门与日上限；受 wake_fragment_enabled 约束）。"
+        ),
+        json_schema_extra={"label": "起床时刻", "hint": "HH:MM", "order": 13},
+    )
+    sleep_delay_max_minutes: int = Field(
+        default=60,
+        ge=0,
+        le=240,
+        description=(
+            "入睡推迟上限（分钟）：到 sleep_time 时若仍在聊天，则推迟入睡，最多推迟本值；"
+            "超过上限（或已不再聊天）则强制入睡。0 = 到点即睡，不看是否还在聊。"
+            "「仍在聊」的判定窗口见 sleep_delay_recent_minutes。"
+        ),
+        json_schema_extra={"label": "入睡推迟上限", "hint": "分钟；0=到点即睡", "order": 14},
+    )
+    sleep_delay_recent_minutes: int = Field(
+        default=10,
+        ge=0,
+        le=120,
+        description="判定「仍在聊」的互动新鲜度窗口（分钟）：最近一次互动落在该窗口内即推迟入睡。",
+        json_schema_extra={"label": "仍在聊判定窗口", "hint": "分钟；默认 10", "order": 15},
+    )
+    woken_awake_minutes: int = Field(
+        default=30,
+        ge=0,
+        le=240,
+        description=(
+            "被吵醒的持续时长（分钟）：深夜收到消息后，在这段时间内注入「被吵醒」提示，"
+            "且不再享受睡眠精力恢复。到期自动回落——不改变 sleep_state（瞬时语义）。"
+        ),
+        json_schema_extra={"label": "被吵醒持续", "hint": "分钟；默认 30", "order": 16},
+    )
+    energy_woken_penalty: float = Field(
+        default=0.08,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "深夜被吵醒一次的精力扣减。一夜多次会叠加，但有地板保护"
+            "（不低于 energy_woken_floor），避免连环消息把精力打穿。"
+        ),
+        json_schema_extra={"label": "被吵醒扣减", "hint": "每次扣减量；默认 0.08", "order": 17},
+    )
+    energy_woken_floor: float = Field(
+        default=0.3,
+        ge=0.05,
+        le=1.0,
+        description="被吵醒扣减的地板：一夜被吵醒多次时，精力不会低于此值。",
+        json_schema_extra={"label": "被吵醒地板", "hint": "0.05-1.0；默认 0.3", "order": 18},
+    )
+    wake_fragment_enabled: bool = Field(
+        default=True,
+        description=(
+            "起床补一段：醒来时立刻写一段「刚醒」的生活片段（豁免间隔闸门与日上限）。"
+            "存在的理由——睡眠期间不生成片段，若不补，早上所有用户拿到的由头都会是"
+            "昨晚睡前那同一条。"
+        ),
+        json_schema_extra={"label": "起床补一段", "hint": "关=醒来不额外生成", "order": 19},
+    )
+    sleep_pre_sleep_hint_minutes: int = Field(
+        default=25,
+        ge=0,
+        le=180,
+        description=(
+            "临近入睡提示窗口（分钟）：距 sleep_time 不足本值时，对话注入追加"
+            "「你有点困了」的提示。0 = 不加该提示。"
+        ),
+        json_schema_extra={"label": "临近入睡提示", "hint": "分钟；0=关闭；默认 25", "order": 20},
     )
 
 

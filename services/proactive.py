@@ -258,6 +258,15 @@ class ProactiveScheduler:
                 self._next_fire.pop(user_id, None)
                 continue
 
+            # 睡眠闸门（v0.1.10）：与静默期**取并集**——睡着我也不找人。
+            # 两者不合并成一个旋钮：静默期是「我不想主动开口」的独立收紧项，
+            # 睡眠态还额外管创作层、精力与对话语气。任一命中即不开口。
+            # （当前默认值下睡眠窗口 23:30-07:00 ⊂ 静默期 23:00-08:00，本闸门是冗余保险；
+            #   一旦把静默期调窄或把睡眠窗口调宽，它才真正生效。）
+            if self._plugin._engine.is_asleep(now):
+                self._next_fire.pop(user_id, None)
+                continue
+
             if not self._allowed_now(user_id, now):
                 self._next_fire.pop(user_id, None)
                 continue

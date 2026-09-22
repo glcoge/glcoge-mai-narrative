@@ -52,6 +52,40 @@ def load(rel_name: str) -> types.ModuleType:
     return module
 
 
+def null_logger() -> types.SimpleNamespace:
+    """静默 logger（v0.1.10）：睡眠状态机在入睡/醒来/被吵醒时会打 INFO，
+    测试里的假 plugin 必须提供 ctx.logger，否则转换瞬间 AttributeError。
+    """
+    return types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+
+
+# [narrative] 睡眠态字段的出厂值（与 config.py 的 Field default 保持一致）。
+# 单个用例要改某项时传关键字覆盖；要关闭睡眠态传 sleep_time=""。
+SLEEP_DEFAULTS = {
+    "sleep_time": "23:30",
+    "wake_time": "07:00",
+    "sleep_delay_max_minutes": 60,
+    "sleep_delay_recent_minutes": 10,
+    "woken_awake_minutes": 30,
+    "energy_woken_penalty": 0.08,
+    "energy_woken_floor": 0.3,
+    "wake_fragment_enabled": True,
+    "sleep_pre_sleep_hint_minutes": 25,
+}
+
+
+def sleep_config(**overrides) -> types.SimpleNamespace:
+    """睡眠态配置夹具：默认全开，传 ``sleep_time=""`` 即关闭整个睡眠态。"""
+    merged = dict(SLEEP_DEFAULTS)
+    merged.update(overrides)
+    return types.SimpleNamespace(**merged)
+
+
 def run_standalone(globals_dict: dict) -> int:
     """独立运行入口：执行当前测试模块全部 test_ 函数并打印结果。
 

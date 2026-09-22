@@ -79,6 +79,9 @@ def _make_engine(*, detail_enabled=True, energy=0.6, events=None, milestones=Non
             life_fragment_daily_max=6,
             life_fragment_interval_minutes=120,
             life_fragment_detail_enabled=detail_enabled,
+            # 2026-09-22：本文件不测睡眠，留空关闭睡眠态（prompt 的临近入睡分支随之跳过）
+            sleep_time="",
+            wake_time="",
         ),
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
         identity=SimpleNamespace(world="一座海边小城", values=[], world_rules=[], immutable_traits=[]),
@@ -89,7 +92,7 @@ def _make_engine(*, detail_enabled=True, energy=0.6, events=None, milestones=Non
     engine._self_state = {
         "state": {
             "mood": {"label": "平静", "energy": energy, "last_shift_ts": ""},
-            "routine": {"phase": "白天"},
+            "routine": {"phase": "白天", "sleep_state": "awake"},
             "focus": {"hot_thread": "", "pending_events": []},
         }
     }
@@ -207,13 +210,20 @@ def test_prompt_material_cap_by_tier():
 def _render_with_fragment(fragment: str, *, detail_enabled: bool) -> str:
     config = SimpleNamespace(
         identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], immutable_traits=[]),
-        narrative=SimpleNamespace(life_fragment_detail_enabled=detail_enabled),
+        narrative=SimpleNamespace(
+            life_fragment_detail_enabled=detail_enabled,
+            # 2026-09-22：build_context_block 现要读睡眠配置；留空=不睡觉，不注入睡眠提示
+            sleep_time="",
+            wake_time="",
+            sleep_pre_sleep_hint_minutes=25,
+            woken_awake_minutes=30,
+        ),
     )
     plugin = SimpleNamespace(config=config)
     state = {
         "state": {
             "mood": {"label": "平静", "energy": 0.45, "last_shift_ts": ""},
-            "routine": {"phase": "上午", "sleep_time": "23:30", "wake_time": "07:00"},
+            "routine": {"phase": "上午", "sleep_state": "awake"},
             "focus": {"hot_thread": "", "pending_events": [{"ts": "2026-09-21T11:00:00", "text": fragment}]},
             "habits": [],
             "last_interaction_ts": "",

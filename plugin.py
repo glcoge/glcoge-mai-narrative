@@ -75,6 +75,23 @@ def format_available_tasks_line(names: Optional[List[str]]) -> str:
     return f"可用任务（非模型名）: {shown}｜creation_model 请填 WebUI「模型列表」中的模型名"
 
 
+def _sleep_status_line(cfg: Any, routine: Dict[str, Any]) -> str:
+    """把自我层 routine 渲染成 status 的睡眠行（v0.1.10）。"""
+    sleep_text = str(cfg.sleep_time or "").strip()
+    wake_text = str(cfg.wake_time or "").strip()
+    if not sleep_text or not wake_text:
+        return "未配置（[narrative].sleep_time 留空，bot 全天不睡）"
+    asleep = str(routine.get("sleep_state", "awake")) == "asleep"
+    state_text = "睡眠中" if asleep else "清醒"
+    woken = int(routine.get("woken_count", 0) or 0)
+    if asleep and woken:
+        state_text += f"（今晚被吵醒 {woken} 次）"
+    delayed = str(routine.get("sleep_delayed_ts", "") or "")
+    if not asleep and delayed:
+        state_text += "（入睡推迟中）"
+    return f"{state_text} | 作息 {sleep_text} - {wake_text}"
+
+
 class MaiNarrativePlugin(MaiBotPlugin):
     """剧本人设系统主插件。"""
 
@@ -535,6 +552,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             f"已知会话: {self._streams.known_count()}",
             f"心情: {inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）| "
             f"阶段: {inner['routine']['phase']}",
+            f"睡眠: {_sleep_status_line(cfg.narrative, inner.get('routine', {}))}",
         ]
         hot = str(inner["focus"].get("hot_thread", "")).strip()
         if hot and not str(hot).startswith("/"):

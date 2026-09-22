@@ -29,7 +29,8 @@ build_context_block = _RENDER.build_context_block
 _NOW = datetime.datetime(2026, 9, 11, 10, 30, 0)
 
 
-def _make_plugin() -> SimpleNamespace:
+def _make_plugin(*, sleep_time: str = "", wake_time: str = "") -> SimpleNamespace:
+    """本文件不测睡眠：默认留空关闭睡眠态（注入块因此不含睡眠提示行）。"""
     return SimpleNamespace(
         config=SimpleNamespace(
             identity=SimpleNamespace(
@@ -37,7 +38,8 @@ def _make_plugin() -> SimpleNamespace:
                 values=["怕麻烦但心软"],
                 world_rules=["不能透露自己是 bot"],
                 immutable_traits=["银发狐妖"],
-            )
+            ),
+            narrative=_synth_loader.sleep_config(sleep_time=sleep_time, wake_time=wake_time),
         )
     )
 
@@ -46,7 +48,7 @@ def _make_state(last_interaction_ts: str = "") -> dict:
     return {
         "state": {
             "mood": {"label": "平静", "energy": 0.45, "last_shift_ts": ""},
-            "routine": {"phase": "上午", "sleep_time": "23:30", "wake_time": "07:00"},
+            "routine": {"phase": "上午", "sleep_state": "awake"},
             "focus": {"hot_thread": "", "pending_events": []},
             "habits": [],
             "last_interaction_ts": last_interaction_ts,

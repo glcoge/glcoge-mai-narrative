@@ -109,6 +109,44 @@ def mood_by_energy(energy: float) -> str:
     return "平静"
 
 
+def minutes_until_clock(value: str, now: datetime) -> Optional[float]:
+    """距**当天**某时刻还有多少分钟；已过或解析失败返回 None。
+
+    只按当天计算，不跨天：睡眠窗口跨午夜时「距入睡」在午夜后会算成很长，
+    但那时本来就已睡着（由 ``in_sleep_window`` 拦住），不会误触发临近入睡提示。
+    """
+    clock = parse_clock(value)
+    if clock is None:
+        return None
+    delta = (datetime.combine(now.date(), clock) - now).total_seconds() / 60
+    return delta if delta >= 0 else None
+
+
+def minutes_since_clock(value: str, now: datetime) -> Optional[float]:
+    """距**当天**某时刻已过多少分钟；未到或解析失败返回 None。"""
+    clock = parse_clock(value)
+    if clock is None:
+        return None
+    delta = (now - datetime.combine(now.date(), clock)).total_seconds() / 60
+    return delta if delta >= 0 else None
+
+
+def in_sleep_window(now: datetime, sleep_time: str, wake_time: str) -> bool:
+    """睡眠窗口判定：支持跨午夜（如 23:30-07:00）。
+
+    任一时刻解析失败（含留空）→ 返回 False，即视作**不睡**。``[narrative].sleep_time``
+    留空正是靠这条关闭整个睡眠态，无需额外的 enabled 开关。
+    """
+    sleep = parse_clock(sleep_time)
+    wake = parse_clock(wake_time)
+    if sleep is None or wake is None:
+        return False
+    current = now.time()
+    if sleep <= wake:
+        return sleep <= current < wake
+    return current >= sleep or current < wake
+
+
 # 日照预期提示（配合 routine_phase：相位标签不带"此刻窗外什么样"的感官信息，
 # "下午"既可能是烈日当空也可能是天色将暗）。按小时升序排列，倒序匹配（同款纪律）。
 _DAYLIGHT_HINTS: List[Tuple[int, str]] = [
@@ -159,11 +197,24 @@ def local_now(offset_hours: int = 8) -> datetime:
 
 
 def default_self_state() -> Dict[str, Any]:
-    """自我层初始状态（锚定层 identity 不在状态内，来自 config）。"""
+    """自我层初始状态（锚定层 identity 不在状态内，来自 config）。
+
+    作息**不**存在这里：真源是 ``[narrative].sleep_time / wake_time`` 配置项。
+    v0.1 曾把这两个值写死在 state 里（``routine.sleep_time``），但全仓从未读取，
+    是死字段，v0.1.10 引入睡眠态时已删除——配置才是唯一真源。
+    """
     return {
         "state": {
             "mood": {"label": "平静", "energy": 0.55, "last_shift_ts": ""},
-            "routine": {"phase": "上午", "sleep_time": "23:30", "wake_time": "07:00"},
+            "routine": {
+                "phase": "上午",
+                # 睡眠态（v0.1.10）：awake / asleep
+                "sleep_state": "awake",
+                "asleep_since": "",       # 入睡时刻 ISO；醒来清空
+                "last_woken_ts": "",      # 最近一次深夜被吵醒时刻 ISO
+                "woken_count": 0,         # 今晚被吵醒次数；醒来时清零
+                "sleep_delayed_ts": "",   # 因仍在聊天而推迟入睡的起始时刻 ISO
+            },
             "focus": {"hot_thread": "", "pending_events": []},
             "habits": [],
             "last_interaction_ts": "",
@@ -324,10 +375,16 @@ class NarrativeEngine:
             self._plugin.ctx.logger.error("编年史压缩异常: %s", exc, exc_info=True)
 
     def _apply_state_rules(self, state: Dict[str, Any], now: datetime) -> None:
-        """纯规则：精力衰减/回升、心情映射、作息阶段、日程到点。"""
+        """纯规则：作息与睡眠流转、精力衰减/回升、心情映射、日程到点。"""
         inner = state["state"]
+        routine = inner.setdefault("routine", {})
         energy = float(inner["mood"].get("energy", 0.55))
         old_label = str(inner["mood"].get("label", "平静"))
+
+        # 睡眠流转（v0.1.10）：必须在精力规则**之前**跑——睡眠恢复量要读本次判定后的状态
+        self._update_sleep_state(state, now)
+        asleep = str(routine.get("sleep_state", "awake")) == "asleep"
+        woken = self._woken_active(state, now)
 
         # 精力（v0.1.5 重构，三参数入 config [narrative]）：
         # ① 向基线回归（双向：低于基线回升、高于基线回落）——老版注释声称"向基线
@@ -339,7 +396,10 @@ class NarrativeEngine:
         last_interaction = inner.get("last_interaction_ts", "")
         if last_interaction and self._hours_since(last_interaction, now) <= 2:
             energy += float(cfg.energy_interaction_boost)
-        if routine_phase(now.hour) == "深夜":
+        # 睡眠恢复（v0.1.10）：判定由「深夜相位」改为「真的睡着且没被吵醒」。
+        # 旧写法只看相位：05:00 到起床之间睡着却不回血（漏），23:00-23:30 明明醒着
+        # 反而回血（错）。被吵醒时同样不回血——醒了就是醒了。
+        if asleep and not woken:
             energy += float(cfg.energy_sleep_recovery)
         energy = max(0.05, min(1.0, energy))
 
@@ -374,6 +434,132 @@ class NarrativeEngine:
         except (TypeError, ValueError):
             return float("inf")
 
+    @staticmethod
+    def _minutes_since(iso_ts: str, now: datetime) -> Optional[float]:
+        """计算 ISO 时间戳距今的分钟数；空/损坏时间戳返回 None（由调用方判空）。"""
+        if not iso_ts:
+            return None
+        try:
+            return (now - datetime.fromisoformat(iso_ts)).total_seconds() / 60
+        except (TypeError, ValueError):
+            return None
+
+    # ─── 睡眠态（v0.1.10）───────────────────────────────────────────
+
+    def _sleep_configured(self) -> bool:
+        """睡眠态是否已配置（sleep_time 与 wake_time 均可解析）。留空即关闭整个睡眠态。"""
+        cfg = self._plugin.config.narrative
+        return parse_clock(cfg.sleep_time) is not None and parse_clock(cfg.wake_time) is not None
+
+    def _sleep_window_active(self, now: datetime) -> bool:
+        """当前时刻是否落在配置的睡眠窗口内（跨午夜安全；未配置恒 False）。"""
+        cfg = self._plugin.config.narrative
+        return in_sleep_window(now, cfg.sleep_time, cfg.wake_time)
+
+    def is_asleep(self, now: Optional[datetime] = None) -> bool:
+        """客观是否睡着。不看「被吵醒」——那是瞬时状态，不改变 sleep_state。"""
+        current = now or self._local_now()
+        state = self.load_self_state()
+        routine = state["state"].setdefault("routine", {})
+        if str(routine.get("sleep_state", "awake")) != "asleep":
+            return False
+        return self._sleep_window_active(current)
+
+    def _woken_active(self, state: Dict[str, Any], now: datetime) -> bool:
+        """「被吵醒」的瞬时状态是否仍生效：睡着 + 吵醒后 woken_awake_minutes 内。"""
+        routine = state["state"].get("routine", {})
+        if str(routine.get("sleep_state", "awake")) != "asleep":
+            return False
+        minutes = int(self._plugin.config.narrative.woken_awake_minutes)
+        if minutes <= 0:
+            return False
+        elapsed = self._minutes_since(str(routine.get("last_woken_ts", "") or ""), now)
+        return elapsed is not None and elapsed < minutes
+
+    def _is_still_talking(self, state: Dict[str, Any], now: datetime) -> bool:
+        """最近一次互动是否落在「仍在聊」窗口内（决定要不要推迟入睡）。"""
+        recent = int(self._plugin.config.narrative.sleep_delay_recent_minutes)
+        if recent <= 0:
+            return False
+        elapsed = self._minutes_since(str(state["state"].get("last_interaction_ts", "") or ""), now)
+        return elapsed is not None and elapsed <= recent
+
+    def _delay_budget_left(self, delayed_since: str, now: datetime) -> bool:
+        """推迟入睡是否还有余量。首次推迟（无起始时刻）必有余量。"""
+        max_minutes = int(self._plugin.config.narrative.sleep_delay_max_minutes)
+        if max_minutes <= 0:
+            return False
+        if not delayed_since:
+            return True
+        elapsed = self._minutes_since(delayed_since, now)
+        return elapsed is None or elapsed < max_minutes
+
+    def _update_sleep_state(self, state: Dict[str, Any], now: datetime) -> None:
+        """睡眠状态机（纯规则，零 LLM）。
+
+        三条规则：
+        ① 时间兜底：落在睡眠窗口内 → 入睡；落在窗口外 → 醒来（并挂「起床补一段」标）。
+        ② 事件修饰：到 sleep_time 时若仍在聊天 → 推迟入睡，最多 sleep_delay_max_minutes，
+           超过上限强制入睡（否则「聊到天亮」就永远不睡了）。
+        ③ 瞬时例外（深夜被吵醒）**不改**状态位——那是 ``_apply_woken_penalty`` 的事，
+           被吵醒只记时刻、计数、扣精力，bot 仍然算睡着。
+        """
+        cfg = self._plugin.config.narrative
+        routine = state["state"].setdefault("routine", {})
+        current_state = str(routine.get("sleep_state", "awake"))
+
+        if not self._sleep_window_active(now):
+            if current_state == "asleep":
+                routine["sleep_state"] = "awake"
+                routine["asleep_since"] = ""
+                routine["last_woken_ts"] = ""
+                routine["woken_count"] = 0
+                # 起床补一段：由创作层消费（豁免间隔闸门与日上限）
+                routine["wake_fragment_pending"] = True
+                self._plugin.ctx.logger.info("narrative 睡眠: 醒来（%s）", now.strftime("%H:%M"))
+            routine["sleep_delayed_ts"] = ""
+            return
+
+        if current_state == "awake":
+            delayed_since = str(routine.get("sleep_delayed_ts", "") or "")
+            if self._is_still_talking(state, now) and self._delay_budget_left(delayed_since, now):
+                if not delayed_since:
+                    routine["sleep_delayed_ts"] = now.isoformat(timespec="seconds")
+                    self._plugin.ctx.logger.info(
+                        "narrative 睡眠: 到点但仍在聊，推迟入睡（上限 %s 分钟）",
+                        int(cfg.sleep_delay_max_minutes),
+                    )
+                return
+            routine["sleep_state"] = "asleep"
+            routine["asleep_since"] = now.isoformat(timespec="seconds")
+            routine["sleep_delayed_ts"] = ""
+            self._plugin.ctx.logger.info("narrative 睡眠: 入睡（%s）", now.strftime("%H:%M"))
+
+    def _apply_woken_penalty(self, state: Dict[str, Any], now: datetime) -> None:
+        """睡眠中收到消息 → 记「被吵醒」时刻 + 计数 + 扣精力（一夜多次有地板）。
+
+        瞬时语义：**不**改 sleep_state。bot 仍然算睡着，只是这一轮有点迷糊、
+        精力掉一截，``woken_awake_minutes`` 后自动回落。
+        """
+        cfg = self._plugin.config.narrative
+        routine = state["state"].setdefault("routine", {})
+        if str(routine.get("sleep_state", "awake")) != "asleep":
+            return
+        routine["last_woken_ts"] = now.isoformat(timespec="seconds")
+        routine["woken_count"] = int(routine.get("woken_count", 0) or 0) + 1
+        penalty = float(cfg.energy_woken_penalty)
+        if penalty <= 0:
+            return
+        floor = float(cfg.energy_woken_floor)
+        mood = state["state"].setdefault("mood", {})
+        before = float(mood.get("energy", 0.55))
+        mood["energy"] = round(max(floor, before - penalty), 3)
+        mood["last_shift_ts"] = now.isoformat(timespec="seconds")
+        self._plugin.ctx.logger.info(
+            "narrative 睡眠: 深夜被吵醒（今晚第 %s 次，精力 %.2f → %.2f）",
+            routine["woken_count"], before, mood["energy"],
+        )
+
     def _snapshot_if_day_changed(self, state: Dict[str, Any], now: datetime) -> None:
         """跨日时保存一份状态快照（回滚点 + 验收指标 4 原料）。"""
         today = now.strftime("%Y-%m-%d")
@@ -401,6 +587,8 @@ class NarrativeEngine:
         state = self.load_self_state()
         state["state"]["last_interaction_ts"] = current.isoformat(timespec="seconds")
         state["state"]["last_talk_date"] = today
+        # 深夜被吵醒（v0.1.10）：睡着时收到消息 → 记时刻 + 计数 + 扣精力
+        self._apply_woken_penalty(state, current)
         self.save_self_state(state)
 
         normalized = str(text or "").strip()
@@ -594,8 +782,12 @@ class NarrativeEngine:
             mood = str(state["state"]["mood"].get("label", "平静"))
             if mood in ("低落", "疲惫"):
                 candidates.append((f"今天有点{mood}，想找人聊聊", ""))
-            phase = str(state["state"]["routine"].get("phase", ""))
-            if phase == "深夜":
+            routine = state["state"].get("routine", {})
+            phase = str(routine.get("phase", ""))
+            # 睡着就别说「还不想睡」——睡眠态上线后这条只在清醒的深夜才成立
+            # （实际上深夜既在静默期又在睡眠窗口内，本分支基本不可达，留着只为
+            #  日后把静默期调窄时语义仍然正确）
+            if phase == "深夜" and str(routine.get("sleep_state", "awake")) != "asleep":
                 candidates.append(("夜深了，我还不想睡，想跟你说点什么", ""))
             elif phase == "清晨":
                 candidates.append(("刚醒，今天莫名的想先跟你说句话", ""))
@@ -632,6 +824,16 @@ class NarrativeEngine:
             return
 
         current = now or self._local_now()
+        state = self.load_self_state()
+
+        # 睡眠态启用时，等**真正入睡**才写：一天到入睡才算结束。
+        # 旧行为是「过了 daily_chronicle_time 就写」，但入睡可能因仍在聊被推迟
+        # （最多 sleep_delay_max_minutes），那样小结会漏掉入睡前的最后一段对话。
+        if self._sleep_configured() and str(
+            state["state"].get("routine", {}).get("sleep_state", "awake")
+        ) != "asleep":
+            return
+
         target_date = current.date()
         if current.time() < trigger:
             target_date = target_date - timedelta(days=1)
@@ -642,7 +844,6 @@ class NarrativeEngine:
         if self._store.is_chronicle_done(_SELF_SCOPE, "daily", date_text):
             return
 
-        state = self.load_self_state()
         if state["state"].get("last_talk_date") != date_text:
             return  # 那天没说过话，不写
 
@@ -696,23 +897,38 @@ class NarrativeEngine:
 
         current = now or self._local_now()
         today = current.strftime("%Y-%m-%d")
-
-        # 每日次数上限
+        state = self.load_self_state()
+        routine = state["state"].setdefault("routine", {})
         day_count = self._store.get_kv_int(f"life_fragment:count:{today}")
-        if day_count >= int(cfg.narrative.life_fragment_daily_max):
+
+        # 睡眠闸门（v0.1.10）：睡着不生产生活片段。
+        # 这是「日记里每天都有深夜还醒着」的根因修复——此前创作层只有间隔与日上限两道
+        # 闸门，深夜照常生产，而 prompt 只说「你处于深夜」，模型自然就写出「深夜还醒着」。
+        if str(routine.get("sleep_state", "awake")) == "asleep":
             return
 
-        # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
-        last_ts = self._store.get_kv_str("life_fragment:last_ts")
+        # 起床补一段（v0.1.10）：醒来那一刻强制写一段，豁免间隔闸门与日上限。
+        # 理由：睡眠期间不生产，不补的话早上所有用户拿到的由头都会是昨晚睡前那一条。
+        wake_fragment = bool(routine.pop("wake_fragment_pending", False)) and bool(
+            cfg.narrative.wake_fragment_enabled
+        )
+
         window_start = current - timedelta(minutes=int(cfg.narrative.life_fragment_interval_minutes))
-        if last_ts:
-            try:
-                last_dt = datetime.fromisoformat(last_ts)
-                if (current - last_dt).total_seconds() < int(cfg.narrative.life_fragment_interval_minutes) * 60:
-                    return
-                window_start = last_dt
-            except (TypeError, ValueError):
-                pass
+        if not wake_fragment:
+            # 每日次数上限
+            if day_count >= int(cfg.narrative.life_fragment_daily_max):
+                return
+
+            # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
+            last_ts = self._store.get_kv_str("life_fragment:last_ts")
+            if last_ts:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts)
+                    if (current - last_dt).total_seconds() < int(cfg.narrative.life_fragment_interval_minutes) * 60:
+                        return
+                    window_start = last_dt
+                except (TypeError, ValueError):
+                    pass
 
         # 收集素材：全部模式用户的支线事件（最近一条对话素材 → 生活的原料）
         materials: List[str] = []
@@ -722,11 +938,12 @@ class NarrativeEngine:
                 if source_text:
                     materials.append(source_text)
 
-        state = self.load_self_state()
         # 详略档位：按事件重要度决定本次创作长度（flat=分级关闭，回旧行为）
         tier = self._life_fragment_tier(current, state, window_start)
         persona = await self._load_native_personality()
-        prompt = self._build_life_fragment_prompt(current, state, materials, persona=persona, tier=tier)
+        prompt = self._build_life_fragment_prompt(
+            current, state, materials, persona=persona, tier=tier, wake=wake_fragment
+        )
         if cfg.llm.show_prompt:
             self._plugin.ctx.logger.info("生活片段 prompt: %s", prompt[:300])
 
@@ -757,13 +974,17 @@ class NarrativeEngine:
             )
 
         # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
+        # 起床补一段豁免日上限（它是状态转换的必然产物，不是可选的创作），
+        # 但仍推进 last_ts——否则醒来后第一段正常片段会紧接着挤进来。
         self._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))
-        self._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
+        if not wake_fragment:
+            self._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
         self._plugin.ctx.logger.info(
-            "生活片段已生成（今日 %s/%s，档位 %s）: %s",
-            day_count + 1,
+            "生活片段已生成（今日 %s/%s，档位 %s%s）: %s",
+            day_count if wake_fragment else day_count + 1,
             cfg.narrative.life_fragment_daily_max,
             tier,
+            "，起床补一段" if wake_fragment else "",
             text[:40],
         )
 
@@ -810,8 +1031,13 @@ class NarrativeEngine:
         materials: Sequence[str],
         persona: str = "",
         tier: str = "flat",
+        wake: bool = False,
     ) -> str:
-        """构造生活片段生成 prompt（档位决定长度与素材展示量）。"""
+        """构造生活片段生成 prompt（档位决定长度与素材展示量）。
+
+        Args:
+            wake: 本次是「起床补一段」（v0.1.10），prompt 追加刚醒的语境。
+        """
         cfg = self._plugin.config
         identity = cfg.identity
         inner = state["state"]
@@ -828,6 +1054,14 @@ class NarrativeEngine:
                 f"心情{inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）。"
             ),
         ]
+        # 起床补一段：这正是「醒来后的第一段生活片段」，不点明的话模型会写成白天的状态切片
+        if wake:
+            chunks.append("你刚睡醒不久——请写醒来后的这一段。")
+        else:
+            # 临近入睡：让当天最后一段自然收在「困了、要睡了」上（v0.1.10）
+            to_sleep = minutes_until_clock(cfg.narrative.sleep_time, now)
+            if to_sleep is not None and to_sleep <= int(cfg.narrative.sleep_pre_sleep_hint_minutes):
+                chunks.append("你有点困了，准备睡了——这会是今天最后一段生活片段。")
         material_cap = _FRAGMENT_TIER_MATERIAL_CAP.get(tier, 80)
         if materials:
             shown = [text[:material_cap] for text in materials[-6:]]

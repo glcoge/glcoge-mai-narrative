@@ -131,6 +131,10 @@ def _make_engine(
             life_fragment_interval_minutes=240,
             # 2026-09-21 新增：分级详略开关（关=旧行为，本文件不测档位）
             life_fragment_detail_enabled=False,
+            # 2026-09-22 新增：本文件测的是**时钟兜底**那条路径，故把睡眠态关掉
+            # （sleep_time 留空 = 不睡觉）。「入睡才写小结」的新分支见 test_sleep_state.py。
+            sleep_time="",
+            wake_time="",
         ),
         llm=SimpleNamespace(show_prompt=False),
         identity=SimpleNamespace(world="一座海边小城", values=[], world_rules=[], immutable_traits=[]),

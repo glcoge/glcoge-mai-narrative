@@ -33,12 +33,35 @@ energy_baseline_pull = 0.3
 energy_sleep_recovery = 0.1
 energy_interaction_boost = 0.12
 # 创作层：生活片段生成间隔（分钟）与每日上限
-# 2026-09-21 调整：120/6（原 240/3）。实测创作层占总量 ~0.1%，30% 红线余量约两个数量级。
-life_fragment_interval_minutes = 120
-life_fragment_daily_max = 6
+# ⚠️ 两者必须配套看：启用睡眠态后清醒窗口约 16.5h（07:00-23:30），
+#    间隔 120 时理论产能只有 8 条，日上限填 16 也吃不到 → 必须降到 60。
+#    另：实际间隔会被向上取整到 tick(30min) 的整数倍，填 45 等同 60。
+# 2026-09-21：240 → 120；2026-09-22：120 → 60（配合日上限 16）。
+life_fragment_interval_minutes = 60
+life_fragment_daily_max = 16
 # 按事件重要度分级创作详略：minor 40~90 / normal 80~180 / major 200~400 字。
 # 命中信号：窗口内新增关系里程碑 · energy 极端 · 窗口内对话素材 ≥4 条。关=回旧行为（统一 40~90 字）。
 life_fragment_detail_enabled = true
+
+# ── 睡眠态（v0.1.10）────────────────────────────────────────────
+# 真源：本段这三项就是 bot 的作息，自我层 state 里不再存同名键（v0.1 遗留的死字段已删）。
+# 睡眠中的行为：停止生成生活片段 · 不主动开口 · 每 tick 回精力。
+# 深夜收到消息 → 「被吵醒」（瞬时：不改状态，只是这一轮迷糊 + 扣精力）。
+# ⚠️ sleep_time 留空 = 关闭整个睡眠态，回 v0.1.9 及以前的全天不睡行为。
+sleep_time = "23:30"
+wake_time = "07:00"
+# 到 sleep_time 时若仍在聊天（最近一次互动在 10 分钟内）→ 推迟入睡，最多推迟 60 分钟
+sleep_delay_max_minutes = 60
+sleep_delay_recent_minutes = 10
+# 被吵醒后的持续时间：这段时间内注入「被吵醒」提示、且不享受睡眠回精力；到期自动回落
+woken_awake_minutes = 30
+# 被吵醒一次扣 0.08 精力，一夜多次叠加，但不低于地板 0.3
+energy_woken_penalty = 0.08
+energy_woken_floor = 0.3
+# 起床补一段（豁免间隔闸门与日上限）：否则早上所有用户拿到的由头都是昨晚睡前那一条
+wake_fragment_enabled = true
+# 距入睡不足 25 分钟时，对话注入追加「你有点困了」；0=关闭
+sleep_pre_sleep_hint_minutes = 25
 
 # ===== 主动消息 =====
 [proactive]

@@ -94,6 +94,7 @@ def _make_engine(
             timezone_offset_hours=8,
             clock_tick_minutes=30,
             energy_baseline=energy_baseline,
+            **_synth_loader.SLEEP_DEFAULTS,
         ),
         proactive=SimpleNamespace(
             urge_enabled=urge_enabled,
@@ -105,7 +106,9 @@ def _make_engine(
         ),
     )
     engine = NarrativeEngine.__new__(NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=cfg)
+    engine._plugin = SimpleNamespace(
+        config=cfg, ctx=SimpleNamespace(logger=_QuietLogger())
+    )
     engine._store = _FakeStore()  # engine 自持 store 引用（load/save_self_state 直接访问）
     # 初始化 self state（走真实 default 结构，energy 可控）
     state = engine.load_self_state()
@@ -151,6 +154,8 @@ def _make_scheduler(
         # 与真实 compute_share_urge 的 gate 语义一致：总开关关闭 → 返回 1.0（到点必发）
         compute_share_urge=lambda uid: (urge if urge_enabled else 1.0),
         record_urge_feedback=lambda uid, event: urge_events.append((uid, event)),
+        # 睡眠闸门（v0.1.10）：本文件测分享欲，时间固定在 15:00，恒清醒
+        is_asleep=lambda now=None: False,
     )
     # 指标采集替身：proactive_undelivered / proactive_trigger_failed 由调度循环写入
     metrics: List[Any] = []

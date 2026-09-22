@@ -43,21 +43,28 @@ def _make_engine(
     urge_enabled: bool = True,
     urge_base: float = 0.7,
     urge_regain: float = 0.15,
+    **sleep_overrides,
 ):
     """构造只含纯规则所需依赖的 engine（绕过 __init__，不建 store/creator）。
 
     v0.1.8 起补 proactive 组：_apply_state_rules 里的 share_urge 基线回归
     需要 urge_* 参数（默认 urge_enabled=True 时回归生效）。
+    v0.1.10 起补睡眠组：``_apply_state_rules`` 第一步就跑睡眠状态机，
+    需要 sleep_* / energy_woken_* 参数；``**sleep_overrides`` 供单用例覆盖
+    （如 ``sleep_time=""`` 关掉睡眠态）。
     """
+    narrative = dict(
+        enabled=True,
+        clock_tick_minutes=30,
+        energy_baseline=baseline,
+        energy_baseline_pull=pull,
+        energy_sleep_recovery=sleep_recovery,
+        energy_interaction_boost=boost,
+    )
+    narrative.update(_synth_loader.SLEEP_DEFAULTS)
+    narrative.update(sleep_overrides)
     cfg = SimpleNamespace(
-        narrative=SimpleNamespace(
-            enabled=True,
-            clock_tick_minutes=30,
-            energy_baseline=baseline,
-            energy_baseline_pull=pull,
-            energy_sleep_recovery=sleep_recovery,
-            energy_interaction_boost=boost,
-        ),
+        narrative=SimpleNamespace(**narrative),
         proactive=SimpleNamespace(
             urge_enabled=urge_enabled,
             urge_base=urge_base,
@@ -68,7 +75,9 @@ def _make_engine(
         ),
     )
     engine = NarrativeEngine.__new__(NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=cfg)
+    engine._plugin = SimpleNamespace(
+        config=cfg, ctx=SimpleNamespace(logger=_synth_loader.null_logger())
+    )
     return engine
 
 
@@ -81,7 +90,7 @@ def _make_state(energy: float, last_interaction: str = "") -> dict:
                 "energy": energy,
                 "last_shift_ts": "",
             },
-            "routine": {"phase": "清晨", "sleep_time": "23:30", "wake_time": "07:00"},
+            "routine": {"phase": "清晨", "sleep_state": "awake"},
             "focus": {"hot_thread": "", "pending_events": []},
             "habits": [],
             "last_interaction_ts": last_interaction,
