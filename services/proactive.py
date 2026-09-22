@@ -304,7 +304,14 @@ class ProactiveScheduler:
         return "reply", ""
 
     def check_reply(self, user_id: str, now: datetime.datetime) -> bool:
-        """主动消息 30 分钟内收到用户回复 → 记一次"被接住"。"""
+        """主动消息 30 分钟内收到用户回复 → 记一次"被接住"。
+
+        2026-09-22 修复（迟来承接去重）：命中时**同步弹出迟来承接队列的最新一条**。
+        判定链是 ``check_reply → elif check_late_reply``（见 plugin.py 入站 hook），
+        若不在这里弹出，同一条主动消息会先算 30min「被接住」，再被下一次 inbound
+        算成 24h「迟来承接」，使 proactive_replied_24h 系统性偏高、无法与 30min
+        基线对照。一次承接只抵消一条，其余记录仍在 24h 窗口内有效。
+        """
         sent_list = self._sent_at.get(user_id, [])
         if not sent_list:
             return False
@@ -314,13 +321,21 @@ class ProactiveScheduler:
             if (now - item).total_seconds() / 60 <= _PROACTIVE_REPLY_WINDOW_MINUTES
         ]
         self._sent_at[user_id] = active[-2:]
+        if active:
+            self._pop_latest_late(user_id)
         return bool(active)
+
+    def _pop_latest_late(self, user_id: str) -> None:
+        """弹出迟来承接队列的**最新**一条（已被 30min 口径计过数的那次发送）。"""
+        entries = self._sent_long.get(user_id, [])
+        if entries:
+            self._sent_long[user_id] = entries[:-1]
 
     def check_late_reply(self, user_id: str, now: datetime.datetime) -> bool:
         """24 小时内收到回复 → 一次"迟来承接"（每条主动消息只计一次）。
 
-        与 30 分钟口径**互不排斥**：同一条消息若已在 30 分钟内被记为"被接住"，
-        这里不再重复计数（命中即弹出，天然防重复）。
+        与 30 分钟口径**互不排斥**：已在 30 分钟内记为"被接住"的消息，会由
+        ``check_reply`` 从本队列弹出，因此**不会**被这里重复计数（见该方法注释）。
         """
         entries = self._sent_long.get(user_id, [])
         if not entries:

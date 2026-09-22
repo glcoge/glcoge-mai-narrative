@@ -1,7 +1,7 @@
 """由头返工 P1 测试（2026-09-22，issue-bysource-rework）。
 
 覆盖三项：
-- **B 去复用**：已用作由头的片段不再二次使用（kv `bysource:used`）
+- **B 去复用**：已用作由头的片段不再二次使用（kv `bysource:used:{user_id}`，按用户隔离）
 - **C 质量门槛**：minor 档（无素材的纯状态切片）不单独作由头 → 宁可跳过本轮
 - **G 迟来承接**：24 小时内回复记为 `check_late_reply`，每条只计一次
 
@@ -126,7 +126,7 @@ def test_same_fragment_not_reused():
 
     first = engine.build_bysource("10001", _NOW)
     assert "一段有画面的生活片段" in first, "首次应取该片段"
-    assert engine._store.get_kv_str("bysource:used"), "用后应登记 ts"
+    assert engine._store.get_kv_str("bysource:used:10001"), "用后应登记 ts（按 uid 隔离）"
 
     second = engine.build_bysource("10001", _NOW)
     assert second == "", "已用片段不应二次作由头（应跳过本轮）"
@@ -144,6 +144,26 @@ def test_two_fragments_rotated():
     second = engine.build_bysource("10001", _NOW)
     assert first != second, "连取两次应取到不同片段"
     assert third_is_empty(engine), "两条都用完后应无由头"
+
+
+def test_used_marks_are_per_user():
+    """去复用只约束**同一段关系**，不跨用户（同一件事讲给不同朋友听是自然的）。
+
+    生活片段存在自我层（全局共享），7 位测试者共用同一批素材。若去重键不带 uid，
+    先触发的用户会把素材耗尽，后触发的用户拿不到由头 → build_bysource 返回空
+    → 本轮主动开口被跳过，触达面进一步收窄。
+    """
+    engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
+
+    first = engine.build_bysource("10001", _NOW)
+    assert "一段有画面的生活片段" in first
+    assert engine._store.get_kv_str("bysource:used:10001"), "应登记到甲自己的键"
+
+    other = engine.build_bysource("10002", _NOW)
+    assert "一段有画面的生活片段" in other, "跨用户不应互相耗尽素材"
+    assert engine._store.get_kv_str("bysource:used:10002")
+
+    assert engine.build_bysource("10001", _NOW) == "", "同一用户内去复用应仍然生效"
 
 
 def third_is_empty(engine) -> bool:
@@ -221,6 +241,34 @@ def test_late_tracks_record_sent():
     sched.record_sent("10001", "stream-1", _NOW, "由头")
     assert sched._sent_at.get("10001")
     assert sched._sent_long.get("10001"), "迟来承接需要 24h 记录"
+
+
+def test_replied_in_30min_not_counted_twice():
+    """已被 30min 口径记为"被接住"的消息，不得再被 24h 口径重复计数。
+
+    plugin.py 的判定链是 check_reply → elif check_late_reply；若 30min 命中时不从
+    _sent_long 弹出对应条目，用户下一条 inbound 会把同一条主动消息再记一次
+    proactive_replied_24h，指标系统性偏高、无法与 A2 基线（30min 口径 24%）对照。
+    """
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW, "由头")
+    replied_at = _NOW + datetime.timedelta(minutes=5)
+
+    assert sched.check_reply("10001", replied_at) is True, "30min 口径应命中"
+    assert sched.check_late_reply("10001", replied_at + datetime.timedelta(hours=2)) is False, (
+        "同一条消息不应既算 30min 接住、又算 24h 迟来承接"
+    )
+
+
+def test_30min_ack_pops_only_one_entry():
+    """多条主动消息时，一次 30min 承接只抵消**最新**一条，其余仍在 24h 窗口内有效。"""
+    sched = _make_scheduler()
+    sched.record_sent("10001", "stream-1", _NOW, "由头甲")
+    sched.record_sent("10001", "stream-1", _NOW + datetime.timedelta(minutes=10), "由头乙")
+    assert len(sched._sent_long["10001"]) == 2
+
+    assert sched.check_reply("10001", _NOW + datetime.timedelta(minutes=12)) is True
+    assert len(sched._sent_long["10001"]) == 1, "一次承接只应抵消一条记录"
 
 
 if __name__ == "__main__":

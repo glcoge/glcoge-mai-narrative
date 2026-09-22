@@ -67,7 +67,16 @@ _FRAGMENT_ENERGY_LOW = 0.25
 _FRAGMENT_ENERGY_HIGH = 0.9
 
 # 由头去复用：已用作由头的生活片段 ts 集合（逗号分隔，有界 8 条）
-_BYSOURCE_USED_KEY = "bysource:used"
+# 按 user_id 命名空间隔离——store.get_kv_str 没有 scope 参数，而生活片段挂在
+# 自我层（全局共享）：若所有用户共用一个键，先触发的用户会把素材用尽，
+# 后触发的用户取不到由头 → build_bysource 返回空 → 本轮主动开口被跳过。
+# 同一件事讲给不同朋友听是自然的，所以去复用只约束同一段关系。
+_BYSOURCE_USED_KEY_PREFIX = "bysource:used:"
+
+
+def _bysource_used_key(user_id: str) -> str:
+    """某用户已用作由头的片段 ts 集合的 kv 键（按 uid 隔离）。"""
+    return f"{_BYSOURCE_USED_KEY_PREFIX}{user_id}"
 
 
 def parse_clock(value: str) -> Optional[time]:
@@ -543,7 +552,7 @@ class NarrativeEngine:
         没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
 
         2026-09-22 由头返工（issue-bysource-rework P1）：
-        - **去复用**：已当作由头用过的片段不再二次使用（kv `bysource:used`）；
+        - **去复用**：已当作由头用过的片段不再二次使用（kv `bysource:used:{user_id}`，按用户隔离）；
         - **质量门槛**：minor 档（无素材的纯状态切片）不单独作由头——内容太薄，
           发出去大概率没人接。宁可跳过本轮。
         """
@@ -552,7 +561,8 @@ class NarrativeEngine:
         state = self.load_self_state()
         branch = self.load_branch_state(user_id)
 
-        used_raw = self._store.get_kv_str(_BYSOURCE_USED_KEY)
+        # 去复用：按用户读取已用记录（同一件事可以讲给不同朋友听，只对同一段关系去重）
+        used_raw = self._store.get_kv_str(_bysource_used_key(user_id))
         used = {item.strip() for item in (used_raw or "").split(",") if item.strip()}
 
         # (候选文本, 片段 ts)；非片段来源 ts 为空串，用于选中后登记"已用"
@@ -594,9 +604,9 @@ class NarrativeEngine:
         seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
         chosen, chosen_ts = candidates[seed % len(candidates)]
         if chosen_ts:
-            # 登记已用（有界 8 条）：下次该片段不再作由头
+            # 登记已用（有界 8 条）：下次该片段不再作由头（仅对该用户生效）
             used.add(chosen_ts)
-            self._store.set_kv_str(_BYSOURCE_USED_KEY, ",".join(sorted(used)[-8:]))
+            self._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-8:]))
         return chosen
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
