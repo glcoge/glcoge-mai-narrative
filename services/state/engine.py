@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..creation.creator import CreatorClient
+from ..render.audience import filter_entries, visible_events
 from ..store import NarrativeStore
 
 # 每日作息阶段（本地 24h 制）
@@ -761,7 +762,8 @@ class NarrativeEngine:
 
         # (候选文本, 片段 ts)；非片段来源 ts 为空串，用于选中后登记"已用"
         candidates: List[Tuple[str, str]] = []
-        pending = list(state["state"]["focus"].get("pending_events", []))
+        # 受众过滤（ADR-0004）：生活片段默认通用（无标签），但一旦被打标就必须按受众隔离
+        pending = filter_entries(state["state"]["focus"].get("pending_events", []), user_id)
         for item in pending[-2:]:
             fragment = str(item.get("text", "") or "").strip()
             if not fragment:
@@ -852,7 +854,9 @@ class NarrativeEngine:
 
         materials: List[str] = []
         for user_id in (cfg.narrative.mode_user_ids or []):
-            for item in self._store.list_events(f"branch:{user_id}", limit=50):
+            # 受众过滤（ADR-0004）：此处 scope 已是 branch:{user_id}，当前等价于原行为；
+            # 走过滤入口是为跨用户取材（C4）预留——届时涉私原文不会进创作 prompt。
+            for item in visible_events(self._store, f"branch:{user_id}", user_id, 50):
                 if str(item.get("ts", "")).startswith(date_text):
                     materials.append(str(item.get("bysource", "")))
 
@@ -936,7 +940,7 @@ class NarrativeEngine:
         # 收集素材：全部模式用户的支线事件（最近一条对话素材 → 生活的原料）
         materials: List[str] = []
         for user_id in (cfg.narrative.mode_user_ids or []):
-            for item in self._store.list_events(f"branch:{user_id}", limit=20):
+            for item in visible_events(self._store, f"branch:{user_id}", user_id, 20):
                 source_text = str(item.get("bysource", "") or "").strip()
                 if source_text:
                     materials.append(source_text)
@@ -1019,7 +1023,7 @@ class NarrativeEngine:
             for item in branch["state"].get("milestones") or []:
                 if str(item.get("ts", "")) >= start_iso:
                     return "major"
-            for event in self._store.list_events(f"branch:{user_id}", limit=20):
+            for event in visible_events(self._store, f"branch:{user_id}", user_id, 20):
                 if str(event.get("ts", "")) >= start_iso and str(event.get("bysource", "")).strip():
                     material_count += 1
 

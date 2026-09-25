@@ -24,6 +24,7 @@ from ..state.engine import (
     minutes_since_clock,
     minutes_until_clock,
 )
+from .audience import filter_entries
 
 _EXTRA_ITEM = "_narrative_life_context"
 
@@ -126,6 +127,7 @@ def build_context_block(
     recent_entries: List[Dict[str, str]],
     round_kind: str = "reply",
     bysource: str = "",
+    audience: Optional[str] = None,
 ) -> str:
     """把剧本特有内容渲染成一段紧凑的上下文文本。
 
@@ -137,6 +139,9 @@ def build_context_block(
         recent_entries: 近期编年史条目（store.recent_chronicle("self")）。
         round_kind: "reply"=正常回应轮 / "proactive"=主动开口轮。
         bysource: 主动轮的由头文本（v0.1.3 起由侧信道注入，非空仅当主动轮）。
+        audience: 当前会话受众（私聊即用户号）。**注入前按受众过滤素材**
+            （ADR-0004 第 2 层）—— 过滤规则单一实现在 ``render/audience.py``。
+            ``None``＝受众未知，只放行通用素材。
 
     Returns:
         str: 注入给模型的剧本上下文段。
@@ -159,10 +164,12 @@ def build_context_block(
     if sleep_hint:
         lines.append(f"- {sleep_hint}")
 
+    # 受众过滤（ADR-0004）：涉私原文只讲给本人，diary 产物对所有人短路。
+    # 过滤在这里做而不是在调用方——注入块是"最后一公里"，漏一处就是泄露面。
     if recent_entries:
         recent_text = "；".join(
             str(entry.get("text", "")).strip()[:INJECT_TEXT_CAP]
-            for entry in recent_entries[:3]
+            for entry in filter_entries(recent_entries, audience, limit=3)
             if str(entry.get("text", "")).strip()
         )
         if recent_text:
@@ -171,7 +178,9 @@ def build_context_block(
     # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
     # 2026-09-21：上限统一取 INJECT_TEXT_CAP（1024）。旧的 56/120 字会把 major 档
     # （可达 400 字）的细节截掉，等于白写；1024 只作防失控天花板，条数仍限最近 2 条。
-    pending_events = list(inner.get("focus", {}).get("pending_events", []))
+    pending_events = filter_entries(
+        list(inner.get("focus", {}).get("pending_events", [])), audience
+    )
     fragments = [
         str(item.get("text", "")).strip()
         for item in pending_events[-2:]

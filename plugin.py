@@ -45,6 +45,7 @@ from .services import (
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
 from .services.proactive.scheduler import validate_rules
+from .services.render.audience import drop_diary, filter_entries, visible_chronicle
 from .services.message import (
     extract_user_id,
     is_private_chat,
@@ -424,10 +425,18 @@ class MaiNarrativePlugin(MaiBotPlugin):
         user_id = self._streams.uid_of(session_id)
         state = self._engine.load_self_state()
         branch = self._engine.load_branch_state(user_id) if user_id else None
-        recent = self._store.recent_chronicle("self", limit=3)
+        # 受众过滤（ADR-0004 第 2 层）：涉私素材只讲给本人，diary 产物对所有人短路
+        recent = visible_chronicle(self._store, "self", user_id, 3)
         round_kind, bysource = self._proactive.consume_pending(session_id)
         context_text = build_context_block(
-            self, state, branch, self._local_now(), recent, round_kind=round_kind, bysource=bysource
+            self,
+            state,
+            branch,
+            self._local_now(),
+            recent,
+            round_kind=round_kind,
+            bysource=bysource,
+            audience=user_id,
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
@@ -504,7 +513,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return True, "ok", True
         command, _, param = raw.partition(" ")
         if command == "status":
-            await self._cmd_status(stream_id)
+            await self._cmd_status(stream_id, user_id)
             return True, "ok", True
         if command == "reset":
             await self._cmd_reset(param, stream_id)
@@ -528,8 +537,12 @@ class MaiNarrativePlugin(MaiBotPlugin):
         )
         await self.ctx.send.text(text, stream_id)
 
-    async def _cmd_status(self, stream_id: str) -> None:
-        """状态摘要（不含聊天正文）。"""
+    async def _cmd_status(self, stream_id: str, audience: str = "") -> None:
+        """状态摘要（不含聊天正文）。
+
+        status 是对外面（发给命令发起者），同样按受众过滤（D6）：
+        涉私素材只显示给本人，diary 产物一律不显示。
+        """
         if self._engine is None or self._store is None:
             await self.ctx.send.text("插件尚未初始化完成，请稍后再试", stream_id)
             return
@@ -558,9 +571,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if hot and not str(hot).startswith("/"):
             lines.append(f"聚焦: {hot[:40]}")
         # 生活片段（创作层产出，v0.1.3 起替代废弃的 hot_thread 作为"心里挂念"展示）
-        pending_events = inner.get("focus", {}).get("pending_events", [])
-        if pending_events:
-            latest = str(pending_events[-1].get("text", "") or "").strip()
+        visible_pending = filter_entries(
+            inner.get("focus", {}).get("pending_events", []), audience
+        )
+        if visible_pending:
+            latest = str(visible_pending[-1].get("text", "") or "").strip()
             if latest:
                 lines.append(f"生活片段: {latest[:40]}")
         for uid in self._mode_user_ids():
@@ -569,7 +584,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 f"支线[{uid}]: {branch['identity']['stage']} | "
                 f"熟悉 {branch['state']['familiarity']:.0f} | 信任 {branch['state']['trust']:.0f}"
             )
-        recent = self._store.recent_chronicle("self", limit=2)
+        recent = visible_chronicle(self._store, "self", audience, 2)
         if recent:
             lines.append("编年史最近: " + str(recent[0].get("text", ""))[:40])
         today = self._local_now().strftime("%Y-%m-%d")
@@ -717,9 +732,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
                     if inner.get("focus", {}).get("pending_events")
                     else ""
                 ),
+                # RESERVED(R18)：口径维持现状（继续给原文，用户 Q1-b 裁定）。
+                # 但「diary 产物完全隔离」是立项铁律，不随该裁定豁免 → 只短路 diary。
                 "recent_chronicle": [
                     str(entry.get("text", ""))[:INJECT_TEXT_CAP]
-                    for entry in self._store.recent_chronicle("self", limit=3)
+                    for entry in drop_diary(self._store.recent_chronicle("self", limit=3))
                     if str(entry.get("text", "")).strip()
                 ],
             },
