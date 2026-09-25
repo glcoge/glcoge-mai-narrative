@@ -51,7 +51,7 @@ from .services.message import (
     message_text,
     outbound_text_len,
 )
-from .services.store import NarrativeStore
+from .services.store import SOURCE_DIARY, NarrativeStore
 
 # status 中可用列表的展示上限（超出截断，避免刷屏）
 _AVAILABLE_SHOW_LIMIT = 10
@@ -733,14 +733,25 @@ class MaiNarrativePlugin(MaiBotPlugin):
         description=(
             "幂等写入一条自我层编年史（scope=self，kind=diary）。"
             "同一天重复写入返回 written=False。供 mai-diary 04:00 钩子调用。"
+            "可选 audience：该条素材的可见受众；不传则按 diary 产物标记（完全隔离）。"
         ),
         version="1",
         public=True,
     )
     async def handle_narrative_chronicle_append_api(
-        self, date: str = "", content: str = "", **kwargs: Any
+        self,
+        date: str = "",
+        content: str = "",
+        audience: Optional[str] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
-        """把当日日记成品写入编年史（append-only，幂等）。"""
+        """把当日日记成品写入编年史（append-only，幂等）。
+
+        RESERVED(R13)：``audience`` 是 diary 侧未来打标推送的**协议位**。
+        当前 diary 产物完全隔离（ADR-0004），故该值不影响可见性——
+        ``kind="diary"`` 已在读取侧一律短路。落库语义按 D2：
+        未打标（None/空）→ ``source_uid=SOURCE_DIARY``；打标 → 素材归属该受众。
+        """
         del kwargs
         date = str(date or "").strip()
         content = str(content or "").strip()
@@ -753,7 +764,15 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if self._store is None:
             return {"ok": False, "written": False, "error": "not_initialized"}
 
-        written = self._store.append_chronicle_once("self", "diary", content, date)
+        normalized_audience = str(audience or "").strip()
+        written = self._store.append_chronicle_once(
+            "self",
+            "diary",
+            content,
+            date,
+            source_uid=normalized_audience or SOURCE_DIARY,
+            audience=normalized_audience,
+        )
         return {
             "ok": True,
             "written": written,

@@ -601,6 +601,9 @@ class NarrativeEngine:
                 "ts": current.isoformat(timespec="seconds"),
                 "scope": f"branch:{user_id}",
                 "kind": "dialogue_material",
+                # RESERVED(R19)：素材溯源。对话原文只对该用户可见（ADR-0004 读取过滤），
+                # store 侧另有 branch:{uid} → uid 的兜底推导，此处显式写是为了溯源可读。
+                "source_uid": str(user_id),
                 # 2026-09-21：保留长度 80 → 300 字符。入库时不知道未来是否重要，
                 # 统一多留原文，由创作层按档位决定展示多少（见 _FRAGMENT_TIER_MATERIAL_CAP）
                 "bysource": normalized[:_FRAGMENT_MATERIAL_STORE_CAP] or "（一条消息）",
