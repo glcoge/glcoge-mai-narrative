@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_ENGINE = _synth_loader.load("services.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 # plugin.py 依赖 `from .services import ...`，必须先执行 services/__init__.py
 _SYNTH_SERVICES = _synth_loader.load("services")
 _PLUGIN = _synth_loader.load("plugin")

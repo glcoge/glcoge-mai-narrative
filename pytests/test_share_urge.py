@@ -28,8 +28,8 @@ from typing import Any, Dict, List
 
 import _synth_loader
 
-_ENGINE = _synth_loader.load("services.engine")
-_PROACTIVE = _synth_loader.load("services.proactive")
+_ENGINE = _synth_loader.load("services.state.engine")
+_PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 ProactiveScheduler = _PROACTIVE.ProactiveScheduler

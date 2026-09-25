@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .engine import parse_clock
+from ..state.engine import parse_clock
 
 # 承接窗口 = 冷落窗口（2026-09-22 定案，取代原先 30min / 24h 双口径）**16 小时**。
 #

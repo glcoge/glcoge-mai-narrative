@@ -32,8 +32,8 @@ from typing import Any, Dict, Optional
 
 import datetime
 
-from .message import outbound_text_len
-from .store import NarrativeStore
+from ..message import outbound_text_len
+from ..store import NarrativeStore
 
 # 用户消息与上一条 bot 消息的间隔超过该值，视为"用户主动发起"
 _USER_INITIATED_GAP_MINUTES = 5

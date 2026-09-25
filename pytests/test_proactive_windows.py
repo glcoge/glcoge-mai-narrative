@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_PROACTIVE = _synth_loader.load("services.proactive")
+_PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 
 rule_matches_now = _PROACTIVE.rule_matches_now
 validate_rules = _PROACTIVE.validate_rules

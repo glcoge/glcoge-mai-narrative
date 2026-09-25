@@ -1,11 +1,11 @@
 """剧本人设系统服务层。"""
 
-from .engine import NarrativeEngine
-from .proactive import ProactiveScheduler, validate_rules
-from .render import build_context_block, build_injected_item, is_injected_item
+from .state.engine import NarrativeEngine
+from .proactive.scheduler import ProactiveScheduler, validate_rules
+from .render.planner_block import build_context_block, build_injected_item, is_injected_item
 from .store import NarrativeStore
 from .streams import StreamRegistry
-from .telemetry import Telemetry
+from .state.snapshot import Telemetry
 
 __all__ = [
     "NarrativeEngine",

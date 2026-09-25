@@ -31,8 +31,8 @@ from types import SimpleNamespace
 import _synth_loader
 
 _synth_loader.load("services")  # plugin.py 依赖 services/__init__ 的再导出
-_ENGINE = _synth_loader.load("services.engine")
-_RENDER = _synth_loader.load("services.render")
+_ENGINE = _synth_loader.load("services.state.engine")
+_RENDER = _synth_loader.load("services.render.planner_block")
 _PLUGIN = _synth_loader.load("plugin")
 
 NarrativeEngine = _ENGINE.NarrativeEngine

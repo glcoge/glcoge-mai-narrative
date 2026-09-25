@@ -31,13 +31,22 @@ def _install_synth_package() -> None:
 
 
 def load(rel_name: str) -> types.ModuleType:
-    """按相对名加载插件模块（如 ``"services.engine"`` / ``"plugin"``）。
+    """按相对名加载插件模块（如 ``"services.state.engine"`` / ``"plugin"``）。
 
     命中目录时回退加载其 ``__init__.py``（如 ``"services"`` → services/__init__.py，
     真正执行再导出，plugin.py 依赖它）。
     """
     _install_synth_package()
-    file_path = PLUGIN_ROOT.joinpath(*rel_name.split("."))
+    parts = rel_name.split(".")
+    # 逐级注册合成子包（v0.2.0 批 0：services 目录化后出现子包层级，
+    # 模块内相对导入要求所有父包在 sys.modules 中可解析）
+    for depth in range(2, len(parts)):
+        pkg_full = f"{_SYNTH_PKG}." + ".".join(parts[:depth])
+        if pkg_full not in sys.modules:
+            pkg_mod = types.ModuleType(pkg_full)
+            pkg_mod.__path__ = [str(PLUGIN_ROOT.joinpath(*parts[:depth]))]  # type: ignore[attr-defined]
+            sys.modules[pkg_full] = pkg_mod
+    file_path = PLUGIN_ROOT.joinpath(*parts)
     if file_path.is_dir():
         file_path = file_path / "__init__.py"
     else:

@@ -17,9 +17,9 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_ENGINE = _synth_loader.load("services.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
-_PROACTIVE = _synth_loader.load("services.proactive")
+_PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 ProactiveScheduler = _PROACTIVE.ProactiveScheduler

@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_ENGINE = _synth_loader.load("services.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 mood_by_energy = _ENGINE.mood_by_energy

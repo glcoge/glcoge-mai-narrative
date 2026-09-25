@@ -43,8 +43,8 @@ from .services import (
     build_injected_item,
     is_injected_item,
 )
-from .services.engine import INJECT_TEXT_CAP, local_now
-from .services.proactive import validate_rules
+from .services.state.engine import INJECT_TEXT_CAP, local_now
+from .services.proactive.scheduler import validate_rules
 from .services.message import (
     extract_user_id,
     is_private_chat,

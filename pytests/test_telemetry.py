@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_TELEMETRY_MOD = _synth_loader.load("services.telemetry")
+_TELEMETRY_MOD = _synth_loader.load("services.state.snapshot")
 
 Telemetry = _TELEMETRY_MOD.Telemetry
 

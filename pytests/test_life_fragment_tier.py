@@ -19,9 +19,9 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_ENGINE = _synth_loader.load("services.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
-_RENDER = _synth_loader.load("services.render")
+_RENDER = _synth_loader.load("services.render.planner_block")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 build_context_block = _RENDER.build_context_block

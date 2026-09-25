@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_synth_loader.load("services.engine")
-_RENDER = _synth_loader.load("services.render")
+_synth_loader.load("services.state.engine")
+_RENDER = _synth_loader.load("services.render.planner_block")
 
 build_context_block = _RENDER.build_context_block
 

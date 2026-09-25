@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 import _synth_loader
 
-_CREATOR = _synth_loader.load("services.creator")
+_CREATOR = _synth_loader.load("services.creation.creator")
 
 CreatorClient = _CREATOR.CreatorClient
 
