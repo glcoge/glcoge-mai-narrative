@@ -49,6 +49,7 @@ from .services.render.audience import drop_diary, filter_entries, visible_chroni
 from .services.message import (
     extract_user_id,
     is_private_chat,
+    looks_like_command,
     message_text,
     outbound_text_len,
 )
@@ -323,13 +324,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if stream_id:
             self._streams.record(user_id, stream_id)
 
-        # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）
-        if bool(message.get("is_command")) or bool(message.get("is_notify")):
+        plain = message_text(message)
+        # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）。
+        # RESERVED(R9)：宿主 is_command 字段不可靠，补本地正则兜底——命令被当成
+        # 对话素材会污染创作层与关系值。宿主修好后删掉 looks_like_command 即可。
+        is_command = bool(message.get("is_command")) or looks_like_command(plain)
+        if is_command or bool(message.get("is_notify")):
             self.ctx.logger.debug("narrative inbound: 命令/通知消息（is_command=%s is_notify=%s），跳过素材采集 uid=%s",
                                  message.get("is_command"), message.get("is_notify"), user_id)
             return {"action": "continue", "modified_kwargs": kwargs}
 
-        plain = message_text(message)
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
         self._engine.record_branch_feedback(user_id, now)

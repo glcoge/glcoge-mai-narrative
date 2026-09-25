@@ -7,7 +7,15 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
+
+# RESERVED(R9) / OBSERVE：命令消息的**本地正则兜底**。
+# 宿主 hook 载荷里的 ``is_command`` 字段不可靠（归档数据中同一形态的消息有时带
+# 有时不带），命令一旦被当成对话素材会污染创作层与关系值（"你本人操作"不是
+# bot 的生活）。宿主修好后本兜底可删——删前请在回放台确认 is_command 覆盖度。
+# 形态：以 / 或 / 的全角变体开头，后接非空白命令名。
+_COMMAND_PATTERN = re.compile(r"^\s*[／/]\S")
 
 
 def is_private_chat(message: Dict[str, Any]) -> bool:
@@ -57,6 +65,15 @@ def message_text(message: Dict[str, Any]) -> str:
     return str(raw or "").strip()
 
 
+def looks_like_command(text: str) -> bool:
+    """本地正则兜底判定"这是命令不是对话"（RESERVED(R9)，宿主修复后可删）。
+
+    只看正文形态（以 ``/`` 开头的命令），不猜平台协议。宿主 ``is_command`` 为真时
+    调用方应直接采信，本函数只在**字段缺失/为假**时补一刀。
+    """
+    return bool(_COMMAND_PATTERN.match(str(text or "")))
+
+
 def extract_user_id(message: Dict[str, Any]) -> str:
     """从消息中提取用户 ID。"""
     user_id = str(message.get("user_id") or "").strip()
@@ -94,4 +111,10 @@ def outbound_text_len(message: Any) -> Optional[int]:
     return total_len if has_text else None
 
 
-__all__ = ["is_private_chat", "message_text", "extract_user_id", "outbound_text_len"]
+__all__ = [
+    "is_private_chat",
+    "looks_like_command",
+    "message_text",
+    "extract_user_id",
+    "outbound_text_len",
+]
