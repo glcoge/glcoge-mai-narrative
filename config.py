@@ -2,7 +2,7 @@
 
 设计共识（grill-me 会话）：
 - 锚定层（identity）由用户手动配置，运行时只读 —— 对应设计树 R4.1"锚定层"。
-- 创作模型按**已注册模型名**路由（`[llm].creation_model`），或走 `[creator_model]`
+- 创作模型按**已注册模型名**路由（`[llm].creation_model`）；`[creator_model]` 直连已于 v0.2.0 批 1 退役（R10：宿主 1.2.5 已透传 model_name）
   直连 —— 对应 R5。注：宿主 `ctx.llm.generate(model=...)` 现在只认模型名，
   不认 task 名（2026-09-15 真机证实）。
 - v0.1 最小切片：单人单私聊"剧本模式"。
@@ -524,7 +524,7 @@ class LLMSection(PluginConfigBase):
         default="",
         description=(
             "创作模型名（须与主程序已注册的模型名完全一致，WebUI 模型列表可查看复制）。"
-            "只填模型名，无需把模型分配给任何任务。仅当 [creator_model] 直连关闭时生效；"
+            "只填模型名，无需把模型分配给任何任务。"
             "留空则使用主程序默认模型。推理模型可在该模型的 extra_params 配 "
             "{thinking = {type = \"disabled\"}} 关思考，无需直连。"
         ),
@@ -535,87 +535,28 @@ class LLMSection(PluginConfigBase):
             "order": 1,
         },
     )
+    creation_max_tokens: int = Field(
+        default=1024,
+        ge=64,
+        le=8192,
+        description=(
+            "创作最大输出 token（默认 1024）。"
+            "（2026-09-21 由 384 上调：生活片段分档后 major 档可达 400 字，384 会截断正文。）"
+            "v0.2.0 批 1 随 [creator_model] 直连退役（R10）从该段迁移至此。"
+        ),
+        json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 2},
+    )
     temperature: float = Field(
         default=0.9,
         ge=0.0,
         le=2.0,
         description="创作温度。",
-        json_schema_extra={"label": "温度", "hint": "0-2", "order": 2},
+        json_schema_extra={"label": "温度", "hint": "0-2", "order": 3},
     )
     show_prompt: bool = Field(
         default=False,
         description="是否在日志打印创作 prompt（调试用）。当前作用于生活片段与编年史压缩两处。",
-        json_schema_extra={"label": "日志打印 prompt", "order": 3},
-    )
-
-
-class CreatorModelSection(PluginConfigBase):
-    """剧本创作模型（可选：插件直连 OpenAI 兼容端点，绕过 MaiBot 任务路由）。
-
-    启用后，生活片段/编年史压缩直接 POST 到 ``base_url``（/chat/completions），
-    body 固定携带 ``thinking = {type: "disabled"}``（生成短文本无需思维链；
-    推理模型不禁思考会挤占 max_tokens 导致正文截断）。关闭时回退
-    ``[llm].creation_model`` 按**模型名**路由。
-    """
-
-    __ui_label__: ClassVar[str] = "创作模型直连"
-    __ui_icon__: ClassVar[str] = "link"
-    __ui_order__: ClassVar[int] = 5
-
-    enabled: bool = Field(
-        default=False,
-        description="启用插件直连创作模型（关=回退 [llm].creation_model 按模型名路由）。",
-        json_schema_extra={"label": "启用直连", "order": 1},
-    )
-    base_url: str = Field(
-        default="",
-        description="OpenAI 兼容 BaseURL（会自动拼接 /chat/completions）。",
-        json_schema_extra={
-            "label": "BaseURL",
-            "hint": "例 https://api.example.com/v1",
-            "placeholder": "https://…/v1",
-            "order": 2,
-        },
-    )
-    api_key: str = Field(
-        default="",
-        description=(
-            "API Key（明文存插件配置，与 MaiBot model_config.toml 现状一致；"
-            "x-widget=password 只在 WebUI 上打码显示，不加密 config.toml）。"
-        ),
-        json_schema_extra={
-            "label": "API Key",
-            "hint": "Bearer 令牌；留空则不发 Authorization 头",
-            "placeholder": "sk-…",
-            # 旧写法 "password": True 是死元数据（前端 FieldRenderer 不读它），
-            # 真正生效的是 x-widget → ui_type
-            "x-widget": "password",
-            "order": 3,
-        },
-    )
-    model_id: str = Field(
-        default="",
-        description="模型 ID（服务商侧标识，如 mimo-v2.5）。",
-        json_schema_extra={"label": "模型 ID", "hint": "服务商侧 model 字段", "order": 4},
-    )
-    max_tokens: int = Field(
-        default=1024,
-        ge=64,
-        le=8192,
-        description=(
-            "最大输出 token（默认 1024）。"
-            "（2026-09-21 由 384 上调：生活片段分档后 major 档可达 400 字，"
-            "384 会截断正文。）"
-            "⚠️ 直连与按名路由两条路径均使用本值。"
-        ),
-        json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 5},
-    )
-    timeout_seconds: float = Field(
-        default=30.0,
-        ge=5.0,
-        le=180.0,
-        description="直连请求超时（秒）。",
-        json_schema_extra={"label": "超时秒", "order": 6},
+        json_schema_extra={"label": "日志打印 prompt", "order": 4},
     )
 
 
@@ -645,7 +586,6 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     narrative: NarrativeSection = Field(default_factory=NarrativeSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     llm: LLMSection = Field(default_factory=LLMSection)
-    creator_model: CreatorModelSection = Field(default_factory=CreatorModelSection)
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
 
 
@@ -656,7 +596,6 @@ __all__ = [
     "NarrativeSection",
     "ProactiveSection",
     "LLMSection",
-    "CreatorModelSection",
     "TelemetrySection",
     "MaiNarrativePluginConfig",
 ]

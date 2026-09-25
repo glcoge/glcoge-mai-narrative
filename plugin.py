@@ -553,20 +553,21 @@ class MaiNarrativePlugin(MaiBotPlugin):
         cfg = self.config
         state = self._engine.load_self_state()
         inner = state["state"]
-        creator_cfg = cfg.creator_model
-        if creator_cfg.enabled and str(creator_cfg.base_url or "").strip():
-            creator_line = f"创作模型: 直连（{creator_cfg.model_id or '未配 model_id'}）"
-        elif str(cfg.llm.creation_model or "").strip():
+        # R10 退役（v0.2.0 批 1）：[creator_model] 直连已删，只剩按名路由一条路
+        if str(cfg.llm.creation_model or "").strip():
             creator_line = f"创作模型: 按名路由（{cfg.llm.creation_model}）"
         else:
             creator_line = "创作模型: 默认（未配置，可填 [llm].creation_model）"
+        mode_uids = self._mode_user_ids()
         lines = [
             "【剧本人设系统 · 状态】",
             f"剧本模式: {'开' if cfg.narrative.enabled else '关'} | "
             f"主动消息: {'开' if cfg.proactive.enabled else '关'}",
             creator_line,
-            f"模式用户: {','.join(self._mode_user_ids()) or '无'} | "
-            f"已知会话: {self._streams.known_count()}",
+            # N2 脱敏（D10/Q5）：状态文本曾把 mode_user_ids 原文外发给非管理员会话，
+            # 真实事故——2026-09-22 14:12 发给 927386371 的状态含他人 QQ 号。
+            # 只显示计数，不显示号码。
+            f"模式用户: {len(mode_uids)} 人 | 已知会话: {self._streams.known_count()}",
             f"心情: {inner['mood']['label']}（精力 {inner['mood']['energy'] * 10:.0f}/10）| "
             f"阶段: {inner['routine']['phase']}",
             f"睡眠: {_sleep_status_line(cfg.narrative, inner.get('routine', {}))}",
@@ -582,19 +583,20 @@ class MaiNarrativePlugin(MaiBotPlugin):
             latest = str(visible_pending[-1].get("text", "") or "").strip()
             if latest:
                 lines.append(f"生活片段: {latest[:40]}")
-        for uid in self._mode_user_ids():
+        # 同上：支线行也用序号代号，不外发 QQ 号
+        for index, uid in enumerate(mode_uids, start=1):
             branch = self._engine.load_branch_state(uid)
             lines.append(
-                f"支线[{uid}]: {branch['identity']['stage']} | "
+                f"支线[{index}]: {branch['identity']['stage']} | "
                 f"熟悉 {branch['state']['familiarity']:.0f} | 信任 {branch['state']['trust']:.0f}"
             )
         recent = visible_chronicle(self._store, "self", audience, 2)
         if recent:
             lines.append("编年史最近: " + str(recent[0].get("text", ""))[:40])
         today = self._local_now().strftime("%Y-%m-%d")
-        for uid in self._mode_user_ids():
+        for index, uid in enumerate(mode_uids, start=1):
             count = self._store.get_kv_int(f"proactive:count:{uid}:{today}")
-            lines.append(f"今日主动[{uid}]: {count}")
+            lines.append(f"今日主动[{index}]: {count}")
         lines.append(f"数据目录: {self.ctx.paths.data_dir / 'narrative'}")
         # 宿主只开放「任务名」列表（非模型名），仅作连通性参考；失败不影响 status
         try:

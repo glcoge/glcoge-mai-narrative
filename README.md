@@ -33,29 +33,17 @@
 
 ## 创作模型路由（v0.1.5 起：按模型名路由，推荐）
 
-生活片段 / 编年史压缩的模型路线（二选一，直连优先）：
-
-**路线 A：按模型名路由（默认，推荐）** —— `[llm] creation_model` 填一个**已在主程序注册的模型名**（WebUI 模型列表可查看复制），只填模型名、**无需把模型分配给任何任务**（MaiBot ≥1.2.5 修复 #2031 后支持按名调用，模型名查全局列表）。留空则用主程序默认模型。
+唯一路线：**按模型名路由** —— `[llm] creation_model` 填一个**已在主程序注册的模型名**（WebUI 模型列表可查看复制），只填模型名、**无需把模型分配给任何任务**（MaiBot ≥1.2.5 修复 #2031 后支持按名调用，模型名查全局列表）。留空则用主程序默认模型。
 
 - 推理模型关思考：直接在该模型的 `extra_params` 配 `{thinking = {type = "disabled"}}`（WebUI 模型编辑页可配），插件侧零改动。
 - 配置名写错不会静默：调用失败日志会明确报 `未找到名为 'X' 的模型`，并附 `[llm].creation_model` 的值与"去 WebUI 模型列表核对该名称是否已注册"的提示。
+- 输出长度：`[llm] creation_max_tokens`（默认 1024；生活片段 major 档可达 400 字，太小会截断正文）。
 - ⚠ `/narrative status` 末尾那行是**宿主可用任务名**（`utils`/`planner`/`replyer`/…），**不是模型名**——宿主未向插件开放"已注册模型名"查询能力（`llm.get_available_models()` 返回的是任务列表）。模型名一律去 WebUI「模型列表」复制。
 
-**路线 B：插件直连**（`[creator_model]` 段）—— 需要独立供应商 / 独立 api_key / 独立额度时才用：插件自己 POST 到 OpenAI 兼容端点，**body 固定携带 `thinking={type:"disabled"}`**：
+历史备注：
 
-1. 本插件配置页 → `创作模型直连` 段：
-   - `enabled = true`
-   - `base_url` = 服务商 OpenAI 兼容地址（如 `https://…/v1`，自动拼 `/chat/completions`）
-   - `api_key` = 你的 Key
-   - `model_id` = 模型 ID（如 `mimo-v2.5`）
-   - `max_tokens` = 384（默认，正文 40~90 字足够且有余量）
-2. 生活片段/编年史即走直连（该模型是否推理、是否开思考都无所谓——thinking 被强制关闭）。
-
-要点：
-- 直连启用后**不依赖 MaiBot 模型体系**：不占任务、不经 RPC、不改 model_config.toml；适合"创作模型与主模型不同供应商"的场景。
-- 直连关闭时走路线 A；`[llm].creation_model` 为空则用主程序默认模型。
-- API Key 明文存插件配置（与 model_config.toml 现状一致）；如需更安全可后续改环境变量引用。
-- 历史备注：v0.1.3~v0.1.4 的回退路线是 `[llm] creation_task`（task 名路由），因 #2031（model_name 被吞入任务名解析）只能按 task 复用；#2031 已随 MaiBot 1.2.5 修复（维护者提交 `008019c2`），v0.1.5 起改为按模型名路由，`creation_task` 字段废弃。
+- v0.1.3~v0.1.4 的回退路线是 `[llm] creation_task`（task 名路由），因 #2031（model_name 被吞入任务名解析）只能按 task 复用；#2031 已随 MaiBot 1.2.5 修复（维护者提交 `008019c2`），v0.1.5 起改为按模型名路由，`creation_task` 字段废弃。
+- **v0.2.0 批 1：`[creator_model]` 插件直连已退役（R10）**。它曾是宿主 1.2.0 吞 `model_name` 时的绕行方案；2026-09-25 已在容器内核实 1.2.5 的 `_resolve_llm_capability_route` 正常透传 model_name，绕行不再必要，顺带消除了"插件配置里存明文 API Key"这一风险源。需要独立供应商/额度时请在主程序 `model_config.toml` 注册该模型后按名引用。
 
 ## 精力规则（v0.1.5 起：基线回归，可调）
 

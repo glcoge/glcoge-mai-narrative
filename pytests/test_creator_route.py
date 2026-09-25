@@ -6,7 +6,9 @@
 未分配任务**的模型（``get_model_info_by_name`` 查全局模型列表，不校验任务分配），
 用户可在 WebUI 自行注册"无思考版"模型（``extra_params.thinking.disabled``）按名绑定。
 
-直连路线（[creator_model]）保持不变：独立供应商/独立额度场景仍需它。
+v0.2.0 批 1：**直连路线（[creator_model]）已退役**（R10）。宿主 1.2.5 已修好
+``model_name`` 透传（2026-09-25 容器核实），绕行不再必要；顺带消掉了插件配置里
+的明文 ``api_key``。现在只剩按名路由一条路。
 
 ⚠ 2026-09-14 修正（宿主能力语义澄清）：``ctx.llm.get_available_models()`` 返回的
 **不是注册模型名，而是任务名**（链路：plugin_runtime/capabilities/core.py:755 →
@@ -78,25 +80,19 @@ class _FakeTelemetry:
 
 def _make_client(
     *,
-    creator_enabled: bool = False,
-    base_url: str = "",
     creation_model: str = "",
+    creation_max_tokens: int = 384,
     available=None,
     raise_on_generate=None,
 ) -> tuple:
     plugin = SimpleNamespace(
         config=SimpleNamespace(
-            creator_model=SimpleNamespace(
-                enabled=creator_enabled,
-                base_url=base_url,
-                api_key="",
-                model_id="direct-model",
-                max_tokens=384,
-                timeout_seconds=5,
-            ),
+            # [creator_model] 直连已于 v0.2.0 批 1 退役（R10）：此处**故意不提供**
+            # 该配置段——若代码回退去读它，测试会立刻红。
             llm=SimpleNamespace(
                 creation_task="learner",  # 旧字段：保留用于验证新代码不再使用
                 creation_model=creation_model,
+                creation_max_tokens=creation_max_tokens,
                 temperature=0.9,
             ),
         ),
@@ -118,27 +114,20 @@ def _make_client(
 # ===== 回归用例 =====
 
 
-def test_direct_route_used_when_configured():
-    """直连条件满足 → 走直连，不触发 llm.generate。"""
-    client, llm, _handler, _telemetry = _make_client(
-        creator_enabled=True, base_url="https://api.example.com"
-    )
-    direct_calls: list = []
+def test_direct_route_removed():
+    """R10 退役：直连分支已删，客户端**没有** `_generate_direct`，也读不到 [creator_model]。
 
-    async def fake_direct(prompt):
-        direct_calls.append(prompt)
-        return "直连结果"
-
-    client._generate_direct = fake_direct
+    保留这条反向断言，防止有人把明文 api_key 的直连方案加回来。
+    """
+    client, llm, _handler, _telemetry = _make_client(creation_model="my-model")
+    assert not hasattr(client, "_generate_direct"), "直连分支不应复活（R10 已退役）"
     result = asyncio.run(client.generate("提示"))
-
-    assert result == "直连结果"
-    assert direct_calls == ["提示"]
-    assert llm.calls == [], "直连生效时不应再走 llm.generate"
+    assert result == "生成结果", "只剩按名路由一条路"
+    assert len(llm.calls) == 1
 
 
 def test_model_name_route_payload():
-    """直连关闭 + 已配模型名 → 载荷为 task_name="utils" + model_name=配置值。"""
+    """已配模型名 → 载荷为 task_name="utils" + model_name=配置值。"""
     client, llm, _handler, _telemetry = _make_client(
         creation_model="my-thinking-off-model",
         available=["my-thinking-off-model", "other-model"],
@@ -152,16 +141,16 @@ def test_model_name_route_payload():
     assert call.get("model_name") == "my-thinking-off-model", "应按名指定模型"
     assert "model" not in call, "不得再用旧式 model= 传任务名"
     assert call.get("temperature") == 0.9
-    # 2026-09-21：按名路由不再固定 256，改为取 [creator_model].max_tokens
-    # （major 档 400 字会被 256 截断）；fixture 该值为 384。
-    assert call.get("max_tokens") == 384, "按名路由应使用 [creator_model].max_tokens"
+    # 2026-09-21：不再固定 256（major 档 400 字会被截断）；
+    # v0.2.0 批 1 随 [creator_model] 退役迁到 [llm].creation_max_tokens。fixture 值 384。
+    assert call.get("max_tokens") == 384, "应使用 [llm].creation_max_tokens"
     assert llm.availability_queries == 0, (
         "宿主只提供任务名列表，无法校验模型名 → 不应再查询 get_available_models"
     )
 
 
 def test_empty_creation_model_uses_default():
-    """直连关闭 + 未配模型名 → 只传 task_name="utils"，不传 model_name。"""
+    """未配模型名 → 只传 task_name="utils"，不传 model_name。"""
     client, llm, _handler, _telemetry = _make_client(creation_model="")
     result = asyncio.run(client.generate("提示"))
 

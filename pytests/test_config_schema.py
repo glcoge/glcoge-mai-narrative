@@ -139,10 +139,17 @@ def test_user_window_rule_days_is_multi_select():
     assert days.get("multiple") is True
 
 
-def test_creator_api_key_is_masked():
-    """直连 API Key 必须打码显示（x-widget=password；旧的 "password": True 是死元数据）。"""
-    field = dict((name, f) for _, name, f in _all_fields() if name == "api_key")["api_key"]
-    assert field["ui_type"] == "password"
+def test_no_plaintext_api_key_field_anywhere():
+    """R10 退役护栏：插件配置里**不得再有明文密钥字段**。
+
+    [creator_model] 直连删除后，api_key 一并消失。保留这条断言防止有人再把
+    "插件自己存 API Key" 这条错路加回来——密钥应由宿主 model_config.toml 持有。
+    """
+    bad = [f"{sec}.{name}" for sec, name, _f in _all_fields() if "api_key" in name]
+    assert not bad, f"插件配置不该再出现明文密钥字段: {bad}"
+
+    names = {name for _sec, name, _f in _all_fields()}
+    assert "base_url" not in names, "[creator_model] 直连已退役，base_url 不应复活"
 
 
 def test_share_urge_fields_defaults_and_types():
