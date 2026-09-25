@@ -807,6 +807,12 @@ class NarrativeEngine:
         if not text:
             return
 
+        # 指标 4 双轨埋点（R24 A 轨 / R7 B 轨）：只在产出这一刻采样，
+        # 保证"注入侧组合熵"与"产出侧文本多样性"同尺度可比。
+        telemetry = getattr(self._plugin, "_telemetry", None)
+        if telemetry is not None:
+            telemetry.note_fragment(state, text)
+
         # 双写：pending_events（有界）+ 编年史（append-only）
         inner = state["state"]
         focus = inner.setdefault("focus", {})
