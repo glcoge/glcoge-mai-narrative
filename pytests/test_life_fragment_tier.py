@@ -97,8 +97,8 @@ def _make_engine(*, detail_enabled=True, energy=0.6, events=None, milestones=Non
         }
     }
     branch = {
-        "state": {"familiarity": 10.0, "milestones": milestones or []},
-        "identity": {"stage": "陌生人"},
+        "relationship": {"stage": "陌生人", "milestones": milestones or [], "first_met": ""},
+        "state": {"interaction_count": 0},
     }
     engine.load_branch_state = lambda uid: branch
     engine.load_self_state = lambda: engine._self_state

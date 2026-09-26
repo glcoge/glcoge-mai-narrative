@@ -44,6 +44,7 @@ from .services import (
     is_injected_item,
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
+from .services.state.continuity import current_relationship_stage
 from .services.proactive.scheduler import validate_rules
 from .services.render.audience import drop_diary, filter_entries, visible_chronicle
 from .services.message import (
@@ -581,13 +582,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
             latest = str(visible_pending[-1].get("text", "") or "").strip()
             if latest:
                 lines.append(f"生活片段: {latest[:40]}")
-        # 同上：支线行也用序号代号，不外发 QQ 号
+        # 同上：支线行也用序号代号，不外发 QQ 号。批 2 起不再显示熟悉/信任数字
+        # （旧规则线只进不退的假演化已废弃，E2 裁决）——只留 stage 标签。
         for index, uid in enumerate(mode_uids, start=1):
             branch = self._engine.load_branch_state(uid)
-            lines.append(
-                f"支线[{index}]: {branch['identity']['stage']} | "
-                f"熟悉 {branch['state']['familiarity']:.0f} | 信任 {branch['state']['trust']:.0f}"
+            relationship = branch.get("relationship", {})
+            stage = str(
+                relationship.get("stage")
+                or current_relationship_stage(relationship)
             )
+            lines.append(f"支线[{index}]: {stage}")
         recent = visible_chronicle(self._store, "self", audience, 2)
         if recent:
             lines.append("编年史最近: " + str(recent[0].get("text", ""))[:40])
@@ -656,9 +660,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
         }
         summary["branches"] = {
             uid: {
-                "stage": self._engine.load_branch_state(uid)["identity"]["stage"],
-                "familiarity": self._engine.load_branch_state(uid)["state"]["familiarity"],
-                "trust": self._engine.load_branch_state(uid)["state"]["trust"],
+                "stage": str(
+                    self._engine.load_branch_state(uid)
+                    .get("relationship", {})
+                    .get("stage")
+                    or "陌生人"
+                ),
+                # RESERVED(R6)：互动计数是**内部证据计数**，不进 API 输出
+                # （ADR-0002 §2：不进注入块、不进 status）
             }
             for uid in self._mode_user_ids()
         }

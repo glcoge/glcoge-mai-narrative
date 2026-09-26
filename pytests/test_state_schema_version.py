@@ -115,7 +115,7 @@ def test_legacy_branch_state_is_reset():
         state = engine.load_branch_state("10001")
         assert state["meta"]["version"] == STATE_SCHEMA_VERSION
         # 重置后 first_met 重新登记（原先的旧值不作数）
-        assert state["identity"]["first_met"] != ""
+        assert state["relationship"]["first_met"] != ""
 
 
 def test_current_version_state_is_kept():

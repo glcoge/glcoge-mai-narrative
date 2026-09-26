@@ -155,6 +155,46 @@ class NarrativeStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_events_scope_ts ON events(scope, ts)"
             )
+            # 晋升机两表（批 2，ADR-0002 §4）。此批只建表与审计读写，
+            # 晋升逻辑本体属批 4——schema 一次做完，免得批 4 又动 store。
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS proposals (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target         TEXT NOT NULL,
+                    path           TEXT NOT NULL,
+                    proposed_value TEXT NOT NULL DEFAULT '',
+                    confidence     REAL NOT NULL DEFAULT 0.0,
+                    status         TEXT NOT NULL DEFAULT 'pending',
+                    evidence_refs  TEXT NOT NULL DEFAULT '',
+                    source_uid     TEXT NOT NULL DEFAULT '',
+                    created_ts     TEXT NOT NULL,
+                    updated_ts     TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS promotions (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER,
+                    action      TEXT NOT NULL,
+                    target      TEXT NOT NULL,
+                    path        TEXT NOT NULL,
+                    old_value   TEXT NOT NULL DEFAULT '',
+                    new_value   TEXT NOT NULL DEFAULT '',
+                    reason      TEXT NOT NULL DEFAULT '',
+                    source_uid  TEXT NOT NULL DEFAULT '',
+                    ts          TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, path)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_promotions_path ON promotions(path, ts)"
+            )
 
     # ─── 迁移（v0.2.0 批 1 首次建立，R21） ────────────────────────
 
@@ -437,6 +477,129 @@ class NarrativeStore:
         """清空全部事件队列（状态重置用）。"""
         with self._transaction() as connection:
             connection.execute("DELETE FROM events")
+
+    # ─── 晋升机两表（批 2 建表 / 批 4 写逻辑，ADR-0002 §4） ─────────
+
+    def add_proposal(
+        self,
+        *,
+        target: str,
+        path: str,
+        proposed_value: str = "",
+        confidence: float = 0.0,
+        status: str = "pending",
+        evidence_refs: str = "",
+        source_uid: str = "",
+    ) -> int:
+        """登记一条慢变提案，返回自增 id。
+
+        ``path`` 必须是慢变白名单路径——调用方（批 4）负责校验；store 不做白名单
+        判定，保持"存储层不认识业务规则"的分层（同 audience 过滤的分层原则）。
+        """
+        now = _now_iso()
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO proposals "
+                "(target, path, proposed_value, confidence, status, evidence_refs, "
+                " source_uid, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(target),
+                    str(path),
+                    str(proposed_value),
+                    float(confidence),
+                    str(status),
+                    str(evidence_refs),
+                    str(source_uid),
+                    now,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_proposals(
+        self, path: str = "", status: str = "", limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """列出提案（新→旧），可按 path / status 过滤。"""
+        clauses: List[str] = []
+        params: List[Any] = []
+        if path:
+            clauses.append("path = ?")
+            params.append(str(path))
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 500)))
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT id, target, path, proposed_value, confidence, status, "
+                "evidence_refs, source_uid, created_ts, updated_ts "
+                f"FROM proposals {where} ORDER BY id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_proposal_status(self, proposal_id: int, status: str) -> None:
+        """更新提案状态（pending → applied / rejected / rolled_back）。"""
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE proposals SET status = ?, updated_ts = ? WHERE id = ?",
+                (str(status), _now_iso(), int(proposal_id)),
+            )
+
+    def append_promotion(
+        self,
+        *,
+        action: str,
+        target: str,
+        path: str,
+        old_value: str = "",
+        new_value: str = "",
+        reason: str = "",
+        source_uid: str = "",
+        proposal_id: Optional[int] = None,
+        ts: str = "",
+    ) -> int:
+        """写一条晋升审计（applied / rejected / rolled_back 全记，含旧值新值）。
+
+        与 chronicle ``kind=promotion`` 人可读留痕互补：这里记机器可回滚的旧值新值。
+        """
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO promotions "
+                "(proposal_id, action, target, path, old_value, new_value, reason, "
+                " source_uid, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(proposal_id) if proposal_id is not None else None,
+                    str(action),
+                    str(target),
+                    str(path),
+                    str(old_value),
+                    str(new_value),
+                    str(reason),
+                    str(source_uid),
+                    ts or _now_iso(),
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_promotions(self, path: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        """列出晋升审计（新→旧）；回滚按本表逆序恢复旧值（批 4）。"""
+        params: List[Any] = []
+        where = ""
+        if path:
+            where = "WHERE path = ?"
+            params.append(str(path))
+        params.append(max(1, min(int(limit), 500)))
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT id, proposal_id, action, target, path, old_value, new_value, "
+                f"reason, source_uid, ts FROM promotions {where} ORDER BY id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ─── 每日快照 ───────────────────────────────────────────────
 

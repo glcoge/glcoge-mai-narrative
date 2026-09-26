@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from ..state.continuity import current_relationship_stage
 from ..state.engine import (
     INJECT_TEXT_CAP,
     daylight_hint,
@@ -193,8 +194,17 @@ def build_context_block(
         )
 
     if branch is not None:
-        stage = str(branch["identity"].get("stage", "陌生人"))
-        first_met = str(branch["identity"].get("first_met", ""))[:10]
+        # 关系呈现（批 2 空窗期）：stage 由**只读事实**确定性推导（continuity），
+        # 旧的 familiarity/trust 数字不再显示（那是只进不退的假演化，E2 裁决）。
+        relationship = branch.get("relationship", {})
+        facts = {
+            "milestones": relationship.get("milestones", []),
+            "first_met": relationship.get("first_met", ""),
+        }
+        stage = str(
+            relationship.get("stage") or current_relationship_stage(facts)
+        )
+        first_met = str(relationship.get("first_met", ""))[:10]
         lines.append(
             f"- 你与这位玩家的关系：{stage}"
             + (f"（最初见面：{first_met}）" if first_met else "")

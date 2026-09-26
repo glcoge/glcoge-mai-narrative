@@ -10,6 +10,7 @@
 
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
 import engine。``INJECT_TEXT_CAP`` 采用函数内延迟导入（见 ``build_bysource``）。
+``continuity`` 是纯声明模块（零上层依赖），可以顶层 import。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..render.audience import filter_entries
+from ..state.continuity import current_relationship_stage
 
 # 由头去复用：已用作由头的生活片段 ts 集合（逗号分隔，有界 8 条）
 # 按 user_id 命名空间隔离——store.get_kv_str 没有 scope 参数，而生活片段挂在
@@ -114,8 +116,14 @@ def build_bysource(
             continue
         candidates.append((f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts))
 
-    stage = str(branch["identity"].get("stage", "陌生人"))
-    milestones = list(branch["state"].get("milestones", []))
+    # 关系里程碑取自 relationship 命名空间（批 2 四维 schema）；stage 缺省时由
+    # 只读事实推导（continuity），不再读被删的 familiarity 规则线
+    relationship = branch.get("relationship", {})
+    milestones = list(relationship.get("milestones", []))
+    stage = str(
+        relationship.get("stage")
+        or current_relationship_stage({"milestones": milestones})
+    )
     if milestones and stage != "陌生人":
         latest_milestone = milestones[-1]
         candidates.append((f"想起我们之间那件事：{latest_milestone.get('desc', '')}", ""))

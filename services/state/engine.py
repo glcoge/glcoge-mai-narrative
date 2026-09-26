@@ -20,6 +20,7 @@ from ..proactive.sourcing import (
 )
 from ..render.audience import filter_entries, visible_events
 from ..store import NarrativeStore
+from .continuity import current_relationship_stage
 
 # 每日作息阶段（本地 24h 制）
 _ROUTINE_PHASES: List[Tuple[int, str]] = [
@@ -48,12 +49,9 @@ _SELF_SCOPE = "self"
 #: 版本史：1 = v0.1.x 初始形状；2 = 批 2（死字段处决 + 关系四维 schema）。
 STATE_SCHEMA_VERSION = 2
 
-# 关系阶段阈值（familiarity，只进不退）：倒序匹配，取首个 familiarity >= threshold 的标签
-_STAGE_THRESHOLDS: List[Tuple[float, str]] = [
-    (85, "挚友"),
-    (60, "朋友"),
-    (30, "熟人"),
-]
+# 关系阶段阈值（familiarity，只进不退）已于批 2 删除（ADR-0002 §2）：
+# 旧规则线 `stage/familiarity/trust` 由晋升线全量替换，不留双轨。批 2~批 4 空窗期
+# 的关系呈现改由 `continuity.current_relationship_stage()` 从**只读事实**推导。
 
 # ─── 生活片段详略分档（2026-09-21 新增，按事件重要度决定创作长度） ──────────
 # 动机：此前所有生活片段一律 40~90 字，重要的事（关系里程碑、状态极端、密集对话）
@@ -228,17 +226,34 @@ def default_self_state() -> Dict[str, Any]:
 
 
 def default_branch_state() -> Dict[str, Any]:
-    """支线层初始状态（关系锚 identity 由规则登记）。"""
+    """支线层初始状态（关系锚 identity 由规则登记）。
+
+    关系 schema（批 2 起，ADR-0002 §1）：``relationship`` 四维
+    trust/closeness/boundaries/stage + 只读事实 first_met/milestones。
+    旧的 ``state.familiarity`` 已删（只进不退的假演化，ADR-0002 §2）。
+
+    ⚠ 批 2~批 4 空窗期：四维**没有任何写入者**（晋升机是批 4）。``stage`` 由
+    ``continuity.current_relationship_stage()`` 从只读事实确定性推导呈现。
+    """
     return {
         "identity": {
             "first_met": "",
+        },
+        "relationship": {
+            "trust": 0.0,
+            "closeness": 0.0,
+            "boundaries": 0.0,
+            # stage 由前三者 + 证据晋升产生，可回退（批 4）；批 2 由只读事实推导
             "stage": "陌生人",
+            # 只读事实（ADR-0002 §2）：是记录不是演化观点，不参与晋升
+            "first_met": "",
+            "milestones": [],
         },
         "state": {
-            "trust": 0.0,
-            "familiarity": 0.0,
             "last_interaction_ts": "",
-            "milestones": [],
+            # RESERVED(R6)：互动计数器降级为**内部证据计数**——不进注入块、
+            # 不进 /narrative status，只作晋升证据链的确定性时间戳来源。
+            "interaction_count": 0,
         },
         "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }
@@ -354,14 +369,14 @@ class NarrativeEngine:
         state = self._store.get_kv(key)
         if state is None:
             state = default_branch_state()
-            state["identity"]["first_met"] = self._local_now().isoformat(timespec="seconds")
+            state["relationship"]["first_met"] = self._local_now().isoformat(timespec="seconds")
             self._store.set_kv(key, state)
             return state
         if not self._is_current_version(state):
             meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
             self._warn_legacy_reset(f"支线层({user_id})", meta.get("version"))
             state = default_branch_state()
-            state["identity"]["first_met"] = self._local_now().isoformat(timespec="seconds")
+            state["relationship"]["first_met"] = self._local_now().isoformat(timespec="seconds")
             self._store.set_kv(key, state)
         return state
 
@@ -658,38 +673,25 @@ class NarrativeEngine:
         )
 
     def record_branch_feedback(self, user_id: str, now: datetime) -> None:
-        """支线层反馈：信任/熟悉度小步增长；里程碑只进不退。"""
-        # 与紧邻的 record_interaction 保持一致：任一开关关闭即不再推进关系值。
-        # （此前本函数无 gate，剧本关闭期间关系值/里程碑仍在涨）
+        """支线层互动落痕（批 2 起降级为**内部证据计数**，R6）。
+
+        旧实现（v0.1.x）在此把 familiarity +0.8 / trust +0.5 并据阈值晋升 stage，
+        形成"只进不退的假演化"——ADR-0002 §2 已全量废弃。批 2 起本函数**不再写
+        关系四维**（那是批 4 晋升机的职责），只：
+        - 更新互动时点（承接窗口、由头时间锚点仍需要它）
+        - 累加 ``interaction_count``（R6：晋升证据链的确定性计数来源）
+
+        计数**不进注入块、不进 /narrative status**——它是内部证据，不是呈现值。
+        """
+        # 与紧邻的 record_interaction 保持一致：任一开关关闭即不再推进。
         cfg = self._plugin.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             return
         branch = self.load_branch_state(user_id)
         inner = branch["state"]
         inner["last_interaction_ts"] = now.isoformat(timespec="seconds")
-        inner["familiarity"] = round(min(100.0, float(inner.get("familiarity", 0.0)) + 0.8), 1)
-        inner["trust"] = round(min(100.0, float(inner.get("trust", 0.0)) + 0.5), 1)
-
-        stage = str(branch["identity"].get("stage", "陌生人"))
-        familiarity = float(inner["familiarity"])
-        milestones = list(inner.get("milestones", []))
-        for threshold, label in _STAGE_THRESHOLDS:
-            if familiarity >= threshold:
-                # 阈值从高到低，命中首个即 familiarity 能达到的最高档；未到该档才晋升（只进不退）
-                if stage != label:
-                    old_stage = stage
-                    branch["identity"]["stage"] = label
-                    if not any(item.get("id") == f"stage:{label}" for item in milestones):
-                        milestones.append(
-                            {
-                                "id": f"stage:{label}",
-                                "ts": now.isoformat(timespec="seconds"),
-                                "desc": f"你们从{old_stage}变成了{label}",
-                                "stage": "done",
-                            }
-                        )
-                    inner["milestones"] = milestones
-                break
+        # OBSERVE(R6)：内部证据计数（仅累加，呈现层不得读取）
+        inner["interaction_count"] = int(inner.get("interaction_count", 0)) + 1
         self.save_branch_state(user_id, branch)
 
     # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ────
@@ -925,7 +927,9 @@ class NarrativeEngine:
         material_count = 0
         for user_id in (cfg.narrative.mode_user_ids or []):
             branch = self.load_branch_state(user_id)
-            for item in branch["state"].get("milestones") or []:
+            # 里程碑是只读事实（批 2 迁到 relationship 命名空间）；作为素材密度
+            # 信号保留——它是"这段时间确实发生了事"的证据，不是关系演化值
+            for item in branch.get("relationship", {}).get("milestones") or []:
                 if str(item.get("ts", "")) >= start_iso:
                     return "major"
             for event in visible_events(self._store, f"branch:{user_id}", user_id, 20):

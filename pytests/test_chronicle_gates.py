@@ -286,37 +286,44 @@ def test_life_fragment_skips_chronicle_when_disabled():
     assert engine._self_state["state"]["focus"]["pending_events"], "生活片段仍应生成"
 
 
-# ===== B5：record_branch_feedback 受开关控制 =====
+# ===== B5：record_branch_feedback 开关 gate + 批 2 降级为证据计数 =====
+#
+# 批 2 变更（ADR-0002 §2）：旧规则线 familiarity/trust 递增已全量废弃，
+# 本函数降级为**内部证据计数**（R6）。原三条断言（familiarity 递增、
+# 关闭时冻结）随功能一起删除——列于提交信息中（E13 口径）。
 
 
 def _make_branch_engine(plugin_enabled=True, narrative_enabled=True):
     engine = _make_engine(plugin_enabled=plugin_enabled, narrative_enabled=narrative_enabled)
     branch = {
-        "state": {"familiarity": 10.0, "trust": 5.0},
-        "identity": {"stage": "陌生人"},
+        "relationship": {"trust": 0.0, "closeness": 0.0, "boundaries": 0.0, "stage": "陌生人"},
+        "state": {"interaction_count": 0, "last_interaction_ts": ""},
     }
     engine.load_branch_state = lambda uid: branch
     engine.save_branch_state = lambda uid, state: None
     return engine, branch
 
 
-def test_branch_feedback_advances_when_enabled():
+def test_branch_feedback_counts_interaction_when_enabled():
+    """开关开启时只累加内部证据计数（R6），不写关系四维。"""
     engine, branch = _make_branch_engine()
     engine.record_branch_feedback("10001", datetime.datetime(2026, 9, 15, 12, 0))
-    assert branch["state"]["familiarity"] > 10.0
+    assert branch["state"]["interaction_count"] == 1
+    # 关系四维不受影响（批 4 晋升机的职责）
+    assert branch["relationship"]["trust"] == 0.0
 
 
 def test_branch_feedback_frozen_when_narrative_disabled():
+    """剧本关闭时不累加（与 record_interaction 同一 gate 口径）。"""
     engine, branch = _make_branch_engine(narrative_enabled=False)
     engine.record_branch_feedback("10001", datetime.datetime(2026, 9, 15, 12, 0))
-    assert branch["state"]["familiarity"] == 10.0
-    assert branch["state"]["trust"] == 5.0
+    assert branch["state"]["interaction_count"] == 0
 
 
 def test_branch_feedback_frozen_when_plugin_disabled():
     engine, branch = _make_branch_engine(plugin_enabled=False)
     engine.record_branch_feedback("10001", datetime.datetime(2026, 9, 15, 12, 0))
-    assert branch["state"]["familiarity"] == 10.0
+    assert branch["state"]["interaction_count"] == 0
 
 
 # ===== B4：表达学习隔离绑定开关 =====

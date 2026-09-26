@@ -183,8 +183,8 @@ def _make_plugin_for_status():
             }
         },
         load_branch_state=lambda uid: {
-            "identity": {"stage": "熟人"},
-            "state": {"familiarity": 30.0, "trust": 40.0},
+            "relationship": {"stage": "熟人", "milestones": [], "first_met": ""},
+            "state": {"interaction_count": 3},
         },
     )
     send = _FakeSend()
@@ -227,12 +227,18 @@ def test_status_does_not_leak_user_ids():
 
 
 def test_status_still_shows_branch_lines_with_index():
-    """脱敏后支线行改用序号代号，信息不丢（阶段/熟悉/信任仍在）。"""
+    """脱敏后支线行改用序号代号，信息不丢（只留 stage 标签）。
+
+    批 2 变更：不再显示熟悉/信任数字（旧规则线已废弃，E2 裁决），但序号代号
+    与阶段标签必须保留——脱敏不等于把信息删光。
+    """
     plugin, send = _make_plugin_for_status()
     asyncio.run(plugin._cmd_status("stream-1", _QQ))
     output = "\n".join(send.texts)
     assert "支线[1]" in output and "支线[2]" in output
     assert "熟人" in output
+    # 内部证据计数不得出现在对公的 status 文本里（R6）
+    assert "interaction_count" not in output
 
 
 if __name__ == "__main__":
