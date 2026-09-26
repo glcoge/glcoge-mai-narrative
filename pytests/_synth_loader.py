@@ -95,6 +95,39 @@ def sleep_config(**overrides) -> types.SimpleNamespace:
     return types.SimpleNamespace(**merged)
 
 
+# [promotion] 出厂值（与 config.py 的 Field default 保持一致）。
+# 单个用例要改某项时传关键字覆盖；要关闭整机传 enabled=False。
+PROMOTION_DEFAULTS = {
+    "enabled": True,
+    "seed_on_start": True,
+    "interval_hours": 168,
+    "failure_backoff_hours": 6,
+    "min_evidence_entries": 5,
+    "max_proposals": 8,
+    "minor_confidence": 0.82,
+    "minor_min_scenes": 3,
+    "minor_min_days": 2,
+    "cooldown_hours": 72,
+    "major_enabled": False,
+    "major_confidence": 0.95,
+    "major_min_scenes": 2,
+    "refutation_penalty": 0.2,
+    "merge_bonus": 0.05,
+    "relation_min_days": 3,
+    "relation_days_per_step": 2,
+    "relation_step": 0.05,
+    "relation_max": 0.8,
+    "projection_limit": 2,
+}
+
+
+def promotion_config(**overrides) -> types.SimpleNamespace:
+    """慢变晋升机配置夹具（默认与 config.py 出厂值一致）。"""
+    merged = dict(PROMOTION_DEFAULTS)
+    merged.update(overrides)
+    return types.SimpleNamespace(**merged)
+
+
 class KvStoreMixin:
     """假 store 的 JSON 化 kv 契约（可混入）。
 

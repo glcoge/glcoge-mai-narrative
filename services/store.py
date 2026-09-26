@@ -67,6 +67,11 @@ _COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
         "source_uid",
         "ALTER TABLE events ADD COLUMN source_uid TEXT NOT NULL DEFAULT ''",
     ),
+    (
+        "proposals",
+        "contradicts",
+        "ALTER TABLE proposals ADD COLUMN contradicts TEXT NOT NULL DEFAULT ''",
+    ),
 ]
 
 #: 列级**删除**清单（批 2，ADR-0002 §8 死字段处决）。元组 = (表名, 列名)。
@@ -167,6 +172,7 @@ class NarrativeStore:
                     confidence     REAL NOT NULL DEFAULT 0.0,
                     status         TEXT NOT NULL DEFAULT 'pending',
                     evidence_refs  TEXT NOT NULL DEFAULT '',
+                    contradicts    TEXT NOT NULL DEFAULT '',
                     source_uid     TEXT NOT NULL DEFAULT '',
                     created_ts     TEXT NOT NULL,
                     updated_ts     TEXT NOT NULL DEFAULT ''
@@ -194,6 +200,31 @@ class NarrativeStore:
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_promotions_path ON promotions(path, ts)"
+            )
+            # 互动配对表（批 4-C2，R31）。**只建不消费**：本表承载「用户反馈消息 id →
+            # 角色**实际送达**的回应 id」这条链接关系，服务批 5 的 relationship LLM 提案
+            # （ADR-0002 证据纪律 4）。批 4 用户裁定：配对语义**冻结**——数据照累积，
+            # 晋升通道先不接（零风险 + 零恒空）。
+            # ⚠️ 唯一索引 (uid, feedback_msg_id)：同一句用户反馈只配一次，重复配对不堆积。
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS interaction_pairs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uid             TEXT NOT NULL,
+                    feedback_msg_id TEXT NOT NULL,
+                    response_msg_id TEXT NOT NULL,
+                    feedback_ts     TEXT NOT NULL,
+                    response_ts     TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_pairs_unique "
+                "ON interaction_pairs(uid, feedback_msg_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pairs_uid_ts "
+                "ON interaction_pairs(uid, feedback_ts)"
             )
 
     # ─── 迁移（v0.2.0 批 1 首次建立，R21） ────────────────────────
@@ -382,6 +413,46 @@ class NarrativeStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_chronicle_rows(
+        self, scope: str, limit: int = 200, kind: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """读取编年史条目，**含自增 ``id``**（供证据层引用 ``chronicle:<id>``）。
+
+        与 ``recent_chronicle`` 的唯一区别是多返回 ``id`` 列——批 4-C2 规定证据引用的
+        唯一合法形式是**原文条目 id**（禁止引用 AI 摘要层）。``kind`` 可选的 SQL 级
+        预筛只是省流量，**准入白名单不在这里判**：过滤规则的单一实现在
+        ``services/learning/evidence.py``，本方法保持哑数据层（同 ``recent_chronicle``
+        的设计纪律，避免规则散落 SQL 与 Python 两处）。
+        """
+        sql = "SELECT id, ts, scope, kind, text, source_uid, audience FROM chronicle WHERE scope = ?"
+        params: List[Any] = [scope]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(str(kind))
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        params.append(max(1, min(limit, 2000)))
+        with self._transaction() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_chronicle_by_ids(self, ids: List[int]) -> List[Dict[str, Any]]:
+        """按 id 批量读取编年史条目（晋升的**场景计数**要用它们的 ts/source_uid）。
+
+        返回按 id 升序；缺失的 id 静默跳过——证据引用可能指向已不存在的条目
+        （脏数据政策：保留 + 读取端降权，永不回溯清洗）。
+        """
+        normalized = [int(item) for item in (ids or [])]
+        if not normalized:
+            return []
+        placeholders = ",".join("?" for _ in normalized)  # 仅问号序列，无外部输入拼接
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT id, ts, scope, kind, text, source_uid, audience FROM chronicle "
+                f"WHERE id IN ({placeholders}) ORDER BY id ASC",
+                tuple(normalized),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def count_chronicle(self, scope: str) -> int:
         """统计指定作用域的编年史条目数。"""
         with self._transaction() as connection:
@@ -509,20 +580,25 @@ class NarrativeStore:
         confidence: float = 0.0,
         status: str = "pending",
         evidence_refs: str = "",
+        contradicts: str = "",
         source_uid: str = "",
     ) -> int:
         """登记一条慢变提案，返回自增 id。
 
         ``path`` 必须是慢变白名单路径——调用方（批 4）负责校验；store 不做白名单
         判定，保持"存储层不认识业务规则"的分层（同 audience 过滤的分层原则）。
+
+        ``contradicts`` 是被本提案引用为**反证**的提案 id（逗号分隔）。反证匹配
+        刻意用 id 引用而非文本相似度——HDSI 3.3 的字面归并器（「短声明误并、长改写
+        漏并」）是作者知情未修的漏洞，不重蹈。
         """
         now = _now_iso()
         with self._transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO proposals "
                 "(target, path, proposed_value, confidence, status, evidence_refs, "
-                " source_uid, created_ts, updated_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " contradicts, source_uid, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(target),
                     str(path),
@@ -530,6 +606,7 @@ class NarrativeStore:
                     float(confidence),
                     str(status),
                     str(evidence_refs),
+                    str(contradicts),
                     str(source_uid),
                     now,
                     now,
@@ -554,7 +631,7 @@ class NarrativeStore:
         with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT id, target, path, proposed_value, confidence, status, "
-                "evidence_refs, source_uid, created_ts, updated_ts "
+                "evidence_refs, contradicts, source_uid, created_ts, updated_ts "
                 f"FROM proposals {where} ORDER BY id DESC LIMIT ?",
                 tuple(params),
             ).fetchall()
@@ -566,6 +643,14 @@ class NarrativeStore:
             connection.execute(
                 "UPDATE proposals SET status = ?, updated_ts = ? WHERE id = ?",
                 (str(status), _now_iso(), int(proposal_id)),
+            )
+
+    def update_proposal_confidence(self, proposal_id: int, confidence: float) -> None:
+        """更新提案置信（批 4 反证扣减用，P6）。"""
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE proposals SET confidence = ?, updated_ts = ? WHERE id = ?",
+                (float(confidence), _now_iso(), int(proposal_id)),
             )
 
     def append_promotion(
@@ -637,6 +722,67 @@ class NarrativeStore:
             (path.stem for path in self._snapshots_dir.glob("*.json")),
             reverse=True,
         )
+
+    # ─── 互动配对（批 4-C2，R31：只建不消费） ────────────────────
+
+    def append_interaction_pair(
+        self,
+        uid: str,
+        feedback_msg_id: str,
+        response_msg_id: str,
+        feedback_ts: str,
+        response_ts: str,
+    ) -> bool:
+        """落盘一组「用户反馈 id → 已送达回应 id」配对。
+
+        Returns:
+            bool: True=本次新写入；False=已存在（``(uid, feedback_msg_id)`` 唯一约束
+            命中，``INSERT OR IGNORE`` 静默跳过）。
+
+        ⚠️ 本方法属**配对语义**：批 4 只建不消费，晋升链路禁止调用（R31）。
+        """
+        if not str(uid or "").strip() or not str(feedback_msg_id or "").strip():
+            return False
+        cursor = None
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO interaction_pairs "
+                "(uid, feedback_msg_id, response_msg_id, feedback_ts, response_ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    str(uid).strip(),
+                    str(feedback_msg_id).strip(),
+                    str(response_msg_id or "").strip(),
+                    str(feedback_ts or "").strip(),
+                    str(response_ts or "").strip(),
+                ),
+            )
+        return bool(cursor is not None and cursor.rowcount)
+
+    def list_interaction_pairs(self, uid: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """读取某用户的配对记录（新→旧）。⚠️ 配对语义，批 4 只建不消费。"""
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT uid, feedback_msg_id, response_msg_id, feedback_ts, response_ts "
+                "FROM interaction_pairs WHERE uid = ? ORDER BY feedback_ts DESC LIMIT ?",
+                (str(uid).strip(), max(1, min(limit, 500))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_interaction_pairs(self, uid: str = "") -> int:
+        """统计配对条数；``uid`` 为空时统计全表。⚠️ 配对语义，批 4 只建不消费。"""
+        normalized = str(uid or "").strip()
+        with self._transaction() as connection:
+            if normalized:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS cnt FROM interaction_pairs WHERE uid = ?",
+                    (normalized,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS cnt FROM interaction_pairs"
+                ).fetchone()
+        return int(row["cnt"] or 0) if row is not None else 0
 
     # ─── 验收指标 CSV ───────────────────────────────────────────
 

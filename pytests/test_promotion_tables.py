@@ -3,7 +3,7 @@
 Frozen 范围（ADR-0002 §4）：本批只建表 + 存储层读写，**不含**晋升逻辑本体（批 4）。
 
 - ``proposals``：target / path / proposed_value / confidence / status /
-  evidence_refs / source_uid / created_ts / updated_ts
+  evidence_refs / contradicts（批 4 追加）/ source_uid / created_ts / updated_ts
 - ``promotions``：审计表，applied / rejected / rolled_back 全记，**含旧值新值**
 - 人可读留痕另走 chronicle ``kind=promotion``；原 ``slow_change_log.jsonl`` 已作废
 - 空库读不炸（批 4 上线前这两张表一直是空的——这正是 R17 计数器要盯的"恒空"风险）
@@ -50,7 +50,12 @@ def test_both_tables_are_created():
 
 
 def test_proposals_schema_matches_adr():
-    """proposals 列必须与 ADR-0002 §4 一一对应。"""
+    """proposals 列必须与 ADR-0002 §4 一一对应。
+
+    ⚠️ 批 4-C4 追加 ``contradicts`` 列（反证引用：用 proposal id 显式引用，
+    **不做文本相似度**——HDSI 3.3 的字面归并器「短声明误并、长改写漏并」是
+    作者知情未修的漏洞）。旧库经 ``_COLUMN_MIGRATIONS`` 补列，不重建表。
+    """
     store = NarrativeStore(_tmp_dir())
     assert _columns(store._db_path, "proposals") == {
         "id",
@@ -60,6 +65,7 @@ def test_proposals_schema_matches_adr():
         "confidence",
         "status",
         "evidence_refs",
+        "contradicts",
         "source_uid",
         "created_ts",
         "updated_ts",
