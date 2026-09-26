@@ -41,7 +41,7 @@ class _Logger:
         pass
 
 
-class _FakeStore:
+class _FakeStore(_synth_loader.KvStoreMixin):
     """最小 store：kv + 事件 + 编年史接口。"""
 
     def __init__(self):
@@ -94,8 +94,13 @@ def _make_engine(pending):
         identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], immutable_traits=[]),
     )
     engine = NarrativeEngine.__new__(NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=_Logger()))
-    engine._store = _FakeStore()
+    # plugin._store 与 engine._store 在生产里是**同一个实例**（scheduler 走前者、
+    # engine 走后者）；批 3-C5 话题归因从 plugin 侧取 store，假对象必须同样共享
+    store = _FakeStore()
+    engine._plugin = SimpleNamespace(
+        config=config, ctx=SimpleNamespace(logger=_Logger()), _store=store
+    )
+    engine._store = store
     engine._self_state = {
         "state": {
             "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
@@ -205,6 +210,8 @@ def _make_scheduler():
             )
         ),
         ctx=SimpleNamespace(logger=_Logger()),
+        # 批 3-C5：resolve_catch 接住时会给话题加权，需要 plugin._store
+        _store=_FakeStore(),
     )
     sched = ProactiveScheduler.__new__(ProactiveScheduler)
     sched._plugin = plugin

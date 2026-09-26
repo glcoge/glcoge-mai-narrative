@@ -95,6 +95,33 @@ def sleep_config(**overrides) -> types.SimpleNamespace:
     return types.SimpleNamespace(**merged)
 
 
+class KvStoreMixin:
+    """假 store 的 JSON 化 kv 契约（可混入）。
+
+    v0.2.0 批 3-C5：话题偏好累积开始消费 ``get_kv`` / ``set_kv`` /
+    ``get_kv_with_prefix``（真实 store 早已具备），而各测试文件的假 store 只实现了
+    ``get_kv_int`` / ``get_kv_str`` 一族 → 8 个既有用例集体红。
+
+    与其在三处各补一遍，混入本类即可；内部 dict **懒初始化**，各文件的 ``__init__``
+    无需改动（这里用 ``hasattr`` 惰性探测，属测试夹具的合理豁免）。
+    """
+
+    @property
+    def kv(self) -> dict:
+        if not hasattr(self, "_kv_payload"):
+            self._kv_payload = {}
+        return self._kv_payload
+
+    def get_kv(self, key: str) -> "dict | None":
+        return self.kv.get(key)
+
+    def set_kv(self, key: str, value: dict) -> None:
+        self.kv[key] = value
+
+    def get_kv_with_prefix(self, prefix: str) -> dict:
+        return {item_key: item for item_key, item in self.kv.items() if item_key.startswith(prefix)}
+
+
 def run_standalone(globals_dict: dict) -> int:
     """独立运行入口：执行当前测试模块全部 test_ 函数并打印结果。
 

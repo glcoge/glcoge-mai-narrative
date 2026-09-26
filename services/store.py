@@ -301,6 +301,26 @@ class NarrativeStore:
                 (key, str(value)),
             )
 
+    def get_kv_with_prefix(self, prefix: str) -> Dict[str, Dict[str, Any]]:
+        """按 key 前缀批量读取 JSON 化 kv（话题权重等聚合项用，批 3-R16）。
+
+        损坏的 JSON 值静默跳过：聚合项丢一条不影响整体，但不该让读取整体炸掉。
+        """
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT key, value FROM kv WHERE key LIKE ?",
+                (f"{prefix}%",),
+            ).fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                value = json.loads(str(row["value"]))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                result[str(row["key"])] = value
+        return result
+
     def delete_keys_with_prefix(self, prefix: str) -> int:
         """删除 key 以指定前缀开头的全部记录（用于状态重置）。"""
         with self._transaction() as connection:

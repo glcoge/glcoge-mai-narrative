@@ -23,7 +23,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import load  # noqa: E402
+from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
 
 _GUARD = load("services.state.continuity")
 
@@ -343,7 +343,7 @@ class _Logger:
         pass
 
 
-class _FakeStore:
+class _FakeStore(KvStoreMixin):
     """只含生活片段链路所需接口的假 store。"""
 
     def __init__(self, events=None):

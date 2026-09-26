@@ -14,6 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..learning.topic import note_pending_topic, reward_pending_topic
 from ..state.engine import parse_clock
 
 # 承接窗口 = 冷落窗口（2026-09-22 定案，取代原先 30min / 24h 双口径）**16 小时**。
@@ -348,6 +349,9 @@ class ProactiveScheduler:
         day_count = plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
         plugin._store.set_kv_int(f"proactive:count:{user_id}:{today}", day_count + 1)
         self.record_sent(user_id, stream_id, now, bysource)
+        # 话题归因（批 3-C5 / R16，ADR-0003 §7）：记下本轮讲的是什么话题，
+        # 等用户接话时结算为主证据权重（P10）
+        note_pending_topic(plugin._store, user_id, bysource)
         plugin._telemetry.record("proactive_sent", 1, user_id=user_id, scope="proactive")
 
     def record_sent(
@@ -432,6 +436,9 @@ class ProactiveScheduler:
                 # 最近的这条已超窗，更早的只会更旧
                 break
             rec.consumed = True
+            # 话题归因（批 3-C5 / R16）：接住 → 本轮话题记主证据权重（P10=1.0），
+            # 生活片段自身主题只有 0.4（降权），长期看用户爱聊的会占主导
+            reward_pending_topic(self._plugin._store, user_id)
             return max(0.0, elapsed)
         return None
 

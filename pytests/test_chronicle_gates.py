@@ -55,7 +55,7 @@ class _Logger:
         pass
 
 
-class _FakeStore:
+class _FakeStore(_synth_loader.KvStoreMixin):
     """只实现编年史/事件相关的假 store。
 
     ``get_kv_int`` / ``set_kv_int`` 故意直接报错 —— B1 已把幂等统一到

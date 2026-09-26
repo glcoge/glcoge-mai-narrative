@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..render.audience import visible_events
+from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
 from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 
 #: 生活片段产出的 kind ∈ GENERAL_KINDS（render/audience.GENERAL_KINDS），
@@ -165,6 +166,9 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     engine._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))
     if not wake_fragment:
         engine._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
+    # 话题归因（批 3-C5 / R16，ADR-0003 §7）：片段自身主题**降权**累积，
+    # 防「她写猫 → 素材全猫 → 对人人讲猫」的自主信息茧房
+    reward_topic(engine._store, text, TOPIC_WEIGHT_SELF_FRAGMENT)
     engine._plugin.ctx.logger.info(
         "生活片段已生成（今日 %s/%s，档位 %s%s）: %s",
         day_count if wake_fragment else day_count + 1,
