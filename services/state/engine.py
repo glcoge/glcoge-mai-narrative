@@ -38,8 +38,15 @@ _MOOD_BY_ENERGY: List[Tuple[float, str]] = [
     (0.00, "疲惫"),
 ]
 
-# 常驻状态片段，避免每次初始化重建
+#: 常驻状态片段，避免每次初始化重建
 _SELF_SCOPE = "self"
+
+#: state 结构级版本号（R12）。**批 2 前本字段写进 state 却从未被任何代码读取**
+#: （F1）——只有 ``updated_ts`` 在写。批 2 起它真正生效：开库时版本不符 → WARN
+#: + 原地重置（ADR-0002 §7「旧 state 不迁移，不为死格式陪葬」）。
+#: 变更 state 结构（增删字段/改嵌套形状）时必须 +1。
+#: 版本史：1 = v0.1.x 初始形状；2 = 批 2（死字段处决 + 关系四维 schema）。
+STATE_SCHEMA_VERSION = 2
 
 # 关系阶段阈值（familiarity，只进不退）：倒序匹配，取首个 familiarity >= threshold 的标签
 _STAGE_THRESHOLDS: List[Tuple[float, str]] = [
@@ -212,12 +219,11 @@ def default_self_state() -> Dict[str, Any]:
                 "woken_count": 0,         # 今晚被吵醒次数；醒来时清零
                 "sleep_delayed_ts": "",   # 因仍在聊天而推迟入睡的起始时刻 ISO
             },
-            "focus": {"hot_thread": "", "pending_events": []},
-            "habits": [],
+            "focus": {"pending_events": []},
             "last_interaction_ts": "",
             "last_talk_date": "",
         },
-        "meta": {"version": 1, "updated_ts": ""},
+        "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }
 
 
@@ -227,16 +233,14 @@ def default_branch_state() -> Dict[str, Any]:
         "identity": {
             "first_met": "",
             "stage": "陌生人",
-            "shared_secrets": [],
         },
         "state": {
             "trust": 0.0,
             "familiarity": 0.0,
             "last_interaction_ts": "",
             "milestones": [],
-            "user_notes": {},
         },
-        "meta": {"version": 1, "updated_ts": ""},
+        "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }
 
 
@@ -305,10 +309,36 @@ class NarrativeEngine:
 
     # ─── 状态访问 ────────────────────────────────────────────────
 
+    def _is_current_version(self, state: Dict[str, Any]) -> bool:
+        """判断已存 state 的结构版本是否为当前版本。
+
+        缺失 ``meta`` 或缺 ``version`` 同样视为旧版本（v0.1.x 的写法不统一）。
+        """
+        meta = state.get("meta")
+        if not isinstance(meta, dict):
+            return False
+        return int(meta.get("version") or 0) == STATE_SCHEMA_VERSION
+
+    def _warn_legacy_reset(self, scope_label: str, found_version: Any) -> None:
+        """旧版本 state 被重置时的 WARN（静默重置会让人困惑，必须留痕）。"""
+        self._plugin.ctx.logger.warning(
+            "narrative %s state 结构版本为 %s（当前 %s）→ 原地重置（ADR-0002 §7："
+            "不为死格式陪葬）；编年史不受影响，仍完整保留",
+            scope_label,
+            found_version,
+            STATE_SCHEMA_VERSION,
+        )
+
     def load_self_state(self) -> Dict[str, Any]:
-        """读取自我层状态；不存在则初始化。"""
+        """读取自我层状态；不存在则初始化，**版本不符则原地重置**。"""
         state = self._store.get_kv(_SELF_SCOPE)
         if state is None:
+            state = default_self_state()
+            self._store.set_kv(_SELF_SCOPE, state)
+            return state
+        if not self._is_current_version(state):
+            meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+            self._warn_legacy_reset("自我层", meta.get("version"))
             state = default_self_state()
             self._store.set_kv(_SELF_SCOPE, state)
         return state
@@ -319,10 +349,17 @@ class NarrativeEngine:
         self._store.set_kv(_SELF_SCOPE, state)
 
     def load_branch_state(self, user_id: str) -> Dict[str, Any]:
-        """读取指定用户的支线层状态；不存在则初始化并登记初见。"""
+        """读取指定用户的支线层状态；不存在则初始化并登记初见，版本不符则重置。"""
         key = f"branch:{user_id}"
         state = self._store.get_kv(key)
         if state is None:
+            state = default_branch_state()
+            state["identity"]["first_met"] = self._local_now().isoformat(timespec="seconds")
+            self._store.set_kv(key, state)
+            return state
+        if not self._is_current_version(state):
+            meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+            self._warn_legacy_reset(f"支线层({user_id})", meta.get("version"))
             state = default_branch_state()
             state["identity"]["first_met"] = self._local_now().isoformat(timespec="seconds")
             self._store.set_kv(key, state)
@@ -332,6 +369,19 @@ class NarrativeEngine:
         """写回支线层状态。"""
         state["meta"]["updated_ts"] = self._local_now().isoformat(timespec="seconds")
         self._store.set_kv(f"branch:{user_id}", state)
+
+    def reset_state(self) -> int:
+        """重置三层运行态：清空 kv 中的 self/branch 状态，**保留编年史与 schema 版本**。
+
+        与 ``/narrative reset`` 的区别：命令侧是全清 kv（含计数键），本方法只清
+        **状态类**键，用于「state 换代」语义（R12）。返回清除的键数。
+        """
+        removed = self._store.delete_keys_with_prefix("branch:")
+        if self._store.get_kv(_SELF_SCOPE) is not None:
+            removed += 1
+        # 清完立即重建默认 state（带当前版本号），使下次开库不会误判旧库（F2）
+        self._store.set_kv(_SELF_SCOPE, default_self_state())
+        return removed
 
     # ─── 规则 tick ───────────────────────────────────────────────
 
@@ -591,8 +641,8 @@ class NarrativeEngine:
         normalized = str(text or "").strip()
         if not normalized:
             return
-        # 素材入支线事件队列供创作层消费（v0.1.3 起 hot_thread 不再由用户消息覆盖；
-        # "心头事"只由创作层/生活片段写入，防止命令与用户发言镜像污染）
+        # 素材入支线事件队列供创作层消费（批 2 已删废弃的 hot_thread：该字段在
+        # v0.1.3 起就无写入点，"心头事"改由创作层/生活片段独占）
         self._store.push_event(
             {
                 "ts": current.isoformat(timespec="seconds"),

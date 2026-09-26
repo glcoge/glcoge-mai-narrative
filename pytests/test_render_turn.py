@@ -49,8 +49,7 @@ def _make_state(last_interaction_ts: str = "") -> dict:
         "state": {
             "mood": {"label": "平静", "energy": 0.45, "last_shift_ts": ""},
             "routine": {"phase": "上午", "sleep_state": "awake"},
-            "focus": {"hot_thread": "", "pending_events": []},
-            "habits": [],
+            "focus": {"pending_events": []},
             "last_interaction_ts": last_interaction_ts,
             "last_talk_date": "",
         }

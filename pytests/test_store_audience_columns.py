@@ -224,5 +224,56 @@ def test_backfill_never_overwrites_existing_tag():
     assert _chronicle_rows(data_dir / "narrative.db")[0]["source_uid"] == "manual"
 
 
+# ─── 批 2：死列真删（ADR-0002 §8） ───────────────────────────────
+
+
+def test_fresh_db_has_no_declared_column():
+    """新库建表即不含死列（不再依赖事后 DROP）。"""
+    store = NarrativeStore(_tmp_dir())
+    assert "declared" not in _columns(store._db_path, "events")
+
+
+def test_legacy_declared_column_is_dropped():
+    """旧库的 ``events.declared`` 死列被真删（不留兼容冗余）。"""
+    data_dir = _tmp_dir()
+    _make_legacy_db(data_dir)
+    assert "declared" in _columns(data_dir / "narrative.db", "events")  # 前置：旧库确有
+    NarrativeStore(data_dir)
+    assert "declared" not in _columns(data_dir / "narrative.db", "events")
+
+
+def test_drop_column_keeps_other_columns_and_rows():
+    """删列不得连带删别的列或已有事件行。"""
+    data_dir = _tmp_dir()
+    _make_legacy_db(data_dir)
+    connection = sqlite3.connect(data_dir / "narrative.db")
+    connection.execute(
+        "INSERT INTO events (ts, scope, kind, bysource, declared) "
+        "VALUES ('2026-09-26T10:00:00', 'branch:123', 'dialogue_material', '原文', 0)"
+    )
+    connection.commit()
+    connection.close()
+
+    store = NarrativeStore(data_dir)
+    assert _columns(data_dir / "narrative.db", "events") == {
+        "id",
+        "ts",
+        "scope",
+        "kind",
+        "bysource",
+        "source_uid",
+    }
+    assert store.list_events("branch:123", limit=5)[0]["bysource"] == "原文"
+
+
+def test_drop_column_is_idempotent():
+    """反复开库不报错（第二次已无该列 → 跳过）。"""
+    data_dir = _tmp_dir()
+    _make_legacy_db(data_dir)
+    for _ in range(3):
+        NarrativeStore(data_dir)
+    assert "declared" not in _columns(data_dir / "narrative.db", "events")
+
+
 if __name__ == "__main__":
     raise SystemExit(_synth_loader.run_standalone(globals()))

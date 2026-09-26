@@ -93,7 +93,7 @@ def _make_engine(*, detail_enabled=True, energy=0.6, events=None, milestones=Non
         "state": {
             "mood": {"label": "平静", "energy": energy, "last_shift_ts": ""},
             "routine": {"phase": "白天", "sleep_state": "awake"},
-            "focus": {"hot_thread": "", "pending_events": []},
+            "focus": {"pending_events": []},
         }
     }
     branch = {
@@ -224,8 +224,7 @@ def _render_with_fragment(fragment: str, *, detail_enabled: bool) -> str:
         "state": {
             "mood": {"label": "平静", "energy": 0.45, "last_shift_ts": ""},
             "routine": {"phase": "上午", "sleep_state": "awake"},
-            "focus": {"hot_thread": "", "pending_events": [{"ts": "2026-09-21T11:00:00", "text": fragment}]},
-            "habits": [],
+            "focus": {"pending_events": [{"ts": "2026-09-21T11:00:00", "text": fragment}]},
             "last_interaction_ts": "",
             "last_talk_date": "",
         }

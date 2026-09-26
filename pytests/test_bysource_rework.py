@@ -100,7 +100,7 @@ def _make_engine(pending):
         "state": {
             "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
             "routine": {"phase": "午后"},
-            "focus": {"hot_thread": "", "pending_events": pending},
+            "focus": {"pending_events": pending},
         }
     }
     branch = {

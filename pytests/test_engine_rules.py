@@ -91,8 +91,7 @@ def _make_state(energy: float, last_interaction: str = "") -> dict:
                 "last_shift_ts": "",
             },
             "routine": {"phase": "清晨", "sleep_state": "awake"},
-            "focus": {"hot_thread": "", "pending_events": []},
-            "habits": [],
+            "focus": {"pending_events": []},
             "last_interaction_ts": last_interaction,
             "last_talk_date": "",
         }

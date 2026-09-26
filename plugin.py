@@ -572,10 +572,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
             f"阶段: {inner['routine']['phase']}",
             f"睡眠: {_sleep_status_line(cfg.narrative, inner.get('routine', {}))}",
         ]
-        hot = str(inner["focus"].get("hot_thread", "")).strip()
-        if hot and not str(hot).startswith("/"):
-            lines.append(f"聚焦: {hot[:40]}")
-        # 生活片段（创作层产出，v0.1.3 起替代废弃的 hot_thread 作为"心里挂念"展示）
+        # 生活片段（创作层产出，v0.1.3 起是"心里挂念"的唯一来源；批 2 已删废弃的
+        # hot_thread 展示行——该字段早已无写入点，展示恒不触发）
         visible_pending = filter_entries(
             inner.get("focus", {}).get("pending_events", []), audience
         )
@@ -624,6 +622,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._streams.clear()
         self._telemetry.clear_pending_rounds()
         self._proactive.clear_sent()
+        # 全清 kv 会连 state 一起抹掉 → 立即重建默认 state（带当前 schema_version）。
+        # 否则下次开库发现「没有 state」会当作首次初始化——语义上没错，但若日后
+        # schema_version 改存 kv 键，就会被误判成「旧库」反复重置（批 2 F2 的坑）。
+        self._engine.load_self_state()
         await self.ctx.send.text(
             f"已重置叙事状态（kv {deleted} 项、事件队列已清空；编年史保留未动）。", stream_id
         )
@@ -725,11 +727,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "mood_energy": float(mood.get("energy", 0.5)),
                 "mood_shift_ts": str(mood.get("last_shift_ts", "")),
                 "routine_phase": str(inner["routine"].get("phase", "")),
-                "hot_thread": (
-                    str(inner["focus"].get("hot_thread", "")).strip()
-                    if not str(inner["focus"].get("hot_thread", "")).strip().startswith("/")
-                    else ""
-                ),
+                # ⚠ 跨插件契约字段（批 2 保留，不删）：diary 侧
+                # `services/diary/prompts.py:53-55` 真的在读它并渲染成
+                # 「心里挂着：…」进日记 prompt。插件内的写入点在 v0.1.3 已删（无源
+                # 可填），故此处恒空——保留字段是为避免无谓的跨插件破坏性变更。
+                "hot_thread": "",
                 "latest_life_fragment": (
                     str(
                         list(inner.get("focus", {}).get("pending_events", []))[-1]

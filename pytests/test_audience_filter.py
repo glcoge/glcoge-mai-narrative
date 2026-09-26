@@ -64,7 +64,7 @@ def _state(pending=None) -> dict:
         "state": {
             "mood": {"label": "平静", "energy": 0.45, "last_shift_ts": ""},
             "routine": {"phase": "上午", "sleep_state": "awake"},
-            "focus": {"hot_thread": "", "pending_events": list(pending or [])},
+            "focus": {"pending_events": list(pending or [])},
             "last_interaction_ts": "",
             "last_talk_date": "",
         }

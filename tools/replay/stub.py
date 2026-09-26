@@ -64,8 +64,7 @@ def self_state(
             "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
             "routine": {"phase": "下午", "sleep_time": "", "wake_time": ""},
             "schedule": [],
-            "habits": [],
-            "focus": {"hot_thread": "", "pending_events": list(pending_events or [])},
+            "focus": {"pending_events": list(pending_events or [])},
             "last_interaction_ts": last_interaction_ts,
         },
         "chronicle": {"entries": []},
@@ -75,12 +74,11 @@ def self_state(
 def branch_state(*, stage: str = "熟人", first_met: str = "2026-09-01T10:00:00") -> Dict[str, Any]:
     """支线层状态骨架。"""
     return {
-        "identity": {"stage": stage, "first_met": first_met, "shared_secrets": []},
+        "identity": {"stage": stage, "first_met": first_met},
         "state": {
             "trust": 10.0,
             "familiarity": 10.0,
             "last_interaction_ts": "",
-            "user_notes": {},
             "milestones": [],
         },
         "chronicle": {"entries": []},

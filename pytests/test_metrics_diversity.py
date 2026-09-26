@@ -179,7 +179,7 @@ def _make_plugin_for_status():
             "state": {
                 "mood": {"label": "平静", "energy": 0.6},
                 "routine": {"phase": "午后"},
-                "focus": {"hot_thread": "", "pending_events": []},
+                "focus": {"pending_events": []},
             }
         },
         load_branch_state=lambda uid: {

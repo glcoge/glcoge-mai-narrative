@@ -69,6 +69,14 @@ _COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
     ),
 ]
 
+#: 列级**删除**清单（批 2，ADR-0002 §8 死字段处决）。元组 = (表名, 列名)。
+#: 与 ``_COLUMN_MIGRATIONS`` 分开，因为语义相反：这里真的 DROP，不留兼容冗余。
+#: ``ALTER TABLE ... DROP COLUMN`` 需 SQLite ≥ 3.35（本机实测 3.50.4 ✅）。
+_DROPPED_COLUMNS: List[Tuple[str, str]] = [
+    # events.declared：写入恒 0、全仓从不读取的死列（全量架构解析报告 §3.7）
+    ("events", "declared"),
+]
+
 
 class NarrativeStore:
     """封装叙事状态的全部持久化操作。所有方法同步、轻量、可在线程池调用。"""
@@ -137,7 +145,6 @@ class NarrativeStore:
                     scope      TEXT NOT NULL,
                     kind       TEXT NOT NULL,
                     bysource   TEXT NOT NULL,
-                    declared   INTEGER NOT NULL DEFAULT 0,
                     source_uid TEXT NOT NULL DEFAULT ''
                 )
                 """
@@ -168,11 +175,17 @@ class NarrativeStore:
         2. 存量打标带 ``source_uid = ''`` 守卫，只补空值，不覆盖历史标签。
 
         只增列、只补空值：**从不删改既有行**（升级后旧数据必须仍可读）。
+
+        批 2 追加一步**列删除**（``_DROPPED_COLUMNS``）：死列真删，不留兼容冗余。
+        新库建表时已不含该列，探测不到即跳过——所以本步只对旧库生效。
         """
         with self._transaction() as connection:
             for table, column, ddl in _COLUMN_MIGRATIONS:
                 if column not in self._table_columns(connection, table):
                     connection.execute(ddl)
+            for table, column in _DROPPED_COLUMNS:
+                if column in self._table_columns(connection, table):
+                    connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
             # 存量打标（R20）：既有 diary 条目按「完全隔离」处理，不清洗不删除。
             # 只补空值——用户已裁定 life/daily 不做反推打标（涉私影响内测期可接受），
             # 故此处**不碰**非 diary 条目，也不动它们的 source_uid。
@@ -386,14 +399,13 @@ class NarrativeStore:
             source_uid = _uid_from_branch_scope(str(event.get("scope", "")))
         with self._transaction() as connection:
             connection.execute(
-                "INSERT INTO events (ts, scope, kind, bysource, declared, source_uid) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events (ts, scope, kind, bysource, source_uid) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     event.get("ts") or _now_iso(),
                     str(event.get("scope", "")),
                     str(event.get("kind", "dialogue_material")),
                     str(event.get("bysource", "")),
-                    int(bool(event.get("declared", False))),
                     source_uid,
                 ),
             )
@@ -402,7 +414,7 @@ class NarrativeStore:
         """列出指定作用域的事件（新→旧）。与 ``recent_chronicle`` 同口径：不做受众过滤。"""
         with self._transaction() as connection:
             rows = connection.execute(
-                "SELECT id, ts, scope, kind, bysource, declared, source_uid FROM events "
+                "SELECT id, ts, scope, kind, bysource, source_uid FROM events "
                 "WHERE scope = ? ORDER BY ts DESC LIMIT ?",
                 (scope, max(1, min(limit, 100))),
             ).fetchall()
