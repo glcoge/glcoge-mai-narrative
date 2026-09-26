@@ -90,6 +90,42 @@ class IdentitySection(PluginConfigBase):
     )
 
 
+class AnchorSection(PluginConfigBase):
+    """锚定层护栏（ADR-0002 §9，批 2）。
+
+    锚定层内容本身在宿主 ``[personality]`` 与 ``[identity]`` 里；本段只管
+    **护栏行为**：启动期一致性比对、双向守卫的手工关键词。
+    """
+
+    __ui_label__: ClassVar[str] = "锚定护栏"
+    __ui_icon__: ClassVar[str] = "shield"
+    __ui_order__: ClassVar[int] = 3
+
+    consistency_check: bool = Field(
+        default=False,
+        description=(
+            "启动期「宿主 [personality] vs 插件 world/values」LLM 一次性一致性比对，"
+            "不一致仅 WARN 不阻断（真机出现过「大二女大学生 vs 隐姓埋名神兽」双人格混写）。"
+            "⚠️ 默认关：启动期同步 LLM 调用一旦慢或失败会拖垮启动。"
+            "默认关 = 通道建好、默认不跑。"
+        ),
+        json_schema_extra={"label": "启动期锚定一致性比对", "order": 1},
+    )
+    guard_keywords: List[str] = Field(
+        default_factory=list,
+        description=(
+            "双向守卫（入库前 + 注入前）的**手工补充**关键词。"
+            "自动部分另从 [identity].world_rules / values 抽取，无需在此重复。"
+        ),
+        json_schema_extra={
+            "label": "守卫关键词（手工补充）",
+            "hint": '例 ["内部代号","真实姓名"]；自动部分已含 world_rules/values',
+            "item_type": "string",
+            "order": 2,
+        },
+    )
+
+
 class NarrativeSection(PluginConfigBase):
     """剧本模式与世界引擎设置。"""
 
@@ -583,6 +619,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
 
     plugin: PluginSection = Field(default_factory=PluginSection)
     identity: IdentitySection = Field(default_factory=IdentitySection)
+    anchor: AnchorSection = Field(default_factory=AnchorSection)
     narrative: NarrativeSection = Field(default_factory=NarrativeSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
     llm: LLMSection = Field(default_factory=LLMSection)
@@ -593,6 +630,7 @@ __all__ = [
     "UserWindowRule",
     "PluginSection",
     "IdentitySection",
+    "AnchorSection",
     "NarrativeSection",
     "ProactiveSection",
     "LLMSection",

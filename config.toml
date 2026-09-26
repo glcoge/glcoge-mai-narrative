@@ -12,6 +12,15 @@ world = ""
 values = []
 world_rules = []
 
+# ===== 锚定护栏（ADR-0002 §9） =====
+# 锚定层内容在 [identity] 与宿主 [personality]；本段只管护栏行为。
+[anchor]
+# 启动期「宿主 personality vs 插件 world/values」LLM 一次性一致性比对，
+# 不一致仅 WARN 不阻断。默认关：启动期同步 LLM 调用慢/失败会拖垮启动。
+consistency_check = false
+# 双向守卫（入库前 + 注入前）的手工补充关键词；自动部分已含 world_rules/values。
+guard_keywords = []
+
 # ===== 剧本模式与世界引擎 =====
 [narrative]
 enabled = false

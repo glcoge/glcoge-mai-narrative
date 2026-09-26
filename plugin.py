@@ -127,6 +127,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._streams = StreamRegistry(self._store, self.ctx.logger)
         self._streams.restore()
         await self._reconcile_all()
+        # R14：启动期锚定一致性比对（默认关，见 [anchor].consistency_check）。
+        # 放在 _reconcile_all 之后、watchdog 之前——即便它慢/失败，后台任务已就绪。
+        await self._check_anchor_consistency()
         self._watchdog = asyncio.create_task(self._watchdog_loop(), name="narrative-watchdog")
         self.ctx.logger.info(
             "mai-narrative v%s 已加载（剧本=%s 主动=%s 模式用户=%s 数据目录=%s）",
@@ -189,6 +192,77 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self.ctx.logger.warning(
                 "[proactive].user_window_rules 配置有误 → %s（该条运行期将被跳过）", problem
             )
+
+    async def _check_anchor_consistency(self) -> None:
+        """R14：启动期「宿主 [personality] vs 插件 world/values」LLM 一次性一致性比对。
+
+        真机出现过「大二女大学生 vs 隐姓埋名神兽」双人格混写产物——锚定层分裂时
+        模型两边都信。此处**只在配置开启时**跑一次；不一致仅 WARN 不阻断。
+
+        ⚠️ 默认关（``[anchor].consistency_check=false``）：启动期同步 LLM 调用一旦
+        慢或失败会拖垮启动。默认关 = 通道建好、默认不跑。任何异常只降级为 debug，
+        绝不让它影响插件加载。
+        """
+        if not self.config.anchor.consistency_check:
+            return
+        identity = self.config.identity
+        # 世界/价值观为空时无从比对（这是"没配世界观"，不是"不一致"）
+        plugin_anchor = {
+            "world": str(identity.world or "").strip(),
+            "values": [str(item).strip() for item in (identity.values or []) if str(item).strip()],
+        }
+        if not plugin_anchor["world"] and not plugin_anchor["values"]:
+            self.ctx.logger.debug("锚定一致性比对跳过：插件侧 world/values 均为空")
+            return
+        try:
+            host_personality = str(
+                await self.ctx.config.get("personality.personality", "") or ""
+            ).strip()
+        except Exception as exc:  # noqa: BLE001 — 读宿主配置失败不该拖垮启动
+            self.ctx.logger.debug("读取宿主 personality 失败（跳过一致性比对）: %s", exc)
+            return
+        if not host_personality:
+            self.ctx.logger.debug("锚定一致性比对跳过：宿主 personality 为空")
+            return
+        verdict = await self._judge_anchor_consistency(host_personality, plugin_anchor)
+        if verdict is None:
+            return
+        conflicts = str(verdict.get("conflicts") or "").strip()
+        if conflicts:
+            self.ctx.logger.warning(
+                "⚠️ 锚定层可能存在双人格冲突（宿主 personality vs 插件 world/values）：%s。"
+                "建议核对 [identity].world/values 与宿主 [personality] 是否描述同一个人。",
+                conflicts,
+            )
+        else:
+            self.ctx.logger.info("锚定一致性比对通过：宿主人格与插件世界/价值观无冲突")
+
+    async def _judge_anchor_consistency(
+        self, host_personality: str, plugin_anchor: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """调 LLM 判定锚定层是否自相矛盾；失败返回 None（只降级，不阻断）。"""
+        try:
+            from .services.creation.creator import CreatorClient
+
+            prompt = (
+                "下面是同一个 AI 角色的两份设定。判断它们是否描述了**同一个角色**"
+                "（身份/背景/年龄感等是否自相矛盾）。\n\n"
+                f"【宿主人格】\n{host_personality[:600]}\n\n"
+                f"【插件世界观】\n{plugin_anchor['world'][:300]}\n"
+                f"【插件价值观】\n{'、'.join(plugin_anchor['values'][:5])}\n\n"
+                "只回一行：若一致回 `一致`；若矛盾回 `冲突：<一句话说明>`。"
+            )
+            client = CreatorClient(self)
+            text = await client.generate(prompt)
+        except Exception as exc:  # noqa: BLE001 — 比对失败是可选增强，不阻断加载
+            self.ctx.logger.debug("锚定一致性比对调用失败: %s", exc)
+            return None
+        normalized = str(text or "").strip()
+        if not normalized:
+            return None
+        if normalized.startswith("冲突") or "矛盾" in normalized:
+            return {"conflicts": normalized.split("：", 1)[-1].split(":", 1)[-1].strip() or normalized}
+        return {"conflicts": ""}
 
     def _plugin_version(self) -> str:
         """从插件自带的 _manifest.json 读版本号（加载日志不再写死版本漂移文案）。"""

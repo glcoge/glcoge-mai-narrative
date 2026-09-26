@@ -87,6 +87,23 @@ def is_slow_field(path: str) -> bool:
     return str(path or "").strip() in SLOW_FIELD_PATHS
 
 
+def assert_writable(path: str) -> str:
+    """写入路径守卫：锚定层字段**永不**可写，命中即抛 ``PermissionError``。
+
+    任何写入慢变/漂移状态的路径（批 3 漂移调制、批 4 晋升写回）都必须在落盘前
+    调用本函数。批 2 先把它立在声明层，批 3/4 的写入路径接入即被同一个守卫覆盖
+    ——这是「锚定层永不被写」从承诺变成可执行约束的唯一办法（ADR-0002 §9）。
+
+    返回原路径，便于 ``state[assert_writable(p)] = v`` 风格调用。
+    """
+    normalized = str(path or "").strip()
+    if is_anchor_field(normalized):
+        raise PermissionError(
+            f"锚定层字段不可写：{normalized!r}（ADR-0002 §9：锚定层永不改变）"
+        )
+    return normalized
+
+
 def is_slow_field_visible(path: str, audience: str, owner_uid: str = "") -> bool:
     """慢变字段对当前受众是否可见（未登记维度 fail-closed）。
 
@@ -211,6 +228,7 @@ __all__ = [
     "SLOW_FIELD_AUDIENCE",
     "SLOW_FIELD_EXCLUDED_PREFIXES",
     "SLOW_FIELD_PATHS",
+    "assert_writable",
     "current_relationship_stage",
     "guard_keywords",
     "is_anchor_field",
