@@ -60,9 +60,16 @@ def test_default_branch_state_carries_schema_version():
     assert state["meta"]["version"] == STATE_SCHEMA_VERSION
 
 
-def test_schema_version_is_2_after_batch_2():
-    """批 2 是本轮首次结构变更 → 版本从 1 提到 2（防有人忘了改常量）。"""
-    assert STATE_SCHEMA_VERSION == 2
+def test_schema_version_is_3_after_batch_4():
+    """批 4 是第二次结构变更（自我层 perspective 段）→ 版本 2 → 3。
+
+    这条断言的用意是「结构变了就必须提版本号」（防有人改了形状却忘提号）——
+    它不是随口记账：结构每变一次都要跟着改，改它就是承认结构变了。
+
+    ⚠️ 基线变更留痕（批 4-C1）：本断言由 ``== 2`` 改为 ``== 3``——这是本轮
+    **唯一**一处「随结构变更而改值」的既有断言，其余 400 条只增不改。
+    """
+    assert STATE_SCHEMA_VERSION == 3
 
 
 def test_default_state_has_no_dead_fields():

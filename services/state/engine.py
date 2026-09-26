@@ -56,8 +56,9 @@ _SELF_SCOPE = "self"
 #: （F1）——只有 ``updated_ts`` 在写。批 2 起它真正生效：开库时版本不符 → WARN
 #: + 原地重置（ADR-0002 §7「旧 state 不迁移，不为死格式陪葬」）。
 #: 变更 state 结构（增删字段/改嵌套形状）时必须 +1。
-#: 版本史：1 = v0.1.x 初始形状；2 = 批 2（死字段处决 + 关系四维 schema）。
-STATE_SCHEMA_VERSION = 2
+#: 版本史：1 = v0.1.x 初始形状；2 = 批 2（死字段处决 + 关系四维 schema）；
+#: 3 = 批 4（自我层 perspective 段：world_view / life_goals + origin/updated_ts 溯源）。
+STATE_SCHEMA_VERSION = 3
 
 # 关系阶段阈值（familiarity，只进不退）已于批 2 删除（ADR-0002 §2）：
 # 旧规则线 `stage/familiarity/trust` 由晋升线全量替换，不留双轨。批 2~批 4 空窗期
@@ -219,6 +220,16 @@ def default_self_state() -> Dict[str, Any]:
             "focus": {"pending_events": []},
             "last_interaction_ts": "",
             "last_talk_date": "",
+        },
+        # 自我层「看法」（批 4-C1，ADR-0002 §1）：慢变区的 **general** 维度——
+        # 可进通用注入，也是 ``[learned]`` 投影的唯一来源（relationship 是 per_user，
+        # 永不进 config.toml）。``origin`` 溯源 seed/promotion/manual，
+        # ``updated_ts`` 记最近写入时刻，二者是晋升 diff 的叙述起点。
+        "perspective": {
+            "world_view": "",
+            "life_goals": [],
+            "origin": "",
+            "updated_ts": "",
         },
         "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }

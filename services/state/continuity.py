@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, FrozenSet, Iterable, List, Set, Tuple
+import datetime
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 # ─── 慢变区白名单（ADR-0002 §1） ──────────────────────────────────
 #: 受控维度：LLM 只能在这些路径上提案，**不得自由开字段**。
@@ -49,6 +50,14 @@ RELATIONSHIP_DERIVED = "stage"
 
 #: 关系**只读事实**字段（ADR-0002 §2）：是记录不是演化观点，不参与晋升。
 RELATIONSHIP_FACT_FIELDS: Tuple[str, ...] = ("first_met", "milestones")
+
+#: 自我层「看法」维度（ADR-0002 §1，批 4-C1）：**general 受众**——可进通用注入，
+#: 也是 ``[learned]`` 投影的唯一来源（relationship 是 per_user，永不进 config.toml）。
+PERSPECTIVE_FIELDS: Tuple[str, ...] = ("world_view", "life_goals")
+
+#: 慢变写入者登记（批 4-C1）：写入必须**具名**。未登记 actor 一律拒绝——
+#: 「谁把她的看法改了」是事后可审计的前提，匿名写入等于把留痕链断在源头。
+SLOW_WRITE_ACTORS: FrozenSet[str] = frozenset({"seed", "promotion", "rollback", "manual"})
 
 #: 明确排除的人格维度（ADR-0002 §1）：锚定层人格归宿主 `[personality]`，
 #: 让 LLM 学 traits 等于把双人格事故从后门放回来。
@@ -169,6 +178,76 @@ def normalize_relationship(state: Dict[str, Any]) -> Dict[str, Any]:
     for fact in RELATIONSHIP_FACT_FIELDS:
         relationship.setdefault(fact, "" if fact == "first_met" else [])
     return relationship
+
+
+def normalize_perspective(state: Dict[str, Any]) -> Dict[str, Any]:
+    """把自我层 state 的 ``perspective`` 部分规范到 schema（只补不删）。
+
+    与 ``normalize_relationship`` 对称。字段语义：``world_view`` 是文本、
+    ``life_goals`` 是字符串列表、``origin`` 记录来源（seed/promotion/manual）、
+    ``updated_ts`` 记录最近写入时刻——后两者是**溯源**字段，晋升留痕靠它们。
+
+    ``perspective`` 存在但类型不对（被脏数据写成字符串等）时**整段重建**：
+    类型错误的容器无法"只补不删"，硬补会留下混合形状，比重建更难排查。
+    """
+    perspective = state.get("perspective")
+    if not isinstance(perspective, dict):
+        perspective = {}
+        state["perspective"] = perspective
+    perspective.setdefault("world_view", "")
+    perspective.setdefault("life_goals", [])
+    perspective.setdefault("origin", "")
+    perspective.setdefault("updated_ts", "")
+    if not isinstance(perspective.get("life_goals"), list):
+        perspective["life_goals"] = []
+    return perspective
+
+
+def _split_slow_path(path: str) -> Tuple[str, str]:
+    """拆「顶层段.叶子字段」。本项目的慢变路径恒为两段（ADR-0002 §1 白名单形状）。"""
+    normalized = str(path or "").strip()
+    head, _, tail = normalized.partition(".")
+    if not head or not tail or "." in tail:
+        raise ValueError(f"慢变路径必须形如 <段>.<字段>：{normalized!r}")
+    return head, tail
+
+
+def slow_get(state: Dict[str, Any], path: str) -> Any:
+    """读慢变现值（**白名单外一律抛 ValueError**，不静默返回 None）。
+
+    静默返回 None 会让「路径写错」伪装成「值还没写」，是批 3 教训「功能静默失效」
+    的同一类坑；这里宁可炸。
+    """
+    if not is_slow_field(path):
+        raise ValueError(f"非慢变白名单路径：{path!r}（ADR-0002 §1：受控维度，不得自由读取）")
+    head, tail = _split_slow_path(path)
+    section = state.get(head)
+    if not isinstance(section, dict):
+        return None
+    return section.get(tail)
+
+
+def slow_set(state: Dict[str, Any], path: str, value: Any, *, actor: str) -> str:
+    """写慢变现值。三个拒绝分支**互不掩盖**，顺序即优先级：
+
+    1. 锚定层路径 → ``PermissionError``（ADR-0002 §9，语义最强，先判）
+    2. 非白名单路径 → ``ValueError``（不得自由开字段）
+    3. 未登记 actor → ``ValueError``（写入必须具名，留痕链的起点）
+
+    返回原路径，便于 ``state[slow_set(...)] = v`` 风格调用。
+    """
+    assert_writable(path)
+    if not is_slow_field(path):
+        raise ValueError(f"非慢变白名单路径：{path!r}（不得自由开字段）")
+    if actor not in SLOW_WRITE_ACTORS:
+        raise ValueError(f"未登记的慢变写入者：{actor!r}（可选 {sorted(SLOW_WRITE_ACTORS)}）")
+    head, tail = _split_slow_path(path)
+    section = state.get(head)
+    if not isinstance(section, dict):
+        section = {}
+        state[head] = section
+    section[tail] = value
+    return path
 
 
 def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Iterable[str]) -> Set[str]:
@@ -329,25 +408,467 @@ def _strip_imperative_prefix(fragment: str) -> str:
     return fragment
 
 
+# ─── 晋升状态机（批 4-C4：确定性代码，零 LLM） ────────────────────
+
+#: 关系的**自动**晋升目标维度。
+#: **刻意不含 ``boundaries``**（用户 2026-09-26 强约束 2）：边界感的移动需要读懂
+#: 「抗议 / 舒适」的交互质量，计数推不出来——宁可停在锚定值，不许计数瞎推。
+#: 人工仍可写（``slow_set(..., actor="manual")``）。
+RELATIONSHIP_AUTO_PROMOTE: Tuple[str, ...] = ("trust", "closeness")
+
+#: 晋升审计动作类型（与 ``store.promotions.action`` 对应）。
+PROMOTION_ACTIONS: Tuple[str, ...] = ("applied", "rejected", "rolled_back")
+
+#: 关系阶段分档（E13：``stage`` 是**派生结论**，由 trust+closeness 确定性推导）。
+#: 按 (下限, 标签) 降序取两维**均值**。**只读两维**——boundaries 被冻结，
+#: 把它算进来会让阶段卡死在锚定值上。
+_STAGE_BANDS: Tuple[Tuple[float, str], ...] = (
+    (0.75, "很亲近"),
+    (0.5, "亲近"),
+    (0.25, "相识"),
+    (0.0, "陌生人"),
+)
+
+#: 短声明下限：``proposed_value`` 短于此长度不参与合并（HDSI 3.3「短声明误并」）。
+MERGE_MIN_VALUE_LEN = 8
+
+
+def _row_field(row: Any, key: str) -> str:
+    """宽松取字段（dict / sqlite3.Row 皆可），统一转字符串。"""
+    try:
+        value = row.get(key) if hasattr(row, "get") else row[key]
+    except (TypeError, KeyError, IndexError):
+        return ""
+    return str(value or "").strip()
+
+
+def parse_id_list(text: Any) -> List[int]:
+    """解析逗号分隔的 id 串（``contradicts`` 用）；非法项静默跳过。"""
+    result: List[int] = []
+    for chunk in str(text or "").replace(" ", "").split(","):
+        if not chunk:
+            continue
+        try:
+            result.append(int(chunk))
+        except ValueError:
+            continue
+    return result
+
+
+def parse_chronicle_refs(text: Any) -> List[int]:
+    """解析 ``chronicle:<id>`` 引用串（逗号分隔）为条目 id 列表。"""
+    result: List[int] = []
+    for chunk in str(text or "").split(","):
+        token = chunk.strip()
+        if not token:
+            continue
+        if ":" in token:
+            token = token.split(":", 1)[1].strip()
+        try:
+            result.append(int(token))
+        except ValueError:
+            continue
+    return result
+
+
+def scene_stats(rows: Iterable[Any]) -> Tuple[int, int]:
+    """从证据条目算 ``(场景数, 跨日数)``。
+
+    场景键 = ``(自然日, 来源)``——**同一天同一来源只算 1 个场景**。真实归档数据里
+    去重比最高 18.56（167 条事件压成 9 天），不去重则一天即可刷满门槛。
+    """
+    scenes: Set[Tuple[str, str]] = set()
+    days: Set[str] = set()
+    for row in rows:
+        day = _row_field(row, "ts")[:10]
+        if len(day) != 10:
+            continue
+        scenes.add((day, _row_field(row, "source_uid")))
+        days.add(day)
+    return len(scenes), len(days)
+
+
+def meets_minor_gate(
+    *,
+    confidence: float,
+    scene_count: int,
+    day_count: int,
+    min_confidence: float,
+    min_scenes: int,
+    min_days: int,
+) -> bool:
+    """minor 门槛：置信 AND 场景 AND 跨日，三条**全过**才算（P3）。"""
+    return (
+        float(confidence) >= float(min_confidence)
+        and int(scene_count) >= int(min_scenes)
+        and int(day_count) >= int(min_days)
+    )
+
+
+def meets_major_gate(
+    *, confidence: float, scene_count: int, min_confidence: float, min_scenes: int
+) -> bool:
+    """major 门槛：置信 AND 场景（**不限天数**，P4；默认关）。"""
+    return float(confidence) >= float(min_confidence) and int(scene_count) >= int(min_scenes)
+
+
+def is_after_cooldown(
+    last_ts: str, *, now: datetime.datetime, cooldown_hours: float
+) -> bool:
+    """距上次晋升是否已过冷却（读不到 / 解析失败 = 从未晋升 → 不在冷却中）。"""
+    if not str(last_ts or "").strip():
+        return True
+    try:
+        last = datetime.datetime.fromisoformat(str(last_ts).strip())
+    except ValueError:
+        return True
+    return (now - last).total_seconds() >= float(cooldown_hours) * 3600
+
+
+def apply_refutation_penalty(confidence: float, *, penalty: float) -> float:
+    """反证扣减（P6）：``confidence − penalty``，下限 0。"""
+    return max(0.0, float(confidence) - float(penalty))
+
+
+def merge_confidence(
+    current: float, existing: float, *, bonus: float, new_scene: bool
+) -> float:
+    """重复提案合并（P7）：``min(本次, 旧值 + bonus)``，**仅新独立场景才加**。
+
+    复述不加信——HDSI 2.1 的事故形态就是「整理器反复叙述把推测固化成事实」。
+    """
+    if not new_scene:
+        return float(current)
+    return min(float(current), float(existing) + float(bonus))
+
+
+def relation_value(
+    scene_days: int,
+    *,
+    min_days: int,
+    days_per_step: int,
+    step: float,
+    max_value: float,
+) -> float:
+    """关系维度的确定性取值曲线（E14）。
+
+    达到起步门槛即得**第一档**；此后每 ``days_per_step`` 个场景日升一档，封顶
+    ``max_value``（留余量给批 5 的 LLM 提案与人工——确定性计数不该把关系推顶格）。
+
+    例（出厂值 3 / 2 / 0.05 / 0.8）：3 日→0.05，5 日→0.10，19 日→0.45，33 日→0.80。
+    """
+    days = int(scene_days or 0)
+    floor = max(1, int(min_days))
+    if days < floor:
+        return 0.0
+    per_step = max(1, int(days_per_step))
+    steps = (days - floor) // per_step + 1
+    return min(float(max_value), round(steps * float(step), 4))
+
+
+def derive_stage(trust: float, closeness: float) -> str:
+    """由 trust / closeness 推导关系阶段标签（E13：**只读两维**）。
+
+    ``stage`` 是派生结论（``RELATIONSHIP_DERIVED``），由计数直接推「关系阶段」这种
+    用户可见的总结论最容易跑偏；随 trust/closeness 派生则保守且自洽。
+    """
+    score = (float(trust or 0.0) + float(closeness or 0.0)) / 2.0
+    for floor, label in _STAGE_BANDS:
+        if score >= floor:
+            return label
+    return "陌生人"
+
+
+class PromotionEngine:
+    """晋升状态机（确定性，零 LLM）。
+
+    依赖方向：只通过 ``plugin._engine`` / ``plugin._store`` 访问状态与存储，
+    **不 import** engine/store 模块（保持本模块零依赖），也**不 import**
+    ``learning.evidence``——关系晋升所需的正向场景日由**调用方算好后传入**，
+    免得 ``evidence → continuity`` 的既有依赖变成循环。
+    """
+
+    def __init__(self, plugin: Any) -> None:
+        self._plugin = plugin
+
+    # ── 便捷访问 ────────────────────────────────────────────────
+
+    @property
+    def _store(self) -> Any:
+        return self._plugin._store
+
+    @staticmethod
+    def _iso(now: datetime.datetime) -> str:
+        return now.isoformat(timespec="seconds")
+
+    def _count(self, kind: str) -> None:
+        telemetry = getattr(self._plugin, "_telemetry", None)
+        if telemetry is not None:
+            telemetry.record_counter(kind)
+
+    # ── 冷却（跨重启持久化） ────────────────────────────────────
+
+    def _cooldown_key(self, path: str) -> str:
+        return f"promotion:cooldown:{path}"
+
+    def last_promoted_ts(self, path: str) -> str:
+        """上次晋升时刻（历史遗留：函数名沿用「promoted」语义）。"""
+        return self._store.get_kv_str(self._cooldown_key(path), "")
+
+    def mark_cooldown(self, path: str, now: datetime.datetime) -> None:
+        """记录晋升时刻（冷却以 kv 存 ISO 时间戳 → **跨重启**）。"""
+        self._store.set_kv_str(self._cooldown_key(path), self._iso(now))
+
+    def is_cooling(self, path: str, now: datetime.datetime) -> bool:
+        config = self._plugin.config.promotion
+        return not is_after_cooldown(
+            self.last_promoted_ts(path),
+            now=now,
+            cooldown_hours=float(config.cooldown_hours or 0),
+        )
+
+    # ── 判定 ────────────────────────────────────────────────────
+
+    def evaluate(self, proposal: Any, *, now: datetime.datetime) -> Dict[str, Any]:
+        """判定一条提案是否够门槛（不写任何状态）。"""
+        config = self._plugin.config.promotion
+        path = _row_field(proposal, "path")
+        confidence = float(_row_field(proposal, "confidence") or 0.0)
+        rows = self._store.list_chronicle_by_ids(
+            parse_chronicle_refs(_row_field(proposal, "evidence_refs"))
+        )
+        scene_count, day_count = scene_stats(rows)
+        result: Dict[str, Any] = {
+            "promote": False,
+            "reason": "",
+            "confidence": confidence,
+            "scene_count": scene_count,
+            "day_count": day_count,
+        }
+        if self.is_cooling(path, now):
+            result["reason"] = "cooldown"
+            return result
+        if meets_minor_gate(
+            confidence=confidence,
+            scene_count=scene_count,
+            day_count=day_count,
+            min_confidence=float(config.minor_confidence),
+            min_scenes=int(config.minor_min_scenes),
+            min_days=int(config.minor_min_days),
+        ):
+            result["promote"] = True
+            result["reason"] = "promote_minor"
+            return result
+        if bool(config.major_enabled) and meets_major_gate(
+            confidence=confidence,
+            scene_count=scene_count,
+            min_confidence=float(config.major_confidence),
+            min_scenes=int(config.major_min_scenes),
+        ):
+            result["promote"] = True
+            result["reason"] = "promote_major"
+            return result
+        result["reason"] = "below_gate"
+        return result
+
+    # ── 执行（perspective） ─────────────────────────────────────
+
+    def apply(self, proposal: Any, *, now: datetime.datetime) -> Dict[str, Any]:
+        """判定 + 执行 + 审计 + 留痕 + 计数器；不够门槛则原样返回判定。
+
+        写现值走 ``slow_set(..., actor="promotion")`` —— 锚定层守卫与白名单校验
+        在写之前自动生效（ADR-0002 §9）。
+        """
+        decision = self.evaluate(proposal, now=now)
+        if not decision["promote"]:
+            return dict(decision, applied=False)
+
+        path = _row_field(proposal, "path")
+        new_value = _row_field(proposal, "proposed_value")
+        engine = self._plugin._engine
+        state = engine.load_self_state()
+        normalize_perspective(state)
+        old_value = slow_get(state, path)
+        slow_set(state, path, new_value, actor="promotion")
+        perspective = state["perspective"]
+        perspective["origin"] = "promotion"
+        perspective["updated_ts"] = self._iso(now)
+        engine.save_self_state(state)
+
+        proposal_id = proposal.get("id") if hasattr(proposal, "get") else None
+        self._store.append_promotion(
+            action="applied",
+            target=_row_field(proposal, "target") or "perspective",
+            path=path,
+            old_value=str(old_value if old_value is not None else ""),
+            new_value=new_value,
+            reason=str(decision["reason"]),
+            proposal_id=int(proposal_id) if proposal_id is not None else None,
+            ts=self._iso(now),
+        )
+        if proposal_id is not None:
+            self._store.update_proposal_status(int(proposal_id), "applied")
+        self.mark_cooldown(path, now)
+        # 人可读留痕。⚠️ kind=promotion 本身**被证据白名单拒之门外**（C2）：
+        # 留痕是关于她学习状态的模板输出，拿它当晋升证据 = 自我强化循环。
+        self._store.append_chronicle(
+            "self",
+            "promotion",
+            f"看法更新（{decision['reason']}）：{path} ← {new_value}",
+            ts=self._iso(now),
+        )
+        self._count("promotions")
+        return dict(
+            decision, applied=True, old_value=str(old_value or ""), new_value=new_value
+        )
+
+    # ── 反证 ────────────────────────────────────────────────────
+
+    def apply_refutations(self, *, now: datetime.datetime) -> List[int]:
+        """扫描待决提案：被**其它提案**引用为反证的 → 扣信 → 不足门槛即 rejected。
+
+        匹配键是 **proposal id 显式引用**，不做文本相似度（HDSI 3.3 的字面归并器
+        「短声明误并、长改写漏并」是作者知情未修的漏洞）。额外契约校验：反证必须
+        指向**同路径**的提案，否则不生效。返回被驳回的提案 id 列表。
+
+        ⚠️ 反证草稿本身**不留存**为新候选（HDSI 1.10：防结构化产物循环喂回模型）。
+        """
+        config = self._plugin.config.promotion
+        penalty = float(config.refutation_penalty or 0.2)
+        threshold = float(config.minor_confidence or 0.82)
+        pending = self._store.list_proposals(status="pending", limit=500)
+        by_id = {int(_row_field(row, "id") or 0): row for row in pending}
+        rejected: List[int] = []
+        for row in pending:
+            source_id = int(_row_field(row, "id") or 0)
+            for target_id in parse_id_list(_row_field(row, "contradicts")):
+                if target_id in rejected:
+                    continue
+                target = by_id.get(target_id)
+                if target is None:
+                    continue
+                if _row_field(target, "path") != _row_field(row, "path"):
+                    continue
+                confidence = apply_refutation_penalty(
+                    float(_row_field(target, "confidence") or 0.0), penalty=penalty
+                )
+                self._store.update_proposal_confidence(target_id, confidence)
+                if confidence >= threshold:
+                    continue
+                self._store.update_proposal_status(target_id, "rejected")
+                self._store.append_promotion(
+                    action="rejected",
+                    target=_row_field(target, "target"),
+                    path=_row_field(target, "path"),
+                    old_value=_row_field(target, "proposed_value"),
+                    new_value="",
+                    reason=f"refuted_by:{source_id}",
+                    proposal_id=target_id,
+                    ts=self._iso(now),
+                )
+                self._count("refutations")
+                rejected.append(target_id)
+        return rejected
+
+    # ── 关系确定性晋升 ──────────────────────────────────────────
+
+    def promote_relationship(
+        self, uid: str, scene_days: Set[str], *, now: datetime.datetime
+    ) -> Dict[str, Any]:
+        """关系确定性晋升（强约束 1 / 2 的落点）。
+
+        Args:
+            uid: 用户号（支线作用域）。
+            scene_days: **调用方算好的**正向场景日集合（来自
+                ``evidence.positive_signal_days``）。本类不自己取——避免
+                ``continuity ↔ evidence`` 循环依赖。
+
+        ⛔ 只动 ``RELATIONSHIP_AUTO_PROMOTE``（trust / closeness）：
+        ``boundaries`` 冻结在锚定值；``stage`` 是派生结论（E13），不独立晋升。
+        """
+        config = self._plugin.config.promotion
+        days = {str(day) for day in (scene_days or set())}
+        value = relation_value(
+            len(days),
+            min_days=int(config.relation_min_days),
+            days_per_step=int(config.relation_days_per_step),
+            step=float(config.relation_step),
+            max_value=float(config.relation_max),
+        )
+        engine = self._plugin._engine
+        branch = engine.load_branch_state(uid)
+        relationship = normalize_relationship(branch)
+        changed: Dict[str, float] = {}
+        for dimension in RELATIONSHIP_AUTO_PROMOTE:
+            current = float(relationship.get(dimension) or 0.0)
+            if value <= current:
+                continue
+            slow_set(branch, f"relationship.{dimension}", value, actor="promotion")
+            self._store.append_promotion(
+                action="applied",
+                target="relationship",
+                path=f"relationship.{dimension}",
+                old_value=str(current),
+                new_value=str(value),
+                reason="positive_signal_days",
+                source_uid=str(uid),
+                ts=self._iso(now),
+            )
+            changed[dimension] = value
+            self._count("promotions")
+        if changed:
+            relationship["stage"] = derive_stage(
+                float(relationship.get("trust") or 0.0),
+                float(relationship.get("closeness") or 0.0),
+            )
+            engine.save_branch_state(uid, branch)
+        return {
+            "uid": str(uid),
+            "scene_days": len(days),
+            "value": value,
+            "changed": changed,
+            "stage": relationship.get("stage"),
+        }
+
+
 __all__ = [
     "ANCHOR_FIELDS",
     "ANCHOR_ROOT_PREFIXES",
+    "MERGE_MIN_VALUE_LEN",
+    "PERSPECTIVE_FIELDS",
+    "PROMOTION_ACTIONS",
+    "PromotionEngine",
+    "RELATIONSHIP_AUTO_PROMOTE",
     "RELATIONSHIP_DERIVED",
     "RELATIONSHIP_DIMENSIONS",
     "RELATIONSHIP_FACT_FIELDS",
     "SLOW_FIELD_AUDIENCE",
     "SLOW_FIELD_EXCLUDED_PREFIXES",
     "SLOW_FIELD_PATHS",
+    "SLOW_WRITE_ACTORS",
+    "apply_refutation_penalty",
     "assert_writable",
     "build_guard_keywords",
     "current_relationship_stage",
+    "derive_stage",
     "filter_guarded_entries",
     "guard_blocks_entry",
     "guard_keywords",
     "guard_violations",
+    "is_after_cooldown",
     "is_anchor_field",
     "is_slow_field",
     "is_slow_field_visible",
+    "meets_major_gate",
+    "meets_minor_gate",
+    "merge_confidence",
+    "normalize_perspective",
     "normalize_relationship",
+    "parse_chronicle_refs",
+    "parse_id_list",
+    "relation_value",
+    "scene_stats",
     "should_drop_output",
+    "slow_get",
+    "slow_set",
 ]
