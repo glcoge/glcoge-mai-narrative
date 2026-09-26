@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..render.audience import visible_events
+from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 
 #: 生活片段产出的 kind ∈ GENERAL_KINDS（render/audience.GENERAL_KINDS），
 #: 默认不带 source_uid 故天然通用——写入侧约定见 audience.py 的模块文档。
@@ -111,6 +112,21 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
 
     text = await engine._creator.generate(prompt)
     if not text:
+        return
+
+    # 双向守卫**第一道**（入库前，ADR-0002 §9，批 2-C6）：
+    # 命中的产出**整条丢弃**（不入 pending_events、不入编年史、不推进闸门计数）。
+    # 不改写——改写等于让代码替模型撒谎，且改写产物没经过任何审查。
+    # 此处是"创作产出"的唯一定义地，故闸门挂在这里，不散到别处（E9 裁决）。
+    # 丢弃后**直接 return**，不推进 last_ts：这次尝试没有产出可用内容，
+    # 不该占用配额；下一个 tick 会以同一批素材再试一次。
+    guard_set = build_guard_keywords(cfg)
+    if should_drop_output(text, guard_set):
+        engine._plugin.ctx.logger.warning(
+            "生活片段命中锚定守卫（world_rules/values/禁用片段）→ 已丢弃，不入库；"
+            "命中片段: %s",
+            guard_violations(text, guard_set)[:5],
+        )
         return
 
     # 指标 4 双轨埋点（R24 A 轨 / R7 B 轨）：只在产出这一刻采样，

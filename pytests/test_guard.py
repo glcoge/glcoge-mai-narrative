@@ -321,3 +321,161 @@ def test_inject_guard_keyword_come_from_values_too():
         entries=[{"text": "他有点言行不一", "kind": "life", "source_uid": ""}],
     )
     assert "言行不一" not in text
+
+
+# ─── 第一道闸：入库前（创作出口，creation/life.py） ───────────
+
+
+class _Logger:
+    def __init__(self):
+        self.warnings: list = []
+
+    def info(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
+
+    def error(self, *a, **k):
+        pass
+
+
+class _FakeStore:
+    """只含生活片段链路所需接口的假 store。"""
+
+    def __init__(self, events=None):
+        self.events = list(events or [])
+        self.chronicle: list = []
+        self.kv_int: dict = {}
+        self.kv_str: dict = {}
+
+    def get_kv_int(self, key):
+        return self.kv_int.get(key, 0)
+
+    def set_kv_int(self, key, value):
+        self.kv_int[key] = value
+
+    def get_kv_str(self, key):
+        return self.kv_str.get(key, "")
+
+    def set_kv_str(self, key, value):
+        self.kv_str[key] = value
+
+    def list_events(self, scope, limit=20):
+        return self.events[:limit]
+
+    def append_chronicle(self, scope, kind, text, ts):
+        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
+
+
+class _FakeCreator:
+    def __init__(self, text):
+        self.text = text
+
+    async def generate(self, prompt):
+        return self.text
+
+
+def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rules=()):
+    """构造只含生活片段链路依赖的 engine（走 engine 的薄委托方法）。"""
+    from types import SimpleNamespace
+
+    from pytests._synth_loader import load as _load
+
+    engine_mod = _load("services.state.engine")
+    config = SimpleNamespace(
+        plugin=SimpleNamespace(enabled=True),
+        narrative=SimpleNamespace(
+            enabled=True,
+            chronicle_enabled=True,
+            mode_user_ids=["10001"],
+            life_fragment_daily_max=6,
+            life_fragment_interval_minutes=120,
+            life_fragment_detail_enabled=False,
+            sleep_time="",
+            wake_time="",
+            wake_fragment_enabled=False,
+            sleep_pre_sleep_hint_minutes=25,
+        ),
+        llm=SimpleNamespace(show_prompt=False, temperature=0.7),
+        identity=SimpleNamespace(
+            world="",
+            values=list(values),
+            world_rules=list(world_rules),
+            guard_fragments=list(guard_fragments),
+        ),
+        anchor=SimpleNamespace(guard_keywords=[]),
+    )
+    logger = _Logger()
+    engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
+    engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _telemetry=None)
+    engine._store = _FakeStore()
+    engine._creator = _FakeCreator(creator_text)
+    engine._self_state = {
+        "state": {
+            "mood": {"label": "平静", "energy": 0.6},
+            "routine": {"phase": "白天", "sleep_state": "awake"},
+            "focus": {"pending_events": []},
+        }
+    }
+    engine.load_self_state = lambda: engine._self_state
+    engine.save_self_state = lambda state: None
+    engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
+    return engine, logger
+
+
+def test_persist_guard_drops_hitting_fragment():
+    """入库前闸：命中锚定守卫的产出**整条丢弃**——不入 pending_events、不入编年史。"""
+    import asyncio
+    import datetime
+
+    engine, logger = _make_life_engine(
+        "今天我有点言行不一。", guard_fragments=["言行不一"]
+    )
+    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+
+    assert engine._self_state["state"]["focus"]["pending_events"] == []
+    assert engine._store.chronicle == []
+    assert any("丢弃" in message for message in logger.warnings)
+
+
+def test_persist_guard_keeps_clean_fragment():
+    """干净产出照常入库（守卫不误伤）。"""
+    import asyncio
+    import datetime
+
+    engine, logger = _make_life_engine("今天在厨房煮了粥。", guard_fragments=["言行不一"])
+    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+
+    pending = engine._self_state["state"]["focus"]["pending_events"]
+    assert len(pending) == 1
+    assert pending[0]["text"] == "今天在厨房煮了粥。"
+    assert len(engine._store.chronicle) == 1
+    assert logger.warnings == []
+
+
+def test_persist_guard_zero_keywords_keeps_everything():
+    """没配关键词 → 产出照常入库（零行为变更）。"""
+    import asyncio
+    import datetime
+
+    engine, logger = _make_life_engine("今天在厨房煮了粥。")
+    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+
+    assert len(engine._self_state["state"]["focus"]["pending_events"]) == 1
+    assert len(engine._store.chronicle) == 1
+
+
+def test_persist_guard_does_not_advance_last_ts_on_drop():
+    """被丢弃的尝试**不推进闸门**：这次没产出可用内容，不该占用配额。"""
+    import asyncio
+    import datetime
+
+    engine, _ = _make_life_engine("今天我有点言行不一。", guard_fragments=["言行不一"])
+    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+
+    assert engine._store.get_kv_str("life_fragment:last_ts") == ""
+    assert engine._store.get_kv_int("life_fragment:count:2026-09-21") == 0
