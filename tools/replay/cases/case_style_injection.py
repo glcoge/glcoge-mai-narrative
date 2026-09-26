@@ -19,7 +19,7 @@ ADR-0003 §6 要求「铺陈 / 文学授权段**只增不删**」，且任何提
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from .. import loader
 from ..runtime import load
@@ -46,12 +46,12 @@ _BANNED_HARD: Tuple[str, ...] = ("字以内", "句以内", "拆成", "分成", "
 _BANNED_NEGATION: Tuple[str, ...] = ("不要", "禁止", "不得", "do not", "Do not")
 
 
-def case_style_injection(messages_path: str) -> List[str]:
+def case_style_injection(inputs: Any) -> List[str]:
     """漂移注入块护栏：授权段恒定 + 无硬指令 / 禁令组。返回失败列表（空 = 通过）。"""
     failures: List[str] = []
 
     # 数据源健康（负控：空归档 / 读不出会话必须判失败）
-    messages = loader.load_messages(messages_path)
+    messages = loader.load_messages(inputs.messages)
     if not messages:
         return ["归档为空，无法验证（数据源问题，非护栏问题）"]
     if not loader.sessions(messages):

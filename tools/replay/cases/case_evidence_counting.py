@@ -85,9 +85,9 @@ def _scene_counts(messages: List[Dict[str, Any]]) -> Dict[str, int]:
     return {uid: len(info["days"]) for uid, info in counts.items()}
 
 
-def case_evidence_counting(messages_path: str) -> List[str]:
+def case_evidence_counting(inputs: Any) -> List[str]:
     """证据计数 / 场景映射能否正确消化 26 天归档（R4 + R5 定标前置）。"""
-    messages = loader.load_messages(messages_path)
+    messages = loader.load_messages(inputs.messages)
     failures: List[str] = []
 
     # ── 0. 数据源规模自检 ──
@@ -146,14 +146,14 @@ def case_evidence_counting(messages_path: str) -> List[str]:
     return failures
 
 
-def case_scene_mapping_digest(messages_path: str) -> List[str]:
+def case_scene_mapping_digest(inputs: Any) -> List[str]:
     """场景映射的**边界体检**：主动消息与互动日的交叉口径。
 
     单列一个用例是因为它是批 4 最容易踩的一类坑——主动开口（bot 发言）与
     用户互动（非 bot 发言）是**两条独立时间线**，若把主动消息也算进互动日，
     场景数会被系统性高估，门槛就会看起来比实际松。
     """
-    messages = loader.load_messages(messages_path)
+    messages = loader.load_messages(inputs.messages)
     failures: List[str] = []
 
     proactive = [row for row in messages if row.get("is_proactive")]

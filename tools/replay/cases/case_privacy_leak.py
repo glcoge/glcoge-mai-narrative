@@ -75,9 +75,9 @@ def _render(render_mod: Any, *, entries, audience, round_kind, bysource=""):
     )
 
 
-def case_privacy_leak(messages_path: str) -> List[str]:
+def case_privacy_leak(inputs: Any) -> List[str]:
     """源会话的涉私原文，不得出现在任何其他会话的注入内容中。"""
-    messages = loader.load_messages(messages_path)
+    messages = loader.load_messages(inputs.messages)
     markers = _markers(messages)
     if not markers:
         return ["未能从源会话抽取出专属片段——数据源可能不符预期"]
@@ -112,13 +112,13 @@ def case_privacy_leak(messages_path: str) -> List[str]:
     return failures
 
 
-def case_diary_fully_isolated(messages_path: str) -> List[str]:
+def case_diary_fully_isolated(inputs: Any) -> List[str]:
     """ADR-0004：diary 产物完全隔离——``kind=diary`` 条目对 narrative **所有**消费路径短路。
 
     diary 是 narrative 的**后置附属**（依赖方向 diary → narrative 单向），
     narrative 的处理不依赖它，故 diary 生成物不得出现在任何注入内容里。
     """
-    messages = loader.load_messages(messages_path)
+    messages = loader.load_messages(inputs.messages)
     markers = _markers(messages)
     if not markers:
         return ["未能从源会话抽取出专属片段——数据源可能不符预期"]
