@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import time
 
 from maibot_sdk import (
     API,
@@ -45,8 +46,11 @@ from .services import (
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
 from .services.state.continuity import current_relationship_stage
+from .services.learning.drift_style import describe_drift
+from .services.learning.projection import get_style_projection, is_self_write_in_progress
 from .services.proactive.scheduler import validate_rules
 from .services.render.audience import drop_diary, filter_entries, visible_chronicle
+from .services.render.replyer_block import build_replyer_block, build_style_item, is_style_item
 from .services.message import (
     extract_user_id,
     is_private_chat,
@@ -58,6 +62,10 @@ from .services.store import SOURCE_DIARY, NarrativeStore
 
 # status 中可用列表的展示上限（超出截断，避免刷屏）
 _AVAILABLE_SHOW_LIMIT = 10
+
+#: 漂移注入耗时预算（ms）。宿主 hook 硬超时 6 秒，此处是**内部告警门槛**（R-C）：
+#: 超预算说明注入路径被拖慢，宿主不会报错（异常全吞），只能靠这条 WARN 预警。
+_DRIFT_BUDGET_MS = 500
 
 
 def format_available_tasks_line(names: Optional[List[str]]) -> str:
@@ -99,6 +107,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
     """剧本人设系统主插件。"""
 
     config_model: type[PluginConfigBase] = MaiNarrativePluginConfig
+
+    #: 漂移注入计数（批 3-E8）：宿主 hook 异常全被吞 → 必须自证「注入有没有上线」，
+    #: 同「部署后必查 delivered/sent」的同款理由。声明为**类级默认值**：
+    #: 单测常用 ``__new__`` 绕过 ``__init__``，类属性可读，避免假实例 AttributeError。
+    _style_inject_count: int = 0
 
     def __init__(self) -> None:
         super().__init__()
@@ -295,6 +308,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         """配置热重载：按新开关重启后台任务。"""
         del config_data
+        # 防重入（ADR-0002 决策 6）：插件自身写回 [learned] 时若又触发本回调，会形成
+        # 「写回 → 回调 → 再写回」的环。批 4 起 tomlkit 会真的写回，此处先立闸。
+        if is_self_write_in_progress():
+            self.ctx.logger.debug("mai-narrative 忽略自身写回触发的配置更新: scope=%s", scope)
+            return
         self.ctx.logger.info(
             "mai-narrative 配置更新: scope=%s version=%s（任务按新配置重排）",
             scope, version,
@@ -349,6 +367,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
     def _local_now(self) -> datetime.datetime:
         """按插件配置时区取本地时间（与引擎统一）。"""
         return local_now(self.config.narrative.timezone_offset_hours)
+
+    def _config_path(self) -> Path:
+        """插件自身 ``config.toml`` 路径（``[learned]`` 区块 tomlkit 直读写用）。
+
+        ⚠️ 该区块**不在** ``config.py``，SDK 不解析、WebUI 不渲染（ADR-0002 决策 6），
+        因此无法从 ``self.config`` 取，只能按文件位置定位。
+        """
+        return Path(__file__).resolve().parent / "config.toml"
 
     # ===== 入站 Hook：落痕 + 采样 + 支线反馈 =====
     # 接入点用 chat.receive.after_process（与 always-reply-private 同源，真机已验证送达）；
@@ -527,6 +553,79 @@ class MaiNarrativePlugin(MaiBotPlugin):
         )
         return {"action": "continue", "modified_kwargs": kwargs}
 
+    # ===== Hook：漂移层调制注入（批 3-C3） =====
+
+    @HookHandler(
+        "maisaka.replyer.before_model_request",
+        name="narrative_inject_drift_style",
+        description="剧本模式会话在回复生成前注入漂移层调制（此刻状态/关系语境/文学授权）",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def inject_drift_style(self, **kwargs: Any) -> Dict[str, Any]:
+        """把此刻状态调制 + 关系语境 + 文学授权追加进 replyer 请求 items。
+
+        ⚠️ 三条硬约束（ADR-0003 §5 + 宿主源码实测 H2/H3/H7）：
+        1. 宿主 ``modified_kwargs`` 是**整体替换非合并** → 必须全量带出 kwargs，只改 items；
+        2. hook 有 **6 秒硬超时** → 本路径只读一次 state，不读编年史，零 LLM；
+        3. 宿主 try/except **吞掉一切异常** → 注入失败完全静默，故埋耗时与注入计数。
+
+        与 planner 注入块分工（E9）：本块只出调制/关系/授权，**不重复**生活内容。
+        """
+        # A/B 对照 gate：与 planner 注入同款双开关，narrative.enabled=false 时行为全停
+        if not (self.config.plugin.enabled and self.config.narrative.enabled):
+            return {"action": "continue", "modified_kwargs": kwargs}
+        session_id = str(kwargs.get("session_id") or "")
+        items = kwargs.get("items")
+        if self._engine is None or self._store is None:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 会话过滤：``session_id`` 实测原样等于 stream_id（H8）→ 直接复用判定
+        if not self._is_mode_session(session_id):
+            return {"action": "continue", "modified_kwargs": kwargs}
+        if not isinstance(items, list) or not items:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 幂等：同轮若已有本块（多 handler / 重入）不再追加
+        if any(is_style_item(item) for item in items):
+            return {"action": "continue", "modified_kwargs": kwargs}
+
+        started = time.perf_counter()
+        user_id = self._streams.uid_of(session_id)
+        state = self._engine.load_self_state()
+        branch = self._engine.load_branch_state(user_id) if user_id else None
+        relationship = (branch or {}).get("relationship") or {}
+        context_text = build_replyer_block(
+            drift_text=describe_drift(state.get("state") or {}),
+            # 与 /narrative status 同款取值顺序：显式 ``stage``（批 4 晋升机写入的晋升值）
+            # 优先，批 4 前回退到只读事实推导（``continuity.current_relationship_stage``）。
+            stage=str(
+                relationship.get("stage")
+                or current_relationship_stage(relationship)
+            ),
+            # 私聊剧本模式下受众即归属人本人；群聊就绪时两者分离，可见性 fail-closed
+            audience=user_id,
+            owner=user_id,
+            learned_style=get_style_projection(self._config_path(), logger=self.ctx.logger),
+        )
+        items.append(build_style_item(context_text))
+        kwargs["items"] = items
+        self._style_inject_count += 1
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        if elapsed_ms > _DRIFT_BUDGET_MS:
+            self.ctx.logger.warning(
+                "narrative 漂移注入耗时 %.0fms 超预算(%dms)：宿主硬超时 6s，超时即静默回退",
+                elapsed_ms,
+                _DRIFT_BUDGET_MS,
+            )
+        self.ctx.logger.debug(
+            "narrative 漂移注入: stream=%s 耗时=%.0fms | %s",
+            session_id or "-",
+            elapsed_ms,
+            context_text[:100].replace("\n", " "),
+        )
+        return {"action": "continue", "modified_kwargs": kwargs}
+
     # ===== Hook：表达学习隔离 =====
 
     @HookHandler(
@@ -672,6 +771,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
         for index, uid in enumerate(mode_uids, start=1):
             count = self._store.get_kv_int(f"proactive:count:{uid}:{today}")
             lines.append(f"今日主动[{index}]: {count}")
+        # 学习层投影（批 3-C2 / R1）：[learned] 不在 config.py，只能从文件直读
+        learned_style = get_style_projection(self._config_path(), logger=self.ctx.logger)
+        if learned_style:
+            lines.append(f"学习投影(R1): {len(learned_style)} 条")
+        else:
+            lines.append("学习投影(R1): 空（待批 4 晋升机写入）")
+        # 漂移注入计数（E8）：宿主 hook 异常全吞，只有这里能证明「注入到底有没有上线」
+        lines.append(f"漂移注入: 累计 {self._style_inject_count} 次")
         lines.append(f"数据目录: {self.ctx.paths.data_dir / 'narrative'}")
         # 宿主只开放「任务名」列表（非模型名），仅作连通性参考；失败不影响 status
         try:
