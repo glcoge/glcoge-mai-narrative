@@ -118,3 +118,12 @@ show_prompt = false
 # ===== 验收采样 =====
 [telemetry]
 enabled = true
+
+# ===== 学习层投影（批 3-C2 / ADR-0002 决策 6）=====
+# ⚠️ 本段**刻意不声明进 config.py**（不进 WebUI 表单）：一旦进表单，用户保存任一配置时
+#    表单会以 stale 值整体回写，冲掉批 4 写入的学习成果——这正是当初预判并规避的事故链。
+#    读写只走 tomlkit 直通（services/learning/projection.py），展示走 /narrative status。
+#    事实源在 db；本段只是呈现层投影，损坏可从 db 重建。
+# style：二期 LLM 风格提炼的投影槽（v1 恒空，待批 4 晋升机写入）。   # RESERVED(R1)
+[learned]
+style = []
