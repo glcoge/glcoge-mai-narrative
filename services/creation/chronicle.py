@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..render.audience import visible_events
+from .life import COMM_FACT_RULE
 
 
 async def load_native_personality(engine: Any) -> str:
@@ -118,6 +119,8 @@ def build_chronicle_prompt(
     ]
     if materials:
         chunks.append("今天发生过的事：\n- " + "\n- ".join(materials[-8:]))
+    # 通信事实标记（C9）：小结同样是私下记录，也会把"想联系谁"写成既成事实
+    chunks.append(COMM_FACT_RULE)
     chunks.append(
         "请用第一人称写一段 40~90 字的今日小结，像睡前随手记录，"
         "只输出正文，不要任何标题/引号/表情。"

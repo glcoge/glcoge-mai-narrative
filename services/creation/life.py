@@ -23,6 +23,19 @@ from ..render.audience import visible_events
 from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
 from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 
+#: 通信事实标记（批 4-C9 / R25 / ADR-0003 §8；E8 裁定 (b)：**只做合约句**，
+#: 注入真实发送清单需接宿主账本，留收尾里程碑）。
+#:
+#: 为什么必须有这句：生活片段是**私下独白**，模型很容易把"想联系谁"顺手写成
+#: 「已经发了消息」；下一轮模型又把这个片段当事实引用（"就我刚才说的"），
+#: 而对方毫无记忆 → 对话自相矛盾。故明文约定：**通信事实以宿主账本为准**，
+#: 片段里提到联系一律只写**意图**。
+COMM_FACT_RULE = (
+    "通信事实以真实记录为准：如果片段里提到联系别人（发消息、打电话、说过什么话），"
+    "只能写成你的**打算或心里的念头**（例如「想回他一句」「明天问问她」），"
+    "不要写成「已经发了 / 已经说了」这类既成事实——你还没真的发出。"
+)
+
 #: 生活片段产出的 kind ∈ GENERAL_KINDS（render/audience.GENERAL_KINDS），
 #: 默认不带 source_uid 故天然通用——写入侧约定见 audience.py 的模块文档。
 _FRAGMENT_TIER_LENGTH = {
@@ -263,6 +276,9 @@ def build_life_fragment_prompt(
         shown = [text[:material_cap] for text in materials[-6:]]
         chunks.append("最近发生的对话与小事：\n- " + "\n- ".join(shown))
 
+    # 通信事实标记（C9）：两个档位都适用，故放在档位分支之前
+    chunks.append(COMM_FACT_RULE)
+
     length = _FRAGMENT_TIER_LENGTH.get(tier, "40~90")
     if tier == "major":
         chunks.append(
@@ -281,6 +297,7 @@ def build_life_fragment_prompt(
 
 
 __all__ = [
+    "COMM_FACT_RULE",
     "build_life_fragment_prompt",
     "life_fragment_tier",
     "maybe_generate_life_fragment",
