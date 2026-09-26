@@ -88,6 +88,21 @@ class IdentitySection(PluginConfigBase):
             "order": 3,
         },
     )
+    guard_fragments: List[str] = Field(
+        default_factory=list,
+        description=(
+            "禁用片段黑名单：世界/价值观/规则的**浓缩片段**（人物代号、专属称呼、"
+            "指认性表述等）。产出文本或注入文本命中即拦下——世界里不该出现的东西"
+            "（ADR-0002 §9）。与 [anchor].guard_keywords（字段名级手工补充）互补："
+            "本项面向「内容片段」，那项面向「字段/代号名」。"
+        ),
+        json_schema_extra={
+            "label": "禁用片段",
+            "hint": '例 ["现实中的真实姓名","穿越前的身份"]；不填 = 只从 world_rules/values 自动抽取',
+            "item_type": "string",
+            "order": 4,
+        },
+    )
 
 
 class AnchorSection(PluginConfigBase):

@@ -18,7 +18,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ..state.continuity import current_relationship_stage
+from ..state.continuity import (
+    build_guard_keywords,
+    current_relationship_stage,
+    filter_guarded_entries,
+)
 from ..state.engine import (
     INJECT_TEXT_CAP,
     daylight_hint,
@@ -153,6 +157,12 @@ def build_context_block(
     mood = inner["mood"]
     phase = inner["routine"]["phase"]
 
+    # 双向守卫第二道（ADR-0002 §9，批 2-C6）：**注入前**再拦一次。
+    # 与入库前那道**语义不同**——这里只丢命中的**条目**，不丢整段：
+    # 本段同时承载状态/关系/由头，因一条素材违禁就整段丢弃会让本轮注入变空。
+    # 关键词来自 [identity].world_rules/values 自动抽取 + 手工补充（同第一道闸）。
+    guard_set = build_guard_keywords(cfg)
+
     lines: List[str] = [
         "【角色内部状态 · 仅供你（模型）参考，不要把本段原样告诉对方】",
         # v0.1.4 P1：日照预期锚点——相位标签之外补充"窗外什么样"的感官时间感
@@ -167,10 +177,12 @@ def build_context_block(
 
     # 受众过滤（ADR-0004）：涉私原文只讲给本人，diary 产物对所有人短路。
     # 过滤在这里做而不是在调用方——注入块是"最后一公里"，漏一处就是泄露面。
-    if recent_entries:
+    # 过滤顺序：先受众（谁能看）再守卫（能不能出现）——两道规则正交，顺序不影响结果。
+    guarded_entries = filter_guarded_entries(list(recent_entries or []), guard_set)
+    if guarded_entries:
         recent_text = "；".join(
             str(entry.get("text", "")).strip()[:INJECT_TEXT_CAP]
-            for entry in filter_entries(recent_entries, audience, limit=3)
+            for entry in filter_entries(guarded_entries, audience, limit=3)
             if str(entry.get("text", "")).strip()
         )
         if recent_text:
@@ -179,8 +191,9 @@ def build_context_block(
     # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
     # 2026-09-21：上限统一取 INJECT_TEXT_CAP（1024）。旧的 56/120 字会把 major 档
     # （可达 400 字）的细节截掉，等于白写；1024 只作防失控天花板，条数仍限最近 2 条。
-    pending_events = filter_entries(
-        list(inner.get("focus", {}).get("pending_events", [])), audience
+    pending_events = filter_guarded_entries(
+        filter_entries(list(inner.get("focus", {}).get("pending_events", [])), audience),
+        guard_set,
     )
     fragments = [
         str(item.get("text", "")).strip()
@@ -213,6 +226,9 @@ def build_context_block(
     if identity.world:
         lines.append(f"- 你生活在：{identity.world}")
 
+    # ⚠️ 锚定层行**不过守卫**：world_rules/values 是守卫关键词的**来源**，
+    # 让它们过闸等于"关键词命中自己"→ 一旦配了就永远自删，锚定层直接消失。
+    # 守卫管的是**素材/产出**（可能夹带不该出现的东西），不是锚定声明本身。
     anchored_values = [str(item).strip() for item in (identity.values or []) if str(item).strip()]
     anchored_rules = [str(item).strip() for item in (identity.world_rules or []) if str(item).strip()]
     if anchored_values:

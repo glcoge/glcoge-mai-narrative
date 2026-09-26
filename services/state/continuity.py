@@ -198,9 +198,97 @@ _KEYWORD_SEPARATORS = "，。；！？、,.;!?（）()【】[]「」“”\"' \t
 _KEYWORD_MIN_LEN = 2
 _KEYWORD_MAX_LEN = 8
 
+#: 中文**语气/功能前缀**：真实规则几乎都写成祈使句（"不可说谎""不得泄露""不要迟到"），
+#: 整句作关键词永远不可能命中产出文本（产出不会复述规则原文）。故剥掉前缀留下真正的
+#: **内容词根**——这是"从规则原文抽可命中片段"与"不误伤正常表达"之间的唯一可行折中
+#: （中文无分词）。
+#:
+#: ⚠️ 这里只收**纯语气助词**（"不可/不得/不要/禁止/…"），不收实义动词组合：
+#: "不可说谎" → "说谎"（可命中）；若把"不可泄露"整段当前缀，会剥出"内部代号"这种
+#: 只剩名词根的碎片，反而把"泄露"这个真正的行为词丢掉。
+_KEYWORD_STRIP_PREFIXES = (
+    "不可", "不得", "不要", "不能", "不会", "禁止", "严禁", "防止", "避免", "拒绝",
+    "绝不", "勿", "别",
+)
+#: 剥前缀后的最小长度。取 2 是刻意的：`不可说谎` → `说谎` 正好 2 字，而这是最常见
+#: 的规则形态；若取下限 3，最自然的规则写法一律抽不出可命中关键词 → 守卫形同虚设。
+#: 代价是 2 字碎片可能误伤（如"说谎"撞到"别对我撒谎"不会命中，但撞到"说谎者"会）——
+#: 这属于保守放行的可接受代价：漏网的还有注入侧第二道闸，误杀则直接吞掉正常内容。
+_KEYWORD_STRIP_MIN_LEN = 2
+
+
+def build_guard_keywords(config: Any) -> Set[str]:
+    """从插件配置装配守卫关键词集合（ADR-0002 §9 双向守卫的**唯一入口**）。
+
+    配置段解耦（缺段不炸）：老配置 / 测试假件没有 ``[anchor]`` 或 ``[identity]``
+    的 ``guard_fragments`` 时按空处理——**不是**用 getattr 掩盖错误，而是这三项
+    来源本就都是"可选补充"，缺一个就少一路。
+    """
+    identity = getattr(config, "identity", None)
+    anchor = getattr(config, "anchor", None)
+    world_rules = list(getattr(identity, "world_rules", None) or [])
+    values = list(getattr(identity, "values", None) or [])
+    extra = list(getattr(identity, "guard_fragments", None) or [])
+    extra += list(getattr(anchor, "guard_keywords", None) or [])
+    return guard_keywords(world_rules, values, extra)
+
+
+def guard_violations(text: str, keywords: Set[str]) -> List[str]:
+    """返回 ``text`` 命中的关键词（**排序后**，便于日志与断言稳定复现）。
+
+    零误判优先：只在整词出现时命中，不做模糊匹配（中文模糊匹配的误杀率
+    远高于漏网率，而漏网还有注入侧第二道闸兜着）。
+    """
+    normalized = str(text or "")
+    if not normalized or not keywords:
+        return []
+    return sorted(str(word) for word in keywords if str(word) in normalized)
+
+
+def guard_blocks_entry(entry: Dict[str, Any], keywords: Set[str]) -> bool:
+    """条目是否命中守卫（只看 ``text`` 字段）。
+
+    ``text`` 非字符串/缺失时返回 False —— 结构异常交给别的层暴露，
+    守卫不做结构校验（那会让一个格式 bug 伪装成"内容违规"）。
+    """
+    if not isinstance(entry, dict):
+        return False
+    return bool(guard_violations(entry.get("text"), keywords))
+
+
+def should_drop_output(text: str, keywords: Set[str]) -> bool:
+    """第一道闸（**入库前**）：创作产出是否要被丢弃。
+
+    空产出返回 False —— "没生成"不是"违禁"，由调用方原样 return 即可，
+    不该让守卫把它算成一次拦截（否则计数指标会被空产出污染）。
+
+    命中后的动作是**丢弃整条产出**，不是改写：改写等于让代码替模型撒谎，
+    且改写后的文本没有经过任何审查，只是把违规面藏得更深（E7 裁决）。
+    """
+    return bool(guard_violations(text, keywords))
+
+
+def filter_guarded_entries(
+    entries: Iterable[Dict[str, Any]], keywords: Set[str]
+) -> List[Dict[str, Any]]:
+    """第二道闸（**注入前**）：逐条过滤，只丢命中的条目（不丢整段）。
+
+    返回**新列表**（不改原序列：同一条entry 序列可能同时被受众过滤消费，
+    就地改会串味）。全被拦时返回空列表，调用方据此跳过该行不渲染空壳。
+
+    为什么是"丢条目"而非"丢整段"：注入段同时承载状态/关系/由头，
+    因为一条素材违禁就把整段丢掉，会让这一轮的注入直接变空（E7 裁决）。
+    """
+    return [entry for entry in entries if not guard_blocks_entry(entry, keywords)]
+
 
 def _keyword_fragments(text: str) -> List[str]:
-    """把一条规则/价值观原文切成候选关键词（保守、可预期）。"""
+    """把一条规则/价值观原文切成候选关键词（保守、可预期）。
+
+    返回可能**同时**包含原文子句与剥前缀后的内容词根——保守起见两条都留着：
+    用户可能真写"我以诚实守信为底线"（整句就是内容），也可能写"不可说谎"
+    （整句永远不可能命中，只有"说谎"有用）。
+    """
     fragments: List[str] = []
     current = ""
     for char in text:
@@ -212,11 +300,33 @@ def _keyword_fragments(text: str) -> List[str]:
             current += char
     if current:
         fragments.append(current)
+
+    candidates: List[str] = []
+    for fragment in fragments:
+        candidates.append(fragment)
+        stripped = _strip_imperative_prefix(fragment)
+        if stripped and stripped != fragment:
+            candidates.append(stripped)
     return [
-        fragment
-        for fragment in fragments
-        if _KEYWORD_MIN_LEN <= len(fragment) <= _KEYWORD_MAX_LEN
+        candidate
+        for candidate in candidates
+        if _KEYWORD_MIN_LEN <= len(candidate) <= _KEYWORD_MAX_LEN
     ]
+
+
+def _strip_imperative_prefix(fragment: str) -> str:
+    """剥掉祈使句前缀（"不可说谎" → "说谎"）；不合条件时原样返回。
+
+    剥完若短于 ``_KEYWORD_STRIP_MIN_LEN`` 就不剥（"不可说" → "说" 只剩 1 字，
+    误伤面远大于收益）。
+    """
+    for prefix in _KEYWORD_STRIP_PREFIXES:
+        if fragment.startswith(prefix):
+            remainder = fragment[len(prefix) :]
+            if len(remainder) >= _KEYWORD_STRIP_MIN_LEN:
+                return remainder
+            return fragment
+    return fragment
 
 
 __all__ = [
@@ -229,10 +339,15 @@ __all__ = [
     "SLOW_FIELD_EXCLUDED_PREFIXES",
     "SLOW_FIELD_PATHS",
     "assert_writable",
+    "build_guard_keywords",
     "current_relationship_stage",
+    "filter_guarded_entries",
+    "guard_blocks_entry",
     "guard_keywords",
+    "guard_violations",
     "is_anchor_field",
     "is_slow_field",
     "is_slow_field_visible",
     "normalize_relationship",
+    "should_drop_output",
 ]
