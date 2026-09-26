@@ -611,6 +611,194 @@ class LLMSection(PluginConfigBase):
     )
 
 
+class PromotionSection(PluginConfigBase):
+    """慢变晋升机（批 4）：门槛 / 冷却 / 反证 / 投影限流。
+
+    ⚠️ 本段**不承载学习成果**——`[learned]` 区块刻意不声明进 config.py
+    （ADR-0002 决策 6：声明进去就会进 WebUI 表单，用户保存配置时表单以 **stale 值
+    整体回写**，冲掉插件写入的学习成果）。本段只管**晋升行为**的参数。
+
+    ⚠️ 关系晋升的证据源是 ``metrics/*.csv``（用户主动发起 + 主动消息承接），
+    而 csv 落盘受 ``[telemetry].enabled`` **与** ``[plugin].enabled`` 双门控：
+    **关掉验收采样 = 关掉关系晋升的证据源**。这是刻意的取舍（不为此另建事件表，
+    见批 4 方案 §0.4）；晋升读到 0 条时会 WARN 一次提示该耦合。
+    """
+
+    __ui_label__: ClassVar[str] = "慢变晋升"
+    __ui_icon__: ClassVar[str] = "trending-up"
+    __ui_order__: ClassVar[int] = 5
+
+    enabled: bool = Field(
+        default=True,
+        description="是否启用慢变晋升机（提案提炼 + 晋升判定 + 写回投影）。",
+        json_schema_extra={"label": "启用晋升机", "order": 1},
+    )
+    seed_on_start: bool = Field(
+        default=True,
+        description=(
+            "冷启动 seed（R15）：首次上线时从锚定层 world/values 一次性派生 "
+            "world_view / life_goals 初值，作为晋升 diff 的基线。"
+            "失败留空 + WARN，不阻断。默认开——不设 seed 则「现值」不存在，"
+            "「她的看法何时变过」无从叙述（冷启动死锁）。"
+        ),
+        json_schema_extra={"label": "冷启动 seed", "order": 2},
+    )
+    interval_hours: int = Field(
+        default=168,
+        ge=1,
+        le=720,
+        description="提案提炼间隔（小时）。默认 168 = 周度（HDSI 3.1 口径）。",
+        json_schema_extra={"label": "提炼间隔（小时）", "hint": "1-720；默认 168", "order": 3},
+    )
+    failure_backoff_hours: int = Field(
+        default=6,
+        ge=1,
+        le=72,
+        description=(
+            "提炼失败后的退避（小时）。**重启后必再试一次**——失败指纹不持久化，"
+            "只有冷却跨重启（HDSI 5.3：防「重启即重试风暴」的同时不放过真失败）。"
+        ),
+        json_schema_extra={"label": "失败退避（小时）", "hint": "1-72", "order": 4},
+    )
+    min_evidence_entries: int = Field(
+        default=5,
+        ge=1,
+        le=200,
+        description=(
+            "输入充分性门槛：证据条目少于此值**直接不调 LLM**。"
+            "既省成本，也避免「输入不充分 → 产出恒空 → 功能形同虚设」（HDSI 5.9）。"
+        ),
+        json_schema_extra={"label": "最少证据条数", "hint": "默认 5", "order": 5},
+    )
+    max_proposals: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        description="单次提炼最多采纳的提案条数（超出丢弃，防一次写爆）。",
+        json_schema_extra={"label": "单次提案上限", "order": 6},
+    )
+
+    minor_confidence: float = Field(
+        default=0.82,
+        ge=0.0,
+        le=1.0,
+        description="minor 晋升的置信门槛（P3）。",
+        json_schema_extra={"label": "minor 置信门槛", "hint": "0-1；默认 0.82", "order": 7},
+    )
+    minor_min_scenes: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="minor 晋升要求的最少独立场景数（P3）。",
+        json_schema_extra={"label": "minor 最少场景", "hint": "默认 3", "order": 8},
+    )
+    minor_min_days: int = Field(
+        default=2,
+        ge=1,
+        le=90,
+        description="minor 晋升要求跨越的最少自然日数（P3）。",
+        json_schema_extra={"label": "minor 最少跨日", "hint": "默认 2", "order": 9},
+    )
+    cooldown_hours: int = Field(
+        default=72,
+        ge=0,
+        le=720,
+        description=(
+            "同一路径的晋升冷却（小时，P3）。**跨重启持久化**（kv 存 ISO 时间戳）——"
+            "HDSI 5.3 导演冷却口径：防同一维度被反复推进。"
+        ),
+        json_schema_extra={"label": "晋升冷却（小时）", "hint": "默认 72", "order": 10},
+    )
+    major_enabled: bool = Field(
+        default=False,
+        description=(
+            "是否启用 major 晋升（P4）。默认**关**——major 允许「高置信但场景少」的"
+            "跃迁，风险与收益不对称，先观察 minor 的实际节奏再开。"
+        ),
+        json_schema_extra={"label": "启用 major 晋升", "order": 11},
+    )
+    major_confidence: float = Field(
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description="major 晋升的置信门槛（P4）。",
+        json_schema_extra={"label": "major 置信门槛", "hint": "0-1；默认 0.95", "order": 12},
+    )
+    major_min_scenes: int = Field(
+        default=2,
+        ge=1,
+        le=50,
+        description="major 晋升要求的最少场景数（不限天数，P4）。",
+        json_schema_extra={"label": "major 最少场景", "hint": "默认 2", "order": 13},
+    )
+    refutation_penalty: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "反证命中时扣减的置信（P6）：``confidence − penalty`` 低于门槛即 "
+            "``status=rejected``。反证草稿本身**不留存**为新候选（防自我强化）。"
+        ),
+        json_schema_extra={"label": "反证扣减", "hint": "0-1；默认 0.2", "order": 14},
+    )
+    merge_bonus: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "重复提案合并时的信度加成（P7）：``merged = min(本次, 旧值 + bonus)``，"
+            "且**仅当来自新的独立场景才加**——复述不加信（HDSI 2.1）。"
+        ),
+        json_schema_extra={"label": "合并信度加成", "hint": "默认 0.05", "order": 15},
+    )
+
+    relation_min_days: int = Field(
+        default=3,
+        ge=1,
+        le=365,
+        description=(
+            "关系确定性晋升的起步门槛（E14）：累计正向场景日达到该值才可能首次晋升。"
+            "正向场景日 = 「用户主动发起」∪「主动消息被承接」按自然日去重。"
+        ),
+        json_schema_extra={"label": "关系起步场景日", "hint": "默认 3", "order": 16},
+    )
+    relation_days_per_step: int = Field(
+        default=2,
+        ge=1,
+        le=30,
+        description="每新增多少个正向场景日提升一档（E14）。",
+        json_schema_extra={"label": "关系每档场景日", "hint": "默认 2", "order": 17},
+    )
+    relation_step: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description="关系维度每档的提升幅度（E14）。",
+        json_schema_extra={"label": "关系档位步长", "hint": "默认 0.05", "order": 18},
+    )
+    relation_max: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "关系维度确定性晋升的上限（E14）。留出余量给批 5 的 LLM 提案与人工调整——"
+            "确定性计数不该把关系推到顶格。"
+        ),
+        json_schema_extra={"label": "关系上限", "hint": "0-1；默认 0.8", "order": 19},
+    )
+
+    projection_limit: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description=(
+            "读取端限流（R28 / P8）：注入的慢变软倾向**最多**几条（按相关度排序）。"
+            "HDSI 3.1 口径默认 2。"
+        ),
+        json_schema_extra={"label": "软倾向注入上限", "hint": "默认 2", "order": 20},
+    )
+
+
 class TelemetrySection(PluginConfigBase):
     """验收采样（5 指标，见 .scratch/narrative-persona/acceptance-dashboard.md）。"""
 
@@ -637,6 +825,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     anchor: AnchorSection = Field(default_factory=AnchorSection)
     narrative: NarrativeSection = Field(default_factory=NarrativeSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)
+    promotion: PromotionSection = Field(default_factory=PromotionSection)
     llm: LLMSection = Field(default_factory=LLMSection)
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
 
@@ -648,6 +837,7 @@ __all__ = [
     "AnchorSection",
     "NarrativeSection",
     "ProactiveSection",
+    "PromotionSection",
     "LLMSection",
     "TelemetrySection",
     "MaiNarrativePluginConfig",

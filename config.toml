@@ -119,6 +119,54 @@ show_prompt = false
 [telemetry]
 enabled = true
 
+# ===== 慢变晋升机（批 4）=====
+# 本段只控制**晋升行为**，不承载学习成果（`[learned]` 刻意不声明进 config.py，
+# 见下方注释与 ADR-0002 决策 6）。
+# ⚠️ 关系晋升的证据源是 metrics/*.csv（用户主动发起 + 主动消息承接），受
+#    [telemetry].enabled 与 [plugin].enabled **双门控**：关掉验收采样 = 关掉关系
+#    晋升的证据源（刻意取舍：不为此另建事件表）。读到 0 条时会打一条 WARN 提示。
+[promotion]
+enabled = true
+# 冷启动 seed：首次上线从锚定层 world/values 派生 world_view/life_goals 初值作基线
+seed_on_start = true
+# 提案提炼间隔（小时）：168 = 周度
+interval_hours = 168
+# 提炼失败后的退避（小时）；**重启后必再试一次**（失败指纹不持久化）
+failure_backoff_hours = 6
+# 输入充分性：证据条目少于此值直接不调 LLM
+min_evidence_entries = 5
+# 单次提炼最多采纳的提案条数
+max_proposals = 8
+
+# ── 晋升门槛（P3/P4/P6/P7，回放台定标；初值抄 HDSI 3.1）──
+# minor：置信 ≥0.82 且 场景 ≥3 且 跨日 ≥2 且 未冷却
+minor_confidence = 0.82
+minor_min_scenes = 3
+minor_min_days = 2
+# 同路径晋升冷却（小时），跨重启持久化
+cooldown_hours = 72
+# major：置信 ≥0.95 且 场景 ≥2，默认关
+major_enabled = false
+major_confidence = 0.95
+major_min_scenes = 2
+# 反证命中扣减的置信
+refutation_penalty = 0.2
+# 重复提案合并的信度加成（仅新独立场景才加）
+merge_bonus = 0.05
+
+# ── 关系确定性晋升（E14）──
+# 正向场景日 =「用户主动发起」∪「主动消息被承接」按自然日去重
+# 起步 3 日；每新增 2 日 +0.05；上限 0.8（留余量给批 5 的 LLM 提案与人工）
+# ⚠️ boundaries 维度**不参与**自动晋升（计数推不出「抗议/舒适」的交互质量）
+relation_min_days = 3
+relation_days_per_step = 2
+relation_step = 0.05
+relation_max = 0.8
+
+# ── 读取端限流（R28）──
+# 注入的慢变软倾向最多几条（按相关度排序）
+projection_limit = 2
+
 # ===== 学习层投影（批 3-C2 / ADR-0002 决策 6）=====
 # ⚠️ 本段**刻意不声明进 config.py**（不进 WebUI 表单）：一旦进表单，用户保存任一配置时
 #    表单会以 stale 值整体回写，冲掉批 4 写入的学习成果——这正是当初预判并规避的事故链。

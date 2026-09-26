@@ -45,9 +45,16 @@ from .services import (
     is_injected_item,
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
-from .services.state.continuity import current_relationship_stage
+from .services.state.continuity import PromotionEngine, current_relationship_stage
 from .services.learning.drift_style import describe_drift
 from .services.learning.projection import get_style_projection, is_self_write_in_progress
+# 互动配对（批 4-C2 / R31）：**只建不消费**——落点照建，晋升通道先不接。
+# ⚠️ 注意本 import 只出现在 plugin 层：晋升链路（continuity/proposal/evidence）
+# 禁止 import 本模块，由 pytests/test_pairs.py 的 AST 断言守住。
+from .services.learning.pairs import PairTracker, message_id_of
+# 慢变晋升（批 4-C3/C4/C5）：提案提炼 + 冷启动 seed
+from .services.learning.evidence import positive_signal_days
+from .services.learning.proposal import ProposalRunner, seed_perspective
 from .services.proactive.scheduler import validate_rules
 from .services.render.audience import drop_diary, filter_entries, visible_chronicle
 from .services.render.replyer_block import build_replyer_block, build_style_item, is_style_item
@@ -113,6 +120,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
     #: 单测常用 ``__new__`` 绕过 ``__init__``，类属性可读，避免假实例 AttributeError。
     _style_inject_count: int = 0
 
+    #: 互动配对追踪（批 4-C2 / R31）。同为**类级**默认值：单测常用 ``__new__``
+    #: 绕过 ``__init__``，而出站 hook 会读它（批 3 的 ``_style_inject_count`` 同款坑）。
+    _pairs: Optional[PairTracker] = None
+
+    #: 冷启动 seed 是否已在本进程尝试过（批 4-C5）。类级默认值同 ``_pairs`` 理由。
+    _seed_attempted: bool = False
+
+    #: 关系晋升节流间隔（分钟，批 4-C4）。读 metrics csv 不便宜，不能每 15s 跑一遍。
+    _RELATION_PROMOTE_INTERVAL_MINUTES: int = 60
+
     def __init__(self) -> None:
         super().__init__()
         self._store: Optional[NarrativeStore] = None
@@ -121,6 +138,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._telemetry: Optional[Telemetry] = None
         # uid↔stream 注册表（含 kv 持久化，防重启后主动消息失联）
         self._streams: Optional[StreamRegistry] = None
+        # 互动配对追踪（批 4-C2 / R31：只建不消费，为批 5 的 LLM 提案攒数据）
+        self._pairs: Optional[PairTracker] = None
+        # 慢变晋升机（批 4）：提案提炼器 + 晋升状态机
+        self._promotion: Optional[ProposalRunner] = None
+        self._promotion_engine: Optional[PromotionEngine] = None
+        # 关系晋升节流（内存；重启即清 → 重启后立刻评估一次）
+        self._last_relation_promote_ts: Optional[datetime.datetime] = None
         # 看门狗任务：不依赖 on_config_update 回调，主动对齐"配置开关 ↔ 后台任务"
         self._watchdog: Optional[asyncio.Task] = None
 
@@ -139,6 +163,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # uid↔stream 注册表：启动时从 kv 回填（防重启后主动消息失联）
         self._streams = StreamRegistry(self._store, self.ctx.logger)
         self._streams.restore()
+        # 互动配对追踪（批 4-C2 / R31）：pending 槽在内存，配对落 interaction_pairs 表。
+        # **只建不消费**——批 4 的任何晋升判定都不读它（AST 断言见 test_pairs.py）。
+        self._pairs = PairTracker(self._store, logger=self.ctx.logger)
+        # 慢变晋升机（批 4-C3/C4）：提案提炼器 + 确定性晋升状态机。
+        # ⚠️ 不在这里 seed——seed 要调 LLM（最多 30s），会拖慢插件加载；
+        # 放到看门狗首轮（见 _maybe_seed_perspective）。
+        self._promotion = ProposalRunner(self)
+        self._promotion_engine = PromotionEngine(self)
         await self._reconcile_all()
         # R14：启动期锚定一致性比对（默认关，见 [anchor].consistency_check）。
         # 放在 _reconcile_all 之后、watchdog 之前——即便它慢/失败，后台任务已就绪。
@@ -332,6 +364,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
             while True:
                 try:
                     await self._reconcile_all()
+                    # 慢变晋升链路（批 4）：seed 只试一次；晋升自带间隔/退避闸门，
+                    # 每 15s 调一次是廉价的（is_due 只读一个 kv 键）。
+                    await self._maybe_seed_perspective()
+                    await self._maybe_run_promotion()
                 except Exception as exc:
                     self.ctx.logger.warning("narrative 看门狗异常: %s", exc, exc_info=True)
                 await asyncio.sleep(15)
@@ -344,6 +380,88 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return
         await self._engine.reconcile()
         await self._proactive.reconcile()
+
+    # ===== 慢变晋升（批 4-C3/C4/C5）=====
+
+    async def _maybe_seed_perspective(self) -> None:
+        """冷启动播种（R15）：每进程只试一次；失败留空 + WARN，下次启动再试。
+
+        ⚠️ 刻意**不在 on_load 里**做：seed 要调 LLM（超时 30s），放在加载期会拖慢
+        插件加载；放看门狗首轮则启动即刻返回，播种在后台完成。
+        """
+        if self._seed_attempted:
+            return
+        if self._store is None or self._engine is None:
+            return
+        if not (self.config.plugin.enabled and self.config.narrative.enabled):
+            # 开关没打开**不消耗**「已尝试」名额——用户随后打开开关仍能播种
+            return
+        self._seed_attempted = True
+        try:
+            result = await seed_perspective(self, now=self._local_now())
+        except Exception as exc:  # 播种失败绝不阻断任何东西
+            self.ctx.logger.warning("narrative 冷启动 seed 异常（不阻断）: %s", exc)
+            return
+        status = str(result.get("status") or "")
+        if status == "ok":
+            self.ctx.logger.info(
+                "narrative 冷启动 seed 完成：world_view=%s", result.get("world_view")
+            )
+        elif status not in ("already", "disabled"):
+            self.ctx.logger.warning(
+                "narrative 冷启动 seed 未完成（status=%s），下次启动会重试", status
+            )
+
+    async def _maybe_run_promotion(self) -> None:
+        """慢变晋升 tick：提案 → 反证 → 晋升 → 关系确定性晋升。
+
+        节流交给 ``ProposalRunner`` 自己的间隔/退避闸门（``is_due`` 只读一个 kv 键），
+        所以 15s 调一次是廉价的。
+        """
+        if self._promotion is None or self._promotion_engine is None or self._store is None:
+            return
+        if not (self.config.plugin.enabled and self.config.narrative.enabled):
+            return
+        if not self.config.promotion.enabled:
+            return
+        now = self._local_now()
+
+        result = await self._promotion.run(now=now)
+        if str(result.get("status") or "") == "ok":
+            # 反证先于晋升：被引用的旧提案先被驳回，免得它同一轮又被应用一次
+            self._promotion_engine.apply_refutations(now=now)
+            for row in self._store.list_proposals(status="pending", limit=200):
+                self._promotion_engine.apply(row, now=now)
+
+        self._maybe_promote_relationship(now)
+
+    def _maybe_promote_relationship(self, now: datetime.datetime) -> None:
+        """关系确定性晋升（强约束 1/2）：按正向场景日推进 trust / closeness。
+
+        ⚠️ 节流 60 分钟：读 ``metrics/*.csv`` 不便宜，而关系值的变化尺度是天/周。
+        ⚠️ 正向信号为 0 时 WARN 一次——最常见成因是 ``[telemetry].enabled`` 被关掉
+        （关掉验收采样 = 关掉关系晋升的证据源，见 config.toml 的 [promotion] 注释）。
+        """
+        if self._promotion_engine is None or self._store is None:
+            return
+        if self._last_relation_promote_ts is not None:
+            elapsed = (now - self._last_relation_promote_ts).total_seconds() / 60
+            if elapsed < self._RELATION_PROMOTE_INTERVAL_MINUTES:
+                return
+        self._last_relation_promote_ts = now
+        warned = False
+        for uid in self._mode_user_ids():
+            days = positive_signal_days(self._store, uid)
+            if not days:
+                if not warned:
+                    self.ctx.logger.warning(
+                        "叙事关系晋升：正向信号为 0（uid=%s）——请确认 [telemetry].enabled "
+                        "与 [plugin].enabled 均为 true（关掉验收采样 = 关掉关系晋升的证据源）",
+                        uid,
+                    )
+                    warned = True
+                continue
+            self._promotion_engine.promote_relationship(uid, days, now=now)
 
     # ===== 消息辅助（字段细节与 always-reply-private 一致） =====
 
@@ -456,6 +574,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
         elif self._telemetry.is_user_initiated(stream_id or user_id, now):
             # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
             self._engine.record_urge_feedback(user_id, "user_initiated")
+        # 互动配对（批 4-C2 / R31）：把本次入站登记为「待配对的用户反馈」，
+        # 等本轮出站时与之配成（用户反馈 id → 已送达回应 id）。只建不消费。
+        if self._pairs is not None:
+            self._pairs.note_inbound(user_id, message_id_of(message), now)
         self.ctx.logger.debug("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
         return {"action": "continue", "modified_kwargs": kwargs}
 
@@ -498,6 +620,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
             message=message,
             now=self._local_now(),
         )
+        # 互动配对（批 4-C2 / R31）：把本轮出站与最近一条待配对入站配成一对并落盘。
+        # 只建不消费；落盘失败静默（配对是旁路，绝不拖垮发送链路）。
+        if self._pairs is not None:
+            self._pairs.note_outbound(uid, message_id_of(message), self._local_now())
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # ===== Hook：剧本上下文注入 =====

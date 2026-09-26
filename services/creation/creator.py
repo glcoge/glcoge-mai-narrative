@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 
 class CreatorClient:
@@ -29,13 +29,17 @@ class CreatorClient:
         # 按名路由提示只打一次（见 _log_route_hint_once）
         self._route_hint_logged = False
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, prompt: str, *, temperature: Optional[float] = None) -> str:
         """生成一段文本；失败返回空串（当前是唯一常规 LLM 调用点）。
 
         走 ``[llm].creation_model`` 按模型名路由（须为已注册模型名；
         留空则用主程序默认模型）。
+
+        Args:
+            temperature: 覆盖配置温度。批 4 的提案提炼需要**更确定**的输出
+                （要解 JSON），而创作层默认 0.9 偏高；留 None 即沿用配置值。
         """
-        text = await self._generate_via_model(prompt)
+        text = await self._generate_via_model(prompt, temperature=temperature)
         if not text:
             return ""
         # 成本采样（指标 5）：按字符粗估 token，写入 llm_extra_tokens
@@ -46,7 +50,9 @@ class CreatorClient:
             telemetry.record_llm_tokens(float(tokens_approx), task="creation")
         return text
 
-    async def _generate_via_model(self, prompt: str) -> str:
+    async def _generate_via_model(
+        self, prompt: str, *, temperature: Optional[float] = None
+    ) -> str:
         """按模型名路由（``llm.generate``，``task_name`` 与 ``model_name`` 分别指定）。
 
         ``model_name`` 指向全局模型列表中任意已注册模型（含只注册、未分配任务的）；
@@ -67,7 +73,9 @@ class CreatorClient:
             result = await asyncio.wait_for(
                 self._plugin.ctx.llm.generate(
                     prompt,
-                    temperature=cfg.llm.temperature,
+                    temperature=(
+                        float(temperature) if temperature is not None else cfg.llm.temperature
+                    ),
                     # major 档 400 字会截断（原固定 256）
                     max_tokens=int(cfg.llm.creation_max_tokens or 1024),
                     **payload_kwargs,
