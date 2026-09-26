@@ -647,8 +647,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             f"阶段: {inner['routine']['phase']}",
             f"睡眠: {_sleep_status_line(cfg.narrative, inner.get('routine', {}))}",
         ]
-        # 生活片段（创作层产出，v0.1.3 起是"心里挂念"的唯一来源；批 2 已删废弃的
-        # hot_thread 展示行——该字段早已无写入点，展示恒不触发）
+        # 生活片段（创作层产出，v0.1.3 起是"心里挂念"的唯一来源）
         visible_pending = filter_entries(
             inner.get("focus", {}).get("pending_events", []), audience
         )
@@ -810,11 +809,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "mood_energy": float(mood.get("energy", 0.5)),
                 "mood_shift_ts": str(mood.get("last_shift_ts", "")),
                 "routine_phase": str(inner["routine"].get("phase", "")),
-                # ⚠ 跨插件契约字段（批 2 保留，不删）：diary 侧
-                # `services/diary/prompts.py:53-55` 真的在读它并渲染成
-                # 「心里挂着：…」进日记 prompt。插件内的写入点在 v0.1.3 已删（无源
-                # 可填），故此处恒空——保留字段是为避免无谓的跨插件破坏性变更。
-                "hot_thread": "",
+                # 2026-09-26 用户裁定删除 hot_thread（推翻同日批 2 的「冻结保留」决定）：
+                # 该字段自 v0.1.3 起无写入点（恒空），diary 侧读取点已同轮删除
+                # （`glcoge-mai-diary/services/diary/prompts.py`）→ 双侧 lockstep 收敛，
+                # 不存在单侧"静默降级"缺口。细节见登记表「跨插件契约字段」节。
                 "latest_life_fragment": (
                     str(
                         list(inner.get("focus", {}).get("pending_events", []))[-1]
