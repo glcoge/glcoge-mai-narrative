@@ -18,10 +18,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from ..proactive.sourcing import overlap_ratio
 from ..state.continuity import (
     build_guard_keywords,
     current_relationship_stage,
     filter_guarded_entries,
+    is_slow_field_visible,
 )
 from ..state.engine import (
     INJECT_TEXT_CAP,
@@ -32,6 +34,22 @@ from ..state.engine import (
 from .audience import filter_entries
 
 _EXTRA_ITEM = "_narrative_life_context"
+
+#: 慢变软倾向段的注入条数上限（R28 / P8）。真值读 ``[promotion].projection_limit``，
+#: 此常量只作配置缺失时的兜底——**上限存在的理由**：慢变区条目是长期倾向，
+#: 全部塞进上下文会把「这一轮具体在聊什么」挤掉（HDSI「上限被读成天花板」的反向教训）。
+SLOW_TENDENCY_LIMIT = 2
+
+#: 软倾向段标题。措辞是本段的**授权声明**（ADR-0003 §7 文学授权）：
+#: 「是倾向，不是必需反应，不是不变身份」——三连否定缺一不可，
+#: 少了「不是必需反应」模型会把倾向当硬性任务执行（HDSI「授权被压缩丢失」事故）。
+_SLOW_TENDENCY_HEADER = (
+    "- 她此刻的倾向（**是倾向，不是必需反应，也不是不变的身份**——"
+    "贴合当下场景自然体现就好，不必刻意提起）："
+)
+
+#: 慢变区的**文本**维度（浮点维度不参与：数字没法当"倾向"表述）。
+_SLOW_TEXT_PATHS = ("perspective.world_view", "perspective.life_goals", "relationship.stage")
 
 # 主动轮指令：当本轮由主动消息触发（生活由头）时附加，压过原生行为准则的"被动"面
 # v0.1.5.x（2026-09-11 复读话尾修复）：① 禁"字面复读"（重复自己上次的句式/用词、
@@ -124,6 +142,98 @@ def build_sleep_hint(plugin: Any, state: Dict[str, Any], now: datetime) -> str:
     return ""
 
 
+def collect_slow_tendencies(
+    state: Dict[str, Any],
+    branch: Optional[Dict[str, Any]],
+    *,
+    audience: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """收集「慢变倾向」候选文本条目（**受众过滤后**）。
+
+    返回 ``[{"path": ..., "text": ...}, ...]``，顺序＝维度登记顺序（相关度排序在
+    :func:`build_slow_tendencies` 里做，本函数只负责「谁能被看见」）。
+
+    受众规则**不在本函数里重写**，一律走 ``is_slow_field_visible``：
+    - general（``perspective.*``）→ 任何受众可见；
+    - per_user（``relationship.*``）→ 只对归属人可见，``audience`` 为空时 fail-closed 隐藏。
+
+    ⚠️ 传 ``owner_uid=audience`` 的理由：调用方传入的 ``branch`` 就是**当前会话这个人**
+    的支线状态，因此"归属者"就是当前受众；``audience`` 为空时该参数也为空，
+    于是 per_user 一律不可见（fail-closed）。
+    """
+    candidates: List[Dict[str, str]] = []
+
+    perspective = state.get("perspective") if isinstance(state, dict) else None
+    if isinstance(perspective, dict):
+        world_view = str(perspective.get("world_view") or "").strip()
+        if world_view:
+            candidates.append({"path": "perspective.world_view", "text": world_view})
+        goals = perspective.get("life_goals")
+        for goal in goals if isinstance(goals, list) else []:
+            text = str(goal or "").strip()
+            if text:
+                candidates.append({"path": "perspective.life_goals", "text": text})
+
+    relationship = branch.get("relationship") if isinstance(branch, dict) else None
+    if isinstance(relationship, dict):
+        stage = str(relationship.get("stage") or "").strip()
+        if stage:
+            candidates.append(
+                {"path": "relationship.stage", "text": f"与这位玩家的关系已到「{stage}」"}
+            )
+
+    owner = str(audience or "").strip()
+    return [
+        item
+        for item in candidates
+        if item["path"] in _SLOW_TEXT_PATHS
+        and is_slow_field_visible(item["path"], owner, owner_uid=owner)
+    ]
+
+
+def build_slow_tendencies(
+    plugin: Any,
+    state: Dict[str, Any],
+    branch: Optional[Dict[str, Any]],
+    *,
+    audience: Optional[str] = None,
+    query: str = "",
+    limit: Optional[int] = None,
+    exclude: tuple = (),
+) -> List[str]:
+    """挑出要注入的慢变倾向文本（受众过滤 → 守卫 → 相关度排序 → 限流）。
+
+    - **相关度**＝字符 bigram Jaccard（复用批 1 ``sourcing.overlap_ratio`` 口径，
+      零依赖、离线可重算），按降序排列；分数相同保持登记顺序（``sorted`` 稳定）。
+    - **上限**读 ``[promotion].projection_limit``（P8），缺省回退
+      :data:`SLOW_TENDENCY_LIMIT`。
+    - **守卫**：注入前过 ``filter_guarded_entries``（与批 2 同一道闸）。
+    - ``exclude``：调用方已渲染过的路径（``build_context_block`` 用它排掉
+      关系阶段——那条已由专门的关系行呈现，重复渲染只是噪声）。
+    """
+    candidates = [
+        item
+        for item in collect_slow_tendencies(state, branch, audience=audience)
+        if item["path"] not in exclude
+    ]
+    guard_set = build_guard_keywords(plugin.config)
+    candidates = filter_guarded_entries(candidates, guard_set)
+    if not candidates:
+        return []
+
+    if limit is None:
+        configured = getattr(getattr(plugin.config, "promotion", None), "projection_limit", None)
+        try:
+            limit = int(configured)
+        except (TypeError, ValueError):
+            limit = SLOW_TENDENCY_LIMIT
+    cap = max(1, int(limit or SLOW_TENDENCY_LIMIT))
+
+    context = str(query or "")
+    ranked = sorted(candidates, key=lambda item: -overlap_ratio(item["text"], context))
+    return [item["text"] for item in ranked[:cap]]
+
+
 def build_context_block(
     plugin: Any,
     state: Dict[str, Any],
@@ -206,6 +316,27 @@ def build_context_block(
             + "\n".join(f"    - {fragment[:INJECT_TEXT_CAP]}" for fragment in fragments)
         )
 
+    # 慢变软倾向（批 4-C7 / R28）：由晋升机长期累积的「看法/人生目标」，按与**本场戏
+    # 的相关度**挑最多 projection_limit 条注入。相关度用本轮可见素材文本做 query。
+    # 关系阶段刻意排除：它由下面那条专门的关系行呈现（重复渲染只是噪声）。
+    tendency_query = " ".join(
+        [str(entry.get("text", "")) for entry in guarded_entries] + ([bysource] if bysource else [])
+    )
+    tendencies = build_slow_tendencies(
+        plugin,
+        state,
+        branch,
+        audience=audience,
+        query=tendency_query,
+        exclude=("relationship.stage",),
+    )
+    if tendencies:
+        lines.append(
+            _SLOW_TENDENCY_HEADER
+            + "\n"
+            + "\n".join(f"    - {item[:INJECT_TEXT_CAP]}" for item in tendencies)
+        )
+
     if branch is not None:
         # 关系呈现（批 2 空窗期）：stage 由**只读事实**确定性推导（continuity），
         # 旧的 familiarity/trust 数字不再显示（那是只进不退的假演化，E2 裁决）。
@@ -260,8 +391,11 @@ def build_context_block(
 
 
 __all__ = [
+    "SLOW_TENDENCY_LIMIT",
     "build_context_block",
     "build_injected_item",
     "build_sleep_hint",
+    "build_slow_tendencies",
+    "collect_slow_tendencies",
     "is_injected_item",
 ]

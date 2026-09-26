@@ -45,9 +45,18 @@ from .services import (
     is_injected_item,
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
-from .services.state.continuity import PromotionEngine, current_relationship_stage
+from .services.state.continuity import (
+    SLOW_FIELD_PATHS,
+    PromotionEngine,
+    current_relationship_stage,
+)
 from .services.learning.drift_style import describe_drift
-from .services.learning.projection import get_style_projection, is_self_write_in_progress
+from .services.learning.projection import (
+    get_style_projection,
+    is_self_write_in_progress,
+    rebuild_projection,
+    write_projection,
+)
 # 互动配对（批 4-C2 / R31）：**只建不消费**——落点照建，晋升通道先不接。
 # ⚠️ 注意本 import 只出现在 plugin 层：晋升链路（continuity/proposal/evidence）
 # 禁止 import 本模块，由 pytests/test_pairs.py 的 AST 断言守住。
@@ -407,6 +416,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self.ctx.logger.info(
                 "narrative 冷启动 seed 完成：world_view=%s", result.get("world_view")
             )
+            self._project_learned()
         elif status not in ("already", "disabled"):
             self.ctx.logger.warning(
                 "narrative 冷启动 seed 未完成（status=%s），下次启动会重试", status
@@ -430,10 +440,56 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if str(result.get("status") or "") == "ok":
             # 反证先于晋升：被引用的旧提案先被驳回，免得它同一轮又被应用一次
             self._promotion_engine.apply_refutations(now=now)
+            applied_any = False
             for row in self._store.list_proposals(status="pending", limit=200):
-                self._promotion_engine.apply(row, now=now)
+                if self._promotion_engine.apply(row, now=now).get("applied"):
+                    applied_any = True
+            if applied_any:
+                # 有晋升落库才写回投影（E5：只投影 general 维度；relationship 绝不落盘）
+                self._project_learned()
 
         self._maybe_promote_relationship(now)
+
+    def _project_learned(self) -> None:
+        """把 general 慢变现值写回 ``config.toml`` 的 ``[learned]`` 投影（批 4-C6）。
+
+        ⚠️ 写回失败**不影响晋升**：db 才是事实源，投影损坏可从 db 重建
+        （``rebuild_projection``）。此处只 WARN，绝不冒泡打断看门狗。
+        """
+        if self._engine is None:
+            return
+        try:
+            written = write_projection(
+                self._config_path(),
+                self._engine.load_self_state(),
+                logger=self.ctx.logger,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 投影是附属品，不得反噬主链路
+            self.ctx.logger.warning(
+                "narrative [learned] 投影写回失败（不影响晋升，可从 db 重建）: %s", exc
+            )
+            return
+        if written:
+            self.ctx.logger.debug("narrative [learned] 投影已写回：%s", sorted(written))
+
+    def _rebuild_learned(self) -> None:
+        """权威重建 ``[learned]`` 投影（回滚后用：被清空的维度要一起从投影里消失）。
+
+        与 :meth:`_project_learned` 的差别＝**会删**。回滚把某个 general 维度清空时，
+        增量写回不会移除投影里的旧值，必须走重建。
+        """
+        if self._engine is None:
+            return
+        try:
+            rebuild_projection(
+                self._config_path(),
+                self._engine.load_self_state(),
+                logger=self.ctx.logger,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 同 _project_learned：投影不得反噬主链路
+            self.ctx.logger.warning(
+                "narrative [learned] 投影重建失败（不影响回滚）: %s", exc
+            )
 
     def _maybe_promote_relationship(self, now: datetime.datetime) -> None:
         """关系确定性晋升（强约束 1/2）：按正向场景日推进 trust / closeness。
@@ -822,6 +878,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if command == "reset":
             await self._cmd_reset(param, stream_id)
             return True, "done", True
+        if command == "rollback":
+            await self._cmd_rollback(param, stream_id)
+            return True, "done", True
         await self.ctx.send.text(f"未知子命令: {command}。/narrative help 查看用法", stream_id)
         return False, "unknown sub", True
 
@@ -837,9 +896,61 @@ class MaiNarrativePlugin(MaiBotPlugin):
             "/narrative help            - 查看本帮助\n"
             "/narrative status          - 剧本状态摘要（模式/心情/关系/编年史）\n"
             "/narrative reset           - 重置状态与事件（先输入 'reset' 显示确认）\n"
+            "/narrative rollback [路径] - 撤销最近一次慢变晋升（last=最近一条；\n"
+            "                             路径如 perspective.world_view）\n"
             "说明：配置在 WebUI 插件页修改（[identity] 锚定层人设请手动填写）。"
         )
         await self.ctx.send.text(text, stream_id)
+
+    async def _cmd_rollback(self, param: str, stream_id: str) -> None:
+        """撤销最近一次慢变晋升（批 4-C8）。
+
+        ``/narrative rollback`` 或 ``... last`` → 全表最近一条 applied；
+        ``/narrative rollback <path>`` → 该路径最近一条。
+        """
+        if self._promotion_engine is None or self._store is None:
+            await self.ctx.send.text("⚠️ 晋升机未启用（[promotion].enabled=false）", stream_id)
+            return
+        requested = str(param or "").strip()
+        if requested in ("", "last"):
+            path = ""
+        elif requested in SLOW_FIELD_PATHS:
+            path = requested
+        else:
+            valid = "、".join(sorted(SLOW_FIELD_PATHS))
+            await self.ctx.send.text(
+                f"⚠️ 路径不在慢变白名单：{requested}\n可选：{valid}（或 last）", stream_id
+            )
+            return
+
+        result = self._promotion_engine.rollback_last(path=path, now=self._local_now())
+        status = str(result.get("status") or "")
+        if status == "nothing":
+            await self.ctx.send.text(
+                "没有可撤销的晋升记录"
+                + (f"（路径 {path}）" if path else "")
+                + "。",
+                stream_id,
+            )
+            return
+        if status == "missing_scope":
+            await self.ctx.send.text(
+                f"⚠️ 该晋升是关系维度（{result.get('path')}）但审计缺少归属用户，"
+                "拒绝瞎猜——请手工核对后处理。",
+                stream_id,
+            )
+            return
+
+        target = str(result.get("path") or "")
+        await self.ctx.send.text(
+            f"↩️ 已撤销最近一次晋升：{target}\n"
+            f"恢复旧值：{result.get('restored')!r}\n"
+            f"（审计 promotion_id={result.get('promotion_id')}）",
+            stream_id,
+        )
+        # 投影跟着事实源走（只 general 维度才需要动 config.toml）
+        if target.startswith("perspective."):
+            self._rebuild_learned()
 
     async def _cmd_status(self, stream_id: str, audience: str = "") -> None:
         """状态摘要（不含聊天正文）。

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 # ─── 慢变区白名单（ADR-0002 §1） ──────────────────────────────────
@@ -250,6 +251,53 @@ def slow_set(state: Dict[str, Any], path: str, value: Any, *, actor: str) -> str
     return path
 
 
+#: 由「文本形态」还原的慢变维度（LLM 提案与审计表里，值恒为字符串）。
+#: ⚠️ ``stage`` **不在**浮点集合里——它是阶段标签（"亲近"），不是数值。
+_LIST_LEAVES: FrozenSet[str] = frozenset({"life_goals"})
+_FLOAT_LEAVES: FrozenSet[str] = frozenset({"trust", "closeness", "boundaries"})
+
+
+def coerce_slow_value(path: str, value: Any) -> Any:
+    """把慢变值还原成该维度的**真实类型**（批 4 实现期发现，rollback 与 apply 共用）。
+
+    提案通道与 ``promotions`` 审计表里的值**恒为字符串**（``proposed_value`` 的契约
+    是非空文本），但慢变维度里 ``life_goals`` 是列表、``trust``/``closeness`` 是浮点。
+    不还原就直接写，是**静默数据损坏**：列表被写成字符串（下一轮 ``normalize_*``
+    再把它重置成空）、浮点被写成字符串（下游 ``float()`` 才发现）。
+
+    - ``life_goals``：已是列表则原样；字符串先试 JSON，再按行/分号切分；都不成 → 单项列表
+    - ``trust``/``closeness``/``boundaries``/``stage``：转浮点（失败 → 0.0）
+    - 其余（``world_view``）：转字符串
+    """
+    leaf = str(path or "").rsplit(".", 1)[-1]
+    if leaf in _LIST_LEAVES:
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value if str(item).strip()]
+        text = str(value if value is not None else "").strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        parts = [
+            piece.strip()
+            for line in text.splitlines()
+            for piece in line.replace("；", ";").split(";")
+        ]
+        cleaned = [piece for piece in parts if piece]
+        return cleaned or [text]
+    if leaf in _FLOAT_LEAVES:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+    return str(value if value is not None else "")
+
+
 def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Iterable[str]) -> Set[str]:
     """汇总守卫关键词（ADR-0002 §9 双向守卫）。
 
@@ -440,6 +488,17 @@ def _row_field(row: Any, key: str) -> str:
     except (TypeError, KeyError, IndexError):
         return ""
     return str(value or "").strip()
+
+
+def audit_text(value: Any) -> str:
+    """把慢变值编码成**可逆**的审计文本（列表走 JSON，其余走 str）。
+
+    ``promotions`` 表的 old/new 值是回滚的依据——列表若用 ``str()`` 落库会变成
+    ``"['学会游泳']"``（单引号，不是合法 JSON），回滚时就解析不回来。
+    """
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value if value is not None else "")
 
 
 def parse_id_list(text: Any) -> List[int]:
@@ -684,7 +743,9 @@ class PromotionEngine:
             return dict(decision, applied=False)
 
         path = _row_field(proposal, "path")
-        new_value = _row_field(proposal, "proposed_value")
+        # 提案契约里的值恒为字符串；慢变维度里 life_goals 是列表、trust 是浮点 →
+        # 先还原真实类型再写，否则是静默数据损坏（见 coerce_slow_value）。
+        new_value = coerce_slow_value(path, _row_field(proposal, "proposed_value"))
         engine = self._plugin._engine
         state = engine.load_self_state()
         normalize_perspective(state)
@@ -700,8 +761,8 @@ class PromotionEngine:
             action="applied",
             target=_row_field(proposal, "target") or "perspective",
             path=path,
-            old_value=str(old_value if old_value is not None else ""),
-            new_value=new_value,
+            old_value=audit_text(old_value),
+            new_value=audit_text(new_value),
             reason=str(decision["reason"]),
             proposal_id=int(proposal_id) if proposal_id is not None else None,
             ts=self._iso(now),
@@ -714,12 +775,12 @@ class PromotionEngine:
         self._store.append_chronicle(
             "self",
             "promotion",
-            f"看法更新（{decision['reason']}）：{path} ← {new_value}",
+            f"看法更新（{decision['reason']}）：{path} ← {audit_text(new_value)}",
             ts=self._iso(now),
         )
         self._count("promotions")
         return dict(
-            decision, applied=True, old_value=str(old_value or ""), new_value=new_value
+            decision, applied=True, old_value=audit_text(old_value), new_value=new_value
         )
 
     # ── 反证 ────────────────────────────────────────────────────
@@ -808,8 +869,8 @@ class PromotionEngine:
                 action="applied",
                 target="relationship",
                 path=f"relationship.{dimension}",
-                old_value=str(current),
-                new_value=str(value),
+                old_value=audit_text(current),
+                new_value=audit_text(value),
                 reason="positive_signal_days",
                 source_uid=str(uid),
                 ts=self._iso(now),
@@ -830,6 +891,114 @@ class PromotionEngine:
             "stage": relationship.get("stage"),
         }
 
+    # ── 回滚（批 4-C8） ─────────────────────────────────────────
+
+    def rollback_last(
+        self, *, path: str = "", now: datetime.datetime
+    ) -> Dict[str, Any]:
+        """按 ``promotions`` 表逆序恢复**最后一次 applied** 的旧值。
+
+        Args:
+            path: 指定路径（如 ``perspective.world_view``）；空 → 取全表最近一条 applied。
+
+        Returns:
+            ``{"status": "rolled_back"|"nothing"|"missing_scope", ...}``。
+
+        设计口径：
+        - **只回滚一步**。慢变区是"小步可动、须留痕"的；一次撤多步会让「哪一步被撤了」
+          无法叙述（留痕链断裂）。要连撤就多调几次，每步各自留痕。
+        - 回滚后**冷却照常标记**：撤完立刻再晋升同一个值没有意义（会立刻被同一批证据
+          推回去），留着冷却给人工介入的窗口。
+        - ``relationship.*`` 的值是 per_user：必须靠审计行里的 ``source_uid`` 找到支线；
+          缺 ``source_uid`` 时**拒绝执行**（宁可不动，也不猜是哪个用户）。
+        """
+        rows = self._store.list_promotions(path=path, limit=500)
+        # 已撤销过的 applied 行**必须排除**，否则连调两次会一直撤销同一条
+        # （audit 行不可变，故用 rolled_back 行的 ``rollback_of:<id>`` 反查已消费集合）。
+        reverted = {
+            int(str(row.get("reason") or "").split(":", 1)[1])
+            for row in rows
+            if str(row.get("action") or "") == "rolled_back"
+            and str(row.get("reason") or "").startswith("rollback_of:")
+            and str(row.get("reason") or "").split(":", 1)[1].isdigit()
+        }
+        target = next(
+            (
+                row
+                for row in rows
+                if str(row.get("action") or "") == "applied"
+                and int(row.get("id") or 0) not in reverted
+            ),
+            None,
+        )
+        if target is None:
+            return {"status": "nothing", "path": path}
+
+        target_path = str(target.get("path") or "")
+        old_value = coerce_slow_value(target_path, target.get("old_value"))
+        head = target_path.split(".", 1)[0]
+        engine = self._plugin._engine
+
+        if head == "relationship":
+            uid = str(target.get("source_uid") or "").strip()
+            if not uid:
+                # 拒绝瞎猜：关系值按 uid 隔离，不知道是谁就绝不能写
+                return {
+                    "status": "missing_scope",
+                    "path": target_path,
+                    "promotion_id": target.get("id"),
+                }
+            branch = engine.load_branch_state(uid)
+            normalize_relationship(branch)
+            slow_set(branch, target_path, old_value, actor="rollback")
+            relationship = branch["relationship"]
+            relationship["stage"] = derive_stage(
+                float(relationship.get("trust") or 0.0),
+                float(relationship.get("closeness") or 0.0),
+            )
+            engine.save_branch_state(uid, branch)
+            scope = uid
+        else:
+            state = engine.load_self_state()
+            perspective = normalize_perspective(state)
+            slow_set(state, target_path, old_value, actor="rollback")
+            perspective["origin"] = "rollback"
+            perspective["updated_ts"] = self._iso(now)
+            engine.save_self_state(state)
+            scope = "self"
+
+        self._store.append_promotion(
+            action="rolled_back",
+            target=str(target.get("target") or head),
+            path=target_path,
+            old_value=audit_text(target.get("new_value")),
+            new_value=audit_text(old_value),
+            reason=f"rollback_of:{target.get('id')}",
+            source_uid=str(target.get("source_uid") or ""),
+            proposal_id=target.get("proposal_id"),
+            ts=self._iso(now),
+        )
+        proposal_id = target.get("proposal_id")
+        if proposal_id is not None:
+            self._store.update_proposal_status(int(proposal_id), "rolled_back")
+        self.mark_cooldown(target_path, now)
+        # 人可读留痕（与晋升同 kind；该 kind 被证据白名单拒，不会自证循环）
+        self._store.append_chronicle(
+            "self",
+            "promotion",
+            f"回滚（{target_path}）← 恢复旧值：{audit_text(old_value)}",
+            ts=self._iso(now),
+        )
+        self._count("rollbacks")
+        return {
+            "status": "rolled_back",
+            "path": target_path,
+            "scope": scope,
+            "restored": old_value,
+            "promotion_id": target.get("id"),
+            "proposal_id": proposal_id,
+        }
+
 
 __all__ = [
     "ANCHOR_FIELDS",
@@ -848,7 +1017,9 @@ __all__ = [
     "SLOW_WRITE_ACTORS",
     "apply_refutation_penalty",
     "assert_writable",
+    "audit_text",
     "build_guard_keywords",
+    "coerce_slow_value",
     "current_relationship_stage",
     "derive_stage",
     "filter_guarded_entries",

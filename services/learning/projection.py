@@ -25,11 +25,16 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import tomlkit
 
+from ..state.continuity import SLOW_FIELD_AUDIENCE, slow_get
+
 #: ``config.toml`` 里的原始区块名（**不得**声明进 ``config.py``）
 LEARNED_SECTION = "learned"
 
 #: R1 预留槽：二期 LLM 风格提炼的投影（v1 恒空）  # RESERVED(R1)
 STYLE_KEY = "style"
+
+#: 受众标识：只有 ``general`` 维度的现值才允许落 ``config.toml``（批 4-C6 / E5 裁定）。
+GENERAL_AUDIENCE = "general"
 
 # 自写重入计数（嵌套安全；>0 即「当前处于插件自身写回中」）
 _write_depth = 0
@@ -123,14 +128,19 @@ def _to_toml_value(value: Any) -> Any:
     return value
 
 
-def write_learned(path: Any, data: Mapping[str, Any], *, logger: Optional[Any] = None) -> None:
-    """把 ``data`` 增量合并进 ``[learned]`` 区块并写回（保留注释与旁段）。
+def _merge_learned(
+    path: Any,
+    data: Mapping[str, Any],
+    *,
+    remove: Optional[List[str]] = None,
+) -> None:
+    """``[learned]`` 增量合并的公共实现（``write_learned`` / ``rebuild_projection`` 共用）。
 
-    - 只覆盖 ``data`` 里出现的键，``[learned]`` 中已有的其他键**保持原样**；
-    - 区块缺失时新建、追加到文件末尾；
+    - 只覆盖 ``data`` 里出现的键，``[learned]`` 中已有其他键保持原样；
+    - ``remove`` 里的键**先删后写**（重建语义：db 已清空的维度，投影不得留陈旧值）；
+    - 区块缺失时新建并追加到文件末尾；
     - 文件不存在时**抛** ``FileNotFoundError``（不静默新建半成品配置）。
     """
-    del logger  # 写路径不吞异常：解析/权限错误直接抛出，让问题暴露
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"config.toml 不存在，拒绝写回: {config_path}")
@@ -141,7 +151,93 @@ def write_learned(path: Any, data: Mapping[str, Any], *, logger: Optional[Any] =
         if not isinstance(section, Mapping):
             section = tomlkit.table()
             document[LEARNED_SECTION] = section
+        for key in remove or []:
+            if str(key) in section:
+                del section[str(key)]
         for key, value in data.items():
             section[str(key)] = _to_toml_value(value)
         with open(config_path, "w", encoding="utf-8") as handle:
             tomlkit.dump(document, handle)
+
+
+def write_learned(path: Any, data: Mapping[str, Any], *, logger: Optional[Any] = None) -> None:
+    """把 ``data`` 增量合并进 ``[learned]`` 区块并写回（保留注释与旁段）。
+
+    只加不删——删除语义只在 :func:`rebuild_projection`。
+    """
+    del logger  # 写路径不吞异常：解析/权限错误直接抛出，让问题暴露
+    _merge_learned(path, data)
+
+
+# ─── 慢变现值 → [learned] 投影（批 4-C6） ───────────────────────
+
+
+def projected_paths() -> List[str]:
+    """可投影到 ``config.toml`` 的慢变维度＝受众表里所有 ``general`` 项。
+
+    **刻意自动派生，不手写白名单**：将来新增 per_user 维度（如 relationship 家族）
+    会因受众是 ``per_user`` 被自动排除，不可能因「忘了同步投影名单」而泄露。
+    这是 fail-closed 在投影侧的同一口径（E5：只投影 general）。
+    """
+    return [
+        path for path, audience in SLOW_FIELD_AUDIENCE.items() if audience == GENERAL_AUDIENCE
+    ]
+
+
+def _leaf(path: str) -> str:
+    """``perspective.world_view`` → ``world_view``（``[learned]`` 里用扁平键）。"""
+    return str(path).rsplit(".", 1)[-1]
+
+
+def build_projection(state: Mapping[str, Any]) -> Dict[str, Any]:
+    """从自我层 state 抽出可投影的 general 慢变现值（纯函数，不碰磁盘）。
+
+    空值（``""`` / ``[]`` / None）**跳过**：投影是「给她看的当前看法」，
+    写一条空值只会把已有内容抹掉，没有任何信息量。
+    """
+    data: Dict[str, Any] = {}
+    for path in projected_paths():
+        value = slow_get(dict(state), path)
+        if value is None or value == "" or value == []:
+            continue
+        data[_leaf(path)] = value
+    return data
+
+
+def write_projection(
+    path: Any,
+    state: Mapping[str, Any],
+    *,
+    logger: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """把 general 慢变现值**增量**写回 ``[learned]``（晋升 / seed 成功后调用）。
+
+    返回实际写入的键值（便于调用方日志与断言）。只加不删：一次失败的重建
+    不该把已写好的投影抹掉。
+    """
+    data = build_projection(state)
+    if not data:
+        return {}
+    write_learned(path, data, logger=logger)
+    return data
+
+
+def rebuild_projection(
+    path: Any,
+    state: Mapping[str, Any],
+    *,
+    logger: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """从事实源（db 现值）**权威重建** ``[learned]`` 投影。
+
+    与 :func:`write_projection` 的差别＝**会删**：db 里已清空的 general 维度，
+    投影中的陈旧键会被一并移除——用于回滚（C8）与人工修复「投影与 db 不一致」。
+
+    ⚠️ ``remove`` 只覆盖 ``projected_paths()``（general 白名单），**不会**碰
+    ``[learned]`` 里的其它键（如 R1 的 ``style`` 槽与用户手写内容）。
+    """
+    del logger
+    data = build_projection(state)
+    remove = [_leaf(item) for item in projected_paths() if _leaf(item) not in data]
+    _merge_learned(path, data, remove=remove)
+    return data
