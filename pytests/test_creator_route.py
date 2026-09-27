@@ -51,16 +51,20 @@ class _ListHandler(_stdlib_logging.Handler):
 class _FakeLLM:
     """记录 generate 载荷的假 llm 能力。"""
 
-    def __init__(self, *, available=None, raise_on_generate=None) -> None:
+    def __init__(self, *, available=None, raise_on_generate=None, result=None) -> None:
         self.calls: list = []
         self.availability_queries = 0
         self._available = list(available or [])
         self._raise = raise_on_generate
+        # 宿主失败时**不抛异常**，而是返回 success=False + 错误文本（见下方回归用例）
+        self._result = result
 
     async def generate(self, prompt, **kwargs):
         self.calls.append(dict(kwargs))
         if self._raise is not None:
             raise self._raise
+        if self._result is not None:
+            return dict(self._result)
         return {"response": "生成结果"}
 
     async def get_available_models(self):
@@ -84,6 +88,7 @@ def _make_client(
     creation_max_tokens: int = 384,
     available=None,
     raise_on_generate=None,
+    result=None,
 ) -> tuple:
     plugin = SimpleNamespace(
         config=SimpleNamespace(
@@ -97,7 +102,9 @@ def _make_client(
             ),
         ),
         ctx=SimpleNamespace(
-            llm=_FakeLLM(available=available, raise_on_generate=raise_on_generate),
+            llm=_FakeLLM(
+                available=available, raise_on_generate=raise_on_generate, result=result
+            ),
             logger=_stdlib_logging.getLogger("creator-route-test"),
         ),
     )
@@ -214,6 +221,75 @@ def test_model_call_failure_logs_model_name():
     assert len(warnings) == 1, f"应有一条失败告警，实际: {handler.messages}"
     assert "typo-model" in warnings[0], "失败日志应带出模型名，便于核对"
     assert "WebUI" in warnings[0], "失败日志应给出排查指引（去 WebUI 模型列表核对）"
+
+
+# ===== 宿主「不抛异常式失败」回归（2026-09-27 真机事故） =====
+
+# 事故：主程序 `src/services/llm_service.py:795` 捕获异常后**不向外抛**，而是
+# ``return LLMServiceResult.from_error(...)`` —— 载荷形如
+# ``{"success": False, "response": "生成内容时出错: 请求过于频繁，请稍后再试", ...}``。
+# 插件原先只取 ``response``/``content``，于是这句报错文本被当成正常产物入库，
+# 写进编年史后又注入到 planner 块「你最近的生活」，bot 会对着报错文案回忆生活。
+
+
+def test_failed_result_not_treated_as_content():
+    """success=False + 错误文本在 response → 必须返回空串，绝不入库。"""
+    client, _llm, handler, telemetry = _make_client(
+        creation_model="my-model",
+        result={
+            "success": False,
+            "response": "生成内容时出错: 请求过于频繁，请稍后再试",
+            "error": "请求过于频繁，请稍后再试",
+        },
+    )
+    result = asyncio.run(client.generate("提示"))
+
+    assert result == "", "失败的 LLM 结果必须返回空串，不能把报错文案当产物"
+    warnings = [m for m in handler.messages if "创作模型返回失败" in m]
+    assert len(warnings) == 1, f"应有一条失败告警，实际: {handler.messages}"
+    assert "请求过于频繁" in warnings[0], "告警应带出宿主给的错误原因"
+    assert telemetry.token_calls == [], "失败不应记成本采样（没产生内容）"
+
+
+def test_failed_result_without_error_field():
+    """success=False 但只给 response（无 error 字段）→ 同样按失败处理。"""
+    client, _llm, handler, _telemetry = _make_client(
+        creation_model="my-model",
+        result={"success": False, "response": "生成内容时出错: 超时"},
+    )
+    result = asyncio.run(client.generate("提示"))
+
+    assert result == ""
+    warnings = [m for m in handler.messages if "创作模型返回失败" in m]
+    assert len(warnings) == 1
+    assert "超时" in warnings[0], "应回退到 response 取错误文本"
+
+
+def test_missing_success_field_keeps_content():
+    """载荷没有 success 字段（老宿主/自定义通道）→ 维持旧行为，按成功处理。
+
+    反向验证：``is False`` 严格判断，避免字段缺失时被误杀。
+    """
+    client, _llm, handler, telemetry = _make_client(
+        creation_model="my-model", result={"response": "正常产物"}
+    )
+    result = asyncio.run(client.generate("提示"))
+
+    assert result == "正常产物", "字段缺失不应误伤成功响应"
+    assert [m for m in handler.messages if "创作模型返回失败" in m] == []
+    assert len(telemetry.token_calls) == 1
+
+
+def test_success_true_returns_content():
+    """success=True → 正常返回内容（显式成功不被误判）。"""
+    client, _llm, handler, _telemetry = _make_client(
+        creation_model="my-model",
+        result={"success": True, "response": " 正常产物 "},
+    )
+    result = asyncio.run(client.generate("提示"))
+
+    assert result == "正常产物"
+    assert [m for m in handler.messages if "创作模型返回失败" in m] == []
 
 
 # ===== 独立运行入口 =====

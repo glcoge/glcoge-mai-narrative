@@ -90,9 +90,23 @@ class CreatorClient:
                 model_name,
             )
             return ""
-        if isinstance(result, dict):
-            return str(result.get("response") or result.get("content") or "").strip()
-        return ""
+        if not isinstance(result, dict):
+            return ""
+        # ❗ 宿主失败时**不抛异常**，而是把错误文本放进 response、并把 success 置 False
+        #    （src/services/llm_service.py:795 ``LLMServiceResult.from_error``）。
+        #    不判 success 会把「生成内容时出错: 请求过于频繁」这类文本当成正常产物，
+        #    一路写进编年史、再注入到对话里 —— 她会对着一句报错文案「回忆生活」。
+        #    这里用 ``is False`` 严格判断：字段缺失时按旧行为处理，不误伤成功响应。
+        if result.get("success") is False:
+            # 宿主 ``to_capability_payload`` 同时给出两者：``error`` 是底层细节
+            # （如「请求过于频繁」），``response`` 是完整报错句（如「生成内容时出错: …」）。
+            # 优先 error；只给 response 的老通道再回退。（``content`` 是更早期的键名，兜底保留。）
+            self._plugin.ctx.logger.warning(
+                "创作模型返回失败（已按失败处理，不会入库）: %s",
+                result.get("error") or result.get("response") or result.get("content") or "未知错误",
+            )
+            return ""
+        return str(result.get("response") or result.get("content") or "").strip()
 
     def _log_route_hint_once(self, model_name: str) -> None:
         """按名路由首次生效时打一条说明（每个进程一次，避免刷屏）。
