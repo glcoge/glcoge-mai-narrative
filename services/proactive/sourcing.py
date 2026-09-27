@@ -165,12 +165,17 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
     event 取值：
     - ``"caught"``：主动消息在承接窗口（16h）内被接住 → self/branch 双升（聊得起来，更想聊）；
     - ``"ignored"``：主动消息**已确认送达**但超窗无人接住 → self/branch 双降（别热脸贴冷屁股）；
-    - ``"user_initiated"``：用户主动发起对话（非回复主动消息）→ 仅 self 层小升（被需要感）。
+    - ``"user_initiated"``：用户主动发起对话（非回复主动消息）→ 两层同幅小升（被需要感）。
 
     被接住/被冷落的判定与防重复结算由 ProactiveScheduler 负责：每条主动开口在
     ``_sent_records`` 里只有一条记录，承接即标 ``consumed``、超窗出队时按
     ``delivered`` 分流（未送达的不罚），因此天然不会重复计数、也不会罚到
     压根没发出去的开口。
+
+    ❗ 沉默螺旋修复（v0.2.1）：``user_initiated`` **同时抬 branch 层**——他主动来找你
+    就是「不排斥你」的最强信号，修复前只抬 self 层，导致branch 层触底后无论用户
+    多主动都回不来。branch 层的长期回温由引擎 tick 的 ``_regress_branch_urge`` 负责
+    （本函数只管事件驱动的即时升降）。
     """
     cfg = engine._plugin.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
@@ -198,19 +203,22 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
     inner["urge"] = round(max(0.05, min(1.0, urge)), 3)
     engine.save_self_state(state)
 
-    # branch 层：对特定对象的分享欲系数，clamp [urge_branch_floor, 1.0]；
-    # user_initiated 只说明"被需要"，不改对人系数。
-    if event in ("caught", "ignored"):
-        branch = engine.load_branch_state(user_id)
-        factor = float(branch["state"].get("urge_factor", 1.0))
-        if event == "caught":
-            factor += gain * 0.5
-        else:
-            factor -= decay
-        branch["state"]["urge_factor"] = round(
-            max(float(pro.urge_branch_floor), min(1.0, factor)), 3
-        )
-        engine.save_branch_state(user_id, branch)
+    # branch 层：对特定对象的分享欲系数，clamp [urge_branch_floor, 1.0]。
+    # 修复前 user_initiated 不进本分支（注释写「只说明被需要，不改对人系数」）——
+    # 那是沉默螺旋的成因之一：唯一由用户掌控的正向信号救不了触底的对人系数。
+    branch = engine.load_branch_state(user_id)
+    factor = float(branch["state"].get("urge_factor", 1.0))
+    if event == "caught":
+        # 与 self 层同比例（gain : decay = 1 : 2.5）；修复前是 gain*0.5，奖惩比 5:1。
+        factor += gain
+    elif event == "ignored":
+        factor -= decay
+    else:  # user_initiated（未知事件已在上方 self 层分支抛错）
+        factor += gain * 0.5
+    branch["state"]["urge_factor"] = round(
+        max(float(pro.urge_branch_floor), min(1.0, factor)), 3
+    )
+    engine.save_branch_state(user_id, branch)
 
 
 def compute_share_urge(engine: Any, user_id: str) -> float:

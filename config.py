@@ -545,7 +545,11 @@ class ProactiveSection(PluginConfigBase):
         default=0.25,
         ge=0.0,
         le=1.0,
-        description="负反馈步长：主动消息超 30 分钟未被回复（被冷落）时每条 -该值。",
+        description=(
+            "负反馈步长：主动消息在承接窗口内无人接住（被冷落）时每条 -该值。"
+            "⚠ 窗口不是本参数、也不再是 30 分钟——固定为 _PROACTIVE_CATCH_WINDOW_MINUTES"
+            "（16 小时），改阈值请改代码常量。"
+        ),
         json_schema_extra={"label": "冷落衰减", "hint": "0-1；默认 0.25", "order": 11},
     )
     urge_regain: float = Field(
@@ -561,6 +565,19 @@ class ProactiveSection(PluginConfigBase):
         le=1.0,
         description="branch 层对人系数下限：长期被冷落也不会低于该值（防彻底饿死）。",
         json_schema_extra={"label": "对人系数下限", "hint": "0-1；默认 0.4", "order": 13},
+    )
+    urge_branch_regain: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "branch 层回归系数：每 tick 对人系数向中性 1.0 靠拢的比例。"
+            "❗ 修复前 branch 层只有降没有升（单向棘轮）：约 3 次冷落即触地板后永不回升，"
+            "且用户主动来找也救不回来——是「只有少数人还收到主动消息」的结构性根因。"
+            "默认 0.05 约为 self 层的 1/3（tick=30min 时时间常数约 10 小时）："
+            "冷落会被时间冲淡，但不至于抹平人与人之间的亲疏差异。"
+        ),
+        json_schema_extra={"label": "对人系数回归", "hint": "0-1；默认 0.05", "order": 14},
     )
 
 

@@ -498,6 +498,42 @@ class NarrativeEngine:
             urge = float(inner.get("urge", urge_base))
             urge += (urge_base - urge) * float(pro.urge_regain)
             inner["urge"] = round(max(0.05, min(1.0, urge)), 3)
+            # branch 层回归（v0.2.1 沉默螺旋修复）：见 _regress_branch_urge 文档串。
+            self._regress_branch_urge(float(getattr(pro, "urge_branch_regain", 0.0)))
+
+    def _regress_branch_urge(self, regain: float) -> int:
+        """branch 层分享欲系数每 tick 向中性 1.0 回归（沉默螺旋修复，v0.2.1）。
+
+        修复前 ``urge_factor`` **只降不升**：``record_urge_feedback`` 里冷落是唯一
+        的即时降项，而 ``user_initiated`` 只抬 self 层，于是约 3 次冷落即触地板
+        ``urge_branch_floor``，此后无论用户多主动都回不来——单向棘轮。self 层早已
+        靠 tick 回归解决了同一个问题，branch 层此前漏了这一半。
+
+        只处理**已落过** ``urge_factor`` 的支线：缺省即 1.0 中性，既不需要写入，
+        也不该给从未被冷落过的用户凭空造出噪声键。
+
+        Returns:
+            实际写回的支线数量（贴近中性、无实质变化的不写）。
+        """
+        if regain <= 0:
+            return 0
+        written = 0
+        for key, branch in self._store.get_kv_with_prefix("branch:").items():
+            inner = branch.get("state") if isinstance(branch, dict) else None
+            if not isinstance(inner, dict) or "urge_factor" not in inner:
+                continue
+            try:
+                factor = float(inner.get("urge_factor", 1.0))
+            except (TypeError, ValueError):
+                continue
+            new_factor = factor + (1.0 - factor) * regain
+            if abs(new_factor - factor) < 0.001:
+                continue  # 已贴近中性：不写，避免每 tick 无意义落库
+            inner["urge_factor"] = round(max(0.05, min(1.0, new_factor)), 3)
+            user_id = str(key).split(":", 1)[1] if ":" in str(key) else str(key)
+            self.save_branch_state(user_id, branch)
+            written += 1
+        return written
 
     @staticmethod
     def _hours_since(iso_ts: str, now: datetime) -> float:

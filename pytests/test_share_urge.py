@@ -57,6 +57,14 @@ class _FakeStore:
     def get_kv_int(self, key: str) -> int:
         return int(self.kv.get(key, 0) or 0)
 
+    def get_kv_with_prefix(self, prefix: str) -> Dict[str, Any]:
+        """branch 层回归（v0.2.1）需要按前缀枚举支线；语义对齐 NarrativeStore。"""
+        return {
+            key: copy.deepcopy(value)
+            for key, value in self.kv.items()
+            if key.startswith(prefix) and isinstance(value, dict)
+        }
+
 
 class _QuietLogger:
     """吞掉全部日志调用。"""
@@ -84,6 +92,7 @@ def _make_engine(
     urge_decay: float = 0.25,
     urge_regain: float = 0.15,
     urge_branch_floor: float = 0.4,
+    urge_branch_regain: float = 0.05,
     energy_baseline: float = 0.45,
 ) -> NarrativeEngine:
     """构造带 fake store 的 engine（record_urge_feedback / compute_share_urge 可直接跑）。"""
@@ -103,6 +112,7 @@ def _make_engine(
             urge_decay=urge_decay,
             urge_regain=urge_regain,
             urge_branch_floor=urge_branch_floor,
+            urge_branch_regain=urge_branch_regain,
         ),
     )
     engine = NarrativeEngine.__new__(NarrativeEngine)
@@ -192,7 +202,11 @@ def _make_scheduler(
 
 
 def test_caught_raises_self_and_branch():
-    """被接住：self 层 +gain、branch 层 +0.5×gain（聊得起来，更想聊）。"""
+    """被接住：self 层 +gain、branch 层 +gain（两层同比例 1:2.5）。
+
+    v0.2.1 起 branch 层承接增益由 0.5×gain 提到 1×gain：修复前奖惩比 5:1，
+    一次冷落要五次承接才抵消，配合无回归的 branch 层就是净下降。
+    """
     engine = _make_engine(urge_base=0.7, urge_gain=0.1)
     state = engine.load_self_state()
     state["state"]["urge"] = 0.7
@@ -206,7 +220,7 @@ def test_caught_raises_self_and_branch():
     self_urge = float(engine.load_self_state()["state"]["urge"])
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
     assert self_urge == 0.8, f"self 层应 +0.1 → 0.8（实际 {self_urge}）"
-    assert factor == 0.85, f"branch 层应 +0.05 → 0.85（实际 {factor}）"
+    assert factor == 0.9, f"branch 层应 +0.1 → 0.9（实际 {factor}）"
 
 
 def test_ignored_lowers_with_branch_floor():
@@ -228,8 +242,12 @@ def test_ignored_lowers_with_branch_floor():
     assert factor == 0.4, f"branch 层触底后应为 floor 0.4（实际 {factor}）"
 
 
-def test_user_initiated_only_self():
-    """用户主动发起：仅 self 层小升（+0.5×gain），branch 层不动。"""
+def test_user_initiated_raises_both_layers():
+    """用户主动发起：两层同幅小升（+0.5×gain）。
+
+    ❗ v0.2.1 沉默螺旋修复的关键一处：修复前 user_initiated **只抬 self 层**，
+    于是「他主动来找你」这个唯一由用户掌控的正向信号，救不了触底的对人系数。
+    """
     engine = _make_engine(urge_base=0.7, urge_gain=0.1)
     state = engine.load_self_state()
     state["state"]["urge"] = 0.7
@@ -243,7 +261,80 @@ def test_user_initiated_only_self():
     self_urge = float(engine.load_self_state()["state"]["urge"])
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
     assert self_urge == 0.75, f"self 层应 +0.05 → 0.75（实际 {self_urge}）"
-    assert factor == 0.9, "branch 层不应被 user_initiated 改动"
+    assert factor == 0.95, f"branch 层应 +0.05 → 0.95（实际 {factor}）"
+
+
+# ===== branch 层回归（v0.2.1 沉默螺旋修复） =====
+
+
+def _bottom_out_branch(engine: NarrativeEngine) -> float:
+    """连续冷落直到触地板，返回触底后的 urge_factor。"""
+    branch = engine.load_branch_state(_UID)
+    branch["state"]["urge_factor"] = 1.0
+    engine.save_branch_state(_UID, branch)
+    for _ in range(5):
+        engine.record_urge_feedback(_UID, "ignored")
+    return float(engine.load_branch_state(_UID)["state"]["urge_factor"])
+
+
+def test_branch_no_longer_a_one_way_ratchet():
+    """核心回归锁：触底后仅靠时间就能回升（修复前永不回升）。
+
+    修复前 branch 层没有 tick 回归、user_initiated 又不抬它 → 单向棘轮：
+    无论之后用户多主动，系数永远卡在地板 0.4。
+    """
+    engine = _make_engine(urge_branch_floor=0.4, urge_branch_regain=0.05)
+    bottom = _bottom_out_branch(engine)
+    assert bottom == 0.4, f"连续冷落后应触地板 0.4（实际 {bottom}）"
+
+    for _ in range(24):  # 24 tick × 30min = 12 小时
+        engine._regress_branch_urge(0.05)
+
+    factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
+    assert factor > 0.7, f"12 小时回归后应显著回温（实际 {factor}）"
+
+
+def test_user_initiated_rescues_bottomed_branch():
+    """触底后被用户主动找回来：branch 层立即被抬起（修复前纹丝不动）。"""
+    engine = _make_engine(urge_gain=0.1, urge_branch_floor=0.4)
+    assert _bottom_out_branch(engine) == 0.4
+
+    engine.record_urge_feedback(_UID, "user_initiated")
+
+    factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
+    assert factor == 0.45, f"触底后用户主动应抬到 0.45（实际 {factor}）"
+
+
+def test_regress_never_creates_noise_keys():
+    """回归只处理已有 urge_factor 的支线：不给从未被冷落的用户凭空造键。"""
+    engine = _make_engine(urge_branch_regain=0.05)
+    uid_fresh = "20000"
+    engine.load_branch_state(uid_fresh)  # 只登记初见，无 urge_factor
+    assert "urge_factor" not in engine.load_branch_state(uid_fresh)["state"]
+
+    assert engine._regress_branch_urge(0.05) == 0, "无系数可回归时不应写任何支线"
+    assert "urge_factor" not in engine.load_branch_state(uid_fresh)["state"], (
+        "不该给中性支线造出噪声键"
+    )
+
+
+def test_regress_noop_when_already_neutral():
+    """已贴近中性（1.0）的支线不再写库（避免每 tick 无意义落库）。"""
+    engine = _make_engine(urge_branch_regain=0.05)
+    branch = engine.load_branch_state(_UID)
+    branch["state"]["urge_factor"] = 1.0
+    engine.save_branch_state(_UID, branch)
+
+    assert engine._regress_branch_urge(0.05) == 0, "已是 1.0 时不应产生写回"
+
+
+def test_regress_disabled_by_zero_regain():
+    """回归系数填 0 → 完全不回归（保留可按配置关掉该行为的能力）。"""
+    engine = _make_engine(urge_branch_floor=0.4)
+    _bottom_out_branch(engine)
+
+    assert engine._regress_branch_urge(0.0) == 0
+    assert float(engine.load_branch_state(_UID)["state"]["urge_factor"]) == 0.4
 
 
 def test_unknown_event_raises():
