@@ -51,6 +51,8 @@ SOURCE_DIARY = "diary"
 #: 列级迁移清单（R21）。元组 = (表名, 列名, 追加列的 DDL)。
 #: 按声明顺序执行；每次开库都跑，靠 ``PRAGMA table_info`` 探测保证幂等。
 #: 新增列只往后追加，**不删不改**历史条目（旧库数据在升级后必须仍可读）。
+#: OBSERVE(R21)：chronicle 表**列级**迁移通道（本仓首个 ALTER 能力）。看着像一次性升级脚本，
+#: 但旧库每次开库都靠它补齐 schema——删掉即旧库读取崩；与 state 结构级迁移（R12）各管一层。
 _COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
     (
         "chronicle",
@@ -257,6 +259,8 @@ class NarrativeStore:
             for table, column in _DROPPED_COLUMNS:
                 if column in self._table_columns(connection, table):
                     connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            # OBSERVE(R20)：存量历史数据隔离豁免——这一段看着像「只跑一次的迁移垃圾」，
+            # 但删掉即让存量 diary 条目失去隔离标记（涉私原文外泄）；换人设/清库后本条才自动失效。
             # 存量打标（R20）：既有 diary 条目按「完全隔离」处理，不清洗不删除。
             # 只补空值——用户已裁定 life/daily 不做反推打标（涉私影响内测期可接受），
             # 故此处**不碰**非 diary 条目，也不动它们的 source_uid。
@@ -438,9 +442,22 @@ class NarrativeStore:
     def list_chronicle_by_ids(self, ids: List[int]) -> List[Dict[str, Any]]:
         """按 id 批量读取编年史条目（晋升的**场景计数**要用它们的 ts/source_uid）。
 
-        返回按 id 升序；缺失的 id 静默跳过——证据引用可能指向已不存在的条目
-        （脏数据政策：保留 + 读取端降权，永不回溯清洗）。
+        返回按 id 升序；缺失的 id 静默跳过——证据引用可能指向已不存在的条目。
+
+        OBSERVE(R29)：这里旧注写的「脏数据政策：保留 + 读取端降权」是**过头了**——
+        实际行为只是「缺失 id 跳过」（完整性处理，**不是降权**）。降权权重至今
+        未落地（P9 仍「未定」），2026-09-27 定性为**暂不实现**，两条理由：
+
+        1. HDSI 3.1：没有真实脏数据就不该拍一个权重出来（凭空定参数＝假精度）。
+        2. 脏数据要**分两类**，只有第二类才适用降权——
+           类一「机器产物」：报错文案 / 截断 / 空值。**它不是数据**，可删。
+           类二「被污染的真实记忆」：涉私原文串入、受众误标。保留 + 降权。
+
+        至今唯一真实发生的一次（2026-09-27 编年史混入「生成内容时出错」）属
+        **类一**，经用户裁决删除。将来出现类二污染，这里才是降权的落点。
         """
+        # RESERVED(P9)：脏数据降权权重**尚未落地**（见上方 OBSERVE(R29) 的两类划分）——
+        # 出现「类二·被污染的真实记忆」时，这里才是定参与实现的落点。
         normalized = [int(item) for item in (ids or [])]
         if not normalized:
             return []

@@ -19,6 +19,10 @@
 | 生活片段自身主题 | ``TOPIC_WEIGHT_SELF_FRAGMENT``（0.4） | 片段生成入库后直接加权 |
 """
 
+# OBSERVE(R16)：话题偏好外部加权——接话 1.0 / 自身片段 0.4，防自主信息茧房。
+# ⚠️ 已知局限：消费端（主动性选材）**尚未接权重**，故它看着像没人读的死代码；
+# 删掉即失去反茧房的唯一证据源。
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +33,8 @@ TOPIC_WEIGHT_USER_REPLY = 1.0
 #: 自身主题权重（降权：防自主信息茧房）  # OBSERVE(P10)
 TOPIC_WEIGHT_SELF_FRAGMENT = 0.4
 
+#: OBSERVE(P15)：话题签名长度上限 12 字——过粗会误并不同话题、过细会让同一话题分裂；
+#: 调参依据是回放台话题榜的聚合形态。
 #: 话题签名长度上限（确定性表示，见模块 docstring 的局限说明）
 TOPIC_KEY_MAX_LEN = 12
 

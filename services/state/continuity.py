@@ -298,6 +298,8 @@ def coerce_slow_value(path: str, value: Any) -> Any:
     return str(value if value is not None else "")
 
 
+# OBSERVE(R30)：双向守卫关键词**自动抽取**的落点——从 [identity].world_rules/values 切子句
+# + 剥祈使前缀抽可命中片段；删掉则第二道闸（注入侧）失去词源，锚定层的底线无从拦截。
 def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Iterable[str]) -> Set[str]:
     """汇总守卫关键词（ADR-0002 §9 双向守卫）。
 
@@ -321,6 +323,7 @@ def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Ite
 
 #: 关键词切分的分隔符（中英文标点 + 空白）。**不是**分词，是切子句。
 _KEYWORD_SEPARATORS = "，。；！？、,.;!?（）()【】[]「」“”\"' \t\n—－-"
+#: OBSERVE(P13)：关键词长度上下限 2~8（过短易误伤、过长不可能命中）；调参依据是**真机 WARN 日志里的命中片段**。
 #: 关键词长度上下限：过短易误伤（"的"），过长不可能命中。
 _KEYWORD_MIN_LEN = 2
 _KEYWORD_MAX_LEN = 8
@@ -341,6 +344,8 @@ _KEYWORD_STRIP_PREFIXES = (
 #: 的规则形态；若取下限 3，最自然的规则写法一律抽不出可命中关键词 → 守卫形同虚设。
 #: 代价是 2 字碎片可能误伤（如"说谎"撞到"别对我撒谎"不会命中，但撞到"说谎者"会）——
 #: 这属于保守放行的可接受代价：漏网的还有注入侧第二道闸，误杀则直接吞掉正常内容。
+#: OBSERVE(P13)：剥前缀后的下限 2——取 2 是刻意的（「不可说谎」剥出「说谎」正好 2 字），
+#: 改为 3 会让最自然的规则写法一律抽不出可命中关键词，守卫形同虚设。
 _KEYWORD_STRIP_MIN_LEN = 2
 
 
@@ -628,11 +633,15 @@ def is_after_cooldown(
     return (now - last).total_seconds() >= float(cooldown_hours) * 3600
 
 
+# OBSERVE(R27)：反证扣减 −0.2 的落点——只按**提案 id 显式引用**才扣，异路径引用不生效；
+# 扣后仍过门槛则保持 pending（只降信不驳回）。改这个数即改晋升节奏。
 def apply_refutation_penalty(confidence: float, *, penalty: float) -> float:
     """反证扣减（P6）：``confidence − penalty``，下限 0。"""
     return max(0.0, float(confidence) - float(penalty))
 
 
+# OBSERVE(R27)：重复提案合并 +0.05 的落点——只对**新增场景**加成，复述不加信
+# （HDSI 2.1 事故形态：整理器反复叙述会把推测固化成事实）。
 def merge_confidence(
     current: float, existing: float, *, bonus: float, new_scene: bool
 ) -> float:

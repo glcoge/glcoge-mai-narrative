@@ -58,6 +58,8 @@ _SELF_SCOPE = "self"
 #: 变更 state 结构（增删字段/改嵌套形状）时必须 +1。
 #: 版本史：1 = v0.1.x 初始形状；2 = 批 2（死字段处决 + 关系四维 schema）；
 #: 3 = 批 4（自我层 perspective 段：world_view / life_goals + origin/updated_ts 溯源）。
+#: OBSERVE(R12)：state **结构级**迁移挂点——开库版本不符即 WARN + 原地重置（chronicle 保留）；
+#: 与 store 的表级 `_migrate`（R21）是两回事，别合并别删；改 state 结构时必须 +1。
 STATE_SCHEMA_VERSION = 3
 
 # 关系阶段阈值（familiarity，只进不退）已于批 2 删除（ADR-0002 §2）：

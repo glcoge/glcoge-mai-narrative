@@ -31,6 +31,7 @@ _BYSOURCE_USED_KEY_PREFIX = "bysource:used:"
 #: 由头与最近对话的文本重叠上限（OBSERVE(R23)）：超过则判定"撞车"，换一个候选。
 #: 中文无词边界，用**字符 bigram 的 Jaccard 相似度**——零依赖、离线可重算。
 #: 取值先拍一个保守值，真机跑一轮后按回放台数据调。
+#: OBSERVE(P2)：0.5 是批 1 观察值（字符 bigram Jaccard）；调高了由头变复述，调低了可用候选枯竭。
 _OVERLAP_REJECT = 0.5
 
 

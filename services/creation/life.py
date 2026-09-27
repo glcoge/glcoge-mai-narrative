@@ -30,6 +30,10 @@ from ..state.continuity import build_guard_keywords, guard_violations, should_dr
 #: 「已经发了消息」；下一轮模型又把这个片段当事实引用（"就我刚才说的"），
 #: 而对方毫无记忆 → 对话自相矛盾。故明文约定：**通信事实以宿主账本为准**，
 #: 片段里提到联系一律只写**意图**。
+# OBSERVE(R25)：通信事实合约句——生活片段里「联系别人」只能写打算或念头，不得写成既成事实；
+# 删掉即模型把「想回他一句」写成「已经发了」，下一轮自相矛盾。
+# ⚠️ 本项只完成**合约句**：注入侧「最近真实已发送清单」仍挂起未做（需接宿主账本），
+# 该边界由 pytests/test_comm_fact.py 钉住——三件套完成不等于本项完成。
 COMM_FACT_RULE = (
     "通信事实以真实记录为准：如果片段里提到联系别人（发消息、打电话、说过什么话），"
     "只能写成你的**打算或心里的念头**（例如「想回他一句」「明天问问她」），"
@@ -38,6 +42,9 @@ COMM_FACT_RULE = (
 
 #: 生活片段产出的 kind ∈ GENERAL_KINDS（render/audience.GENERAL_KINDS），
 #: 默认不带 source_uid 故天然通用——写入侧约定见 audience.py 的模块文档。
+#: OBSERVE(R22)：tier 由「资格门」改为「详略档」后，这组长度区间就是调控产出详略的**唯一旋钮**；
+#: 删掉即退回硬编码截断，major 档（可达 400 字）会被截。
+#: OBSERVE(P1)：区间沿用批 1 观察值，批 4 **并未固化**（回放台无产出长度分布用例），改动前先看登记表。
 _FRAGMENT_TIER_LENGTH = {
     "flat": "40~90",    # 分级关闭：旧行为
     "minor": "40~90",   # 无素材：纯状态切片
@@ -136,10 +143,15 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     # 不该占用配额；下一个 tick 会以同一批素材再试一次。
     guard_set = build_guard_keywords(cfg)
     if should_drop_output(text, guard_set):
+        # OBSERVE(R30)：日志**必须带原文**——守卫是子串包含匹配，关键词又是从
+        # world_rules 切出来的短碎片（如「尾巴」「角」），只看命中片段无法分辨
+        # 「真违规」与「误伤」（真机 2026-09-27 16:02 就丢过一条只因出现「尾巴」）。
+        # 没有原文就只能事后猜，这正是误伤率长期无法收敛的原因。
         engine._plugin.ctx.logger.warning(
             "生活片段命中锚定守卫（world_rules/values/禁用片段）→ 已丢弃，不入库；"
-            "命中片段: %s",
+            "命中片段: %s；原文: %s",
             guard_violations(text, guard_set)[:5],
+            (text[:60] + "…") if len(text) > 60 else text,
         )
         return
 

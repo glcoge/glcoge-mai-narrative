@@ -247,6 +247,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "[proactive].user_window_rules 配置有误 → %s（该条运行期将被跳过）", problem
             )
 
+    # OBSERVE(R14)：启动期锚定一致性比对——默认关但通道必须留着，宿主与插件双人格分裂时只有它能报警；
+    # 任何异常只降级为 debug，绝不阻断插件加载。
     async def _check_anchor_consistency(self) -> None:
         """R14：启动期「宿主 [personality] vs 插件 world/values」LLM 一次性一致性比对。
 
@@ -813,7 +815,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         )
         return {"action": "continue", "modified_kwargs": kwargs}
 
-    # ===== Hook：表达学习隔离 =====
+    # ===== Hook：表达学习隔离 =====  # OBSERVE(R11)：两个 abort 看着像无用中断，实为防群腔调进私聊剧本、防剧本素材进表达库的唯一闸门，删掉即双向污染
 
     @HookHandler(
         "expression.select.before_select",

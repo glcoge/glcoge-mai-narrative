@@ -181,6 +181,8 @@ class Telemetry:
             self.record("dialogue_depth", value=float(bot_text_len), scope="bot_msg_len")
 
     # ─── 指标 4 双轨（A=注入侧组合熵 / B=产出侧文本多样性） ───────
+    # OBSERVE(R24)：A 轨（状态组合熵）必须与 B 轨**同一次产出**同时采样——
+    # 读法「A 变 B 不变 ＝ 只长数字不长故事」，删任一轨都让指标 4 的判据塌掉一半。
 
     def note_fragment(self, state: Dict[str, Any], text: str) -> None:
         """生活片段产出采样：同一次产出同时记 A、B 两轨（保证同尺度可比）。"""
@@ -199,8 +201,14 @@ class Telemetry:
             value=ngram_diversity(self._diversity_outputs),
             scope=f"ngram{_NGRAM_RANGE[0]}-{_NGRAM_RANGE[1]}",
         )
+        # RESERVED(R8)：铺群闸门要的「指标 4-B ≥ ?×基线」判据挂在本轨，但基线**至今未产出**
+        # （回放台无 diversity 用例）→ 埋点在这儿、消费方为零，属「挂着但没米下锅」，别当死代码删。
+        # RESERVED(P11)：基线倍数未定，须先由回放台 26 天数据产出基线才有值可拍。
 
     # ─── 晋升计数器通道（R17，批 1 只建通道，批 4 才写入） ────────
+    # OBSERVE(R17)：晋升链路四计数器（提案/晋升/反证/回滚）的**唯一落盘口**。
+    # ⚠️ 受 [telemetry].enabled 门控——关掉验收采样等于关掉晋升链路的全部可观测性。
+    # RESERVED(P12)：四指标的**告警线仍未定**，等实机数据积累后再拍（先有 csv 才有线可画）。
 
     def record_counter(self, kind: str, value: float = 1) -> None:
         """晋升链路计数器：proposals / promotions / refutations / rollbacks。

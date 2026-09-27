@@ -21,6 +21,9 @@
 ``proactive:<plugin>:<ts>``，误当 msg_id 会污染配对。
 """
 
+# OBSERVE(R31)：本模块**只建不消费**——当前零消费方，是全仓最像死代码的一段，但删掉即断掉
+# 批 5 关系晋升所需的「反馈-送达配对」数据积累；晋升链路禁止 import 由 test_pairs.py 的 AST 断言锁住。
+
 from __future__ import annotations
 
 from datetime import datetime

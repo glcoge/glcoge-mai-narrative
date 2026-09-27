@@ -398,6 +398,9 @@ class ProposalRunner:
 
 
 # ─── 冷启动 seed（批 4-C5 / R15） ───────────────────────────────
+#
+# OBSERVE(R15)：慢变 seed 的两条铁律落点——**幂等**（origin 或两维有内容即 already，不重复调 LLM）、
+# **失败不阻断启动**（留空 + WARN，下次启动再试）。seed 是晋升 diff 的基线，删掉则「看法何时变过」无从叙述。
 
 
 def build_seed_prompt(world: str, values: List[str]) -> str:

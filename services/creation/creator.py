@@ -10,6 +10,9 @@
 既无必要也不该由插件承担。
 """
 
+# OBSERVE(R10)：创作层 HTTP 直连兜底已**退役**（宿主 1.2.5 已透传 model_name），本注是防复活留痕——
+# 加回直连等于把明文 api_key 塞回插件配置。反向护栏见 test_config_schema / test_creator_route。
+
 from __future__ import annotations
 
 import asyncio
