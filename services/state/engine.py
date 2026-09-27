@@ -673,7 +673,9 @@ class NarrativeEngine:
                 "ts": current.isoformat(timespec="seconds"),
                 "scope": f"branch:{user_id}",
                 "kind": "dialogue_material",
-                # RESERVED(R19)：素材溯源。对话原文只对该用户可见（ADR-0004 读取过滤），
+                # ❗ 这里**不是** ~~R19~~ 的「创作层取材溯源清单」（该项已处决，
+                # 且从未落地）。此处是 ADR-0004 第 1 层**写入打标**：对话原文只
+                # 对该用户可见（ADR-0004 读取过滤），已实现且在线。
                 # store 侧另有 branch:{uid} → uid 的兜底推导，此处显式写是为了溯源可读。
                 "source_uid": str(user_id),
                 # 2026-09-21：保留长度 80 → 300 字符。入库时不知道未来是否重要，

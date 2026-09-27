@@ -132,7 +132,13 @@ def test_unknown_audience_sees_only_general():
 
 
 def test_creator_output_without_tag_is_general():
-    """创作层消化产出默认不带 source_uid → 通用（溯源走 sources 字段，批 4）。"""
+    """创作层消化产出默认不带 source_uid → 通用。
+
+    ``sources`` 是 ~~R19~~ 计划里的溯源清单，**字段从未落地**（生产代码从不读写），
+    批 4 掩码改走 kind 白名单。本用例保留的意义是锁死一条不变式：
+    **任何名为 sources 的键都不得参与可见性判定** —— 将来若真加这个字段，
+    加错地方（让它影响可见性）这条会立刻红。
+    """
     entry = _entry(kind="life", sources=[_A])
     assert is_visible(entry, _B), "sources 是溯源清单，不参与可见性判定"
 
