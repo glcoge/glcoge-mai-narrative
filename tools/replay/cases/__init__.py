@@ -5,6 +5,7 @@
 ``inputs.metrics_dir`` 取路径——路径一律由 CLI 传入，不入库。
 """
 
+from .case_diversity import case_diversity_baseline
 from .case_evidence_counting import case_evidence_counting, case_scene_mapping_digest
 from .case_privacy_leak import case_diary_fully_isolated, case_privacy_leak
 from .case_promotion import (
@@ -20,6 +21,7 @@ CASES = {
     "evidence_counting": case_evidence_counting,
     "scene_mapping_digest": case_scene_mapping_digest,
     "style_injection": case_style_injection,
+    "diversity_baseline": case_diversity_baseline,
     "promotion_rhythm": case_promotion_rhythm,
     "input_sufficiency": case_input_sufficiency,
     "positive_signal": case_positive_signal,
@@ -28,6 +30,7 @@ CASES = {
 __all__ = [
     "CASES",
     "case_diary_fully_isolated",
+    "case_diversity_baseline",
     "case_evidence_counting",
     "case_input_sufficiency",
     "case_privacy_leak",
