@@ -434,21 +434,26 @@ class MaiNarrativePlugin(MaiBotPlugin):
             return
         if not self.config.promotion.enabled:
             return
+        # 提案提炼自己的节流判定时刻（是否在 penalty 间隔/退避窗内）
         now = self._local_now()
 
         result = await self._promotion.run(now=now)
+        # ❗ 上面的提炼**含 LLM 调用**（实测约 25 秒），其后所有**写入**必须换用新鲜时刻：
+        #    沿用入口的 now 会把 promotions.ts / chronicle.ts 记成「周期开始」而非
+        #    「实际写入」，审计时间戳系统性偏早，无法与计数器、日志时间线对账。
+        write_now = self._local_now()
         if str(result.get("status") or "") == "ok":
             # 反证先于晋升：被引用的旧提案先被驳回，免得它同一轮又被应用一次
-            self._promotion_engine.apply_refutations(now=now)
+            self._promotion_engine.apply_refutations(now=write_now)
             applied_any = False
             for row in self._store.list_proposals(status="pending", limit=200):
-                if self._promotion_engine.apply(row, now=now).get("applied"):
+                if self._promotion_engine.apply(row, now=write_now).get("applied"):
                     applied_any = True
             if applied_any:
                 # 有晋升落库才写回投影（E5：只投影 general 维度；relationship 绝不落盘）
                 self._project_learned()
 
-        self._maybe_promote_relationship(now)
+        self._maybe_promote_relationship(write_now)
 
     def _project_learned(self) -> None:
         """把 general 慢变现值写回 ``config.toml`` 的 ``[learned]`` 投影（批 4-C6）。
