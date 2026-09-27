@@ -547,6 +547,28 @@ def scene_stats(rows: Iterable[Any]) -> Tuple[int, int]:
     return len(scenes), len(days)
 
 
+def minor_gate_checks(
+    *,
+    confidence: float,
+    scene_count: int,
+    day_count: int,
+    min_confidence: float,
+    min_scenes: int,
+    min_days: int,
+) -> Dict[str, bool]:
+    """minor 门槛的**逐项**判定（P3 的唯一判据所在地）。
+
+    诊断要回答「卡在哪一项」，但判据必须与晋升机**同源**——所以三条比较只在本
+    函数写一次：``meets_minor_gate`` 是它的 ``all()`` 折叠，健康度诊断直接读本
+    函数的返回值。写第二份判据迟早漂移，那时诊断会开始描述一个与晋升机不同的世界。
+    """
+    return {
+        "confidence": float(confidence) >= float(min_confidence),
+        "scenes": int(scene_count) >= int(min_scenes),
+        "days": int(day_count) >= int(min_days),
+    }
+
+
 def meets_minor_gate(
     *,
     confidence: float,
@@ -557,18 +579,40 @@ def meets_minor_gate(
     min_days: int,
 ) -> bool:
     """minor 门槛：置信 AND 场景 AND 跨日，三条**全过**才算（P3）。"""
-    return (
-        float(confidence) >= float(min_confidence)
-        and int(scene_count) >= int(min_scenes)
-        and int(day_count) >= int(min_days)
+    return all(
+        minor_gate_checks(
+            confidence=confidence,
+            scene_count=scene_count,
+            day_count=day_count,
+            min_confidence=min_confidence,
+            min_scenes=min_scenes,
+            min_days=min_days,
+        ).values()
     )
+
+
+def major_gate_checks(
+    *, confidence: float, scene_count: int, min_confidence: float, min_scenes: int
+) -> Dict[str, bool]:
+    """major 门槛的**逐项**判定（P4：置信 AND 场景，**不限天数**）。"""
+    return {
+        "confidence": float(confidence) >= float(min_confidence),
+        "scenes": int(scene_count) >= int(min_scenes),
+    }
 
 
 def meets_major_gate(
     *, confidence: float, scene_count: int, min_confidence: float, min_scenes: int
 ) -> bool:
     """major 门槛：置信 AND 场景（**不限天数**，P4；默认关）。"""
-    return float(confidence) >= float(min_confidence) and int(scene_count) >= int(min_scenes)
+    return all(
+        major_gate_checks(
+            confidence=confidence,
+            scene_count=scene_count,
+            min_confidence=min_confidence,
+            min_scenes=min_scenes,
+        ).values()
+    )
 
 
 def is_after_cooldown(
@@ -1030,9 +1074,11 @@ __all__ = [
     "is_anchor_field",
     "is_slow_field",
     "is_slow_field_visible",
+    "major_gate_checks",
     "meets_major_gate",
     "meets_minor_gate",
     "merge_confidence",
+    "minor_gate_checks",
     "normalize_perspective",
     "normalize_relationship",
     "parse_chronicle_refs",
