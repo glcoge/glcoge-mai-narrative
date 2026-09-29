@@ -4,13 +4,14 @@ from .state.engine import NarrativeEngine
 from .proactive.scheduler import ProactiveScheduler, validate_rules
 from .render.planner_block import build_context_block, build_injected_item, is_injected_item
 from .store import NarrativeStore
-from .streams import StreamRegistry
+from .streams import GroupStreamRegistry, StreamRegistry
 from .state.snapshot import Telemetry
 
 __all__ = [
     "NarrativeEngine",
     "NarrativeStore",
     "StreamRegistry",
+    "GroupStreamRegistry",
     "ProactiveScheduler",
     "validate_rules",
     "Telemetry",

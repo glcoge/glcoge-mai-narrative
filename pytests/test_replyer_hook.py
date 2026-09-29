@@ -66,6 +66,8 @@ def _make_plugin(tmp_path: Path, *, narrative_enabled: bool = True, style: list 
             mode_user_ids=[MODE_UID],
             mode_stream_ids=[],
             timezone_offset_hours=8,
+            # R35：群聊观察名单（本文件用例全是私聊会话，保持关闭）
+            observe_group_ids=[],
         ),
     )
     plugin._ctx = SimpleNamespace(logger=null_logger())
@@ -73,6 +75,8 @@ def _make_plugin(tmp_path: Path, *, narrative_enabled: bool = True, style: list 
     plugin._streams = SimpleNamespace(
         uid_of=lambda sid: MODE_UID if sid == MODE_STREAM else ""
     )
+    # R35：群会话注册表 stub（本文件用例全走私聊会话 → gid_of 恒为空串）
+    plugin._group_streams = SimpleNamespace(gid_of=lambda sid: "")
     plugin._engine = SimpleNamespace(
         load_self_state=lambda: {
             "state": {

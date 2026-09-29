@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-# RESERVED(R9) / OBSERVE：命令消息的**本地正则兜底**。
+# OBSERVE(R9)：命令消息的**本地正则兜底**。
 # 宿主 hook 载荷里的 ``is_command`` 字段不可靠（归档数据中同一形态的消息有时带
 # 有时不带），命令一旦被当成对话素材会污染创作层与关系值（"你本人操作"不是
 # bot 的生活）。宿主修好后本兜底可删——删前请在回放台确认 is_command 覆盖度。
@@ -66,7 +66,7 @@ def message_text(message: Dict[str, Any]) -> str:
 
 
 def looks_like_command(text: str) -> bool:
-    """本地正则兜底判定"这是命令不是对话"（RESERVED(R9)，宿主修复后可删）。
+    """本地正则兜底判定"这是命令不是对话"（OBSERVE(R9)，宿主修复后可删）。
 
     只看正文形态（以 ``/`` 开头的命令），不猜平台协议。宿主 ``is_command`` 为真时
     调用方应直接采信，本函数只在**字段缺失/为假**时补一刀。
@@ -82,6 +82,30 @@ def extract_user_id(message: Dict[str, Any]) -> str:
     msg_info = message.get("message_info") or {}
     user_info = msg_info.get("user_info") or {}
     return str(user_info.get("user_id") or user_info.get("id") or "").strip()
+
+
+def extract_group_id(message: Dict[str, Any]) -> str:
+    """从消息中提取群号（私聊 / 取不到返回空串）。
+
+    R35（群聊观察）的入站 seam：群事件必须打上 ``g:<gid>`` 受众标，
+    **取不到 gid 就拒绝落库**（fail-closed——不带标的群素材会落进「通用」桶，
+    畅通进私聊，正是 09-21 泄露事故的同型路径）。
+
+    载荷路径（主程序 ``src/plugin_runtime/host/message_utils.py:398-403``）：
+    ``message["message_info"]["group_info"]["group_id"]``，私聊时 ``group_info``
+    为 ``None``。**必须与 ``is_private_chat`` 共用同一 truthy 判定**
+    （规范 §二 P0-2）：空 dict / None / 缺失一律视为非群聊，防止两处规则漂移。
+    """
+    msg_info = message.get("message_info")
+    if not isinstance(msg_info, dict):
+        return ""
+    group_info = msg_info.get("group_info")
+    if not group_info:
+        return ""
+    if isinstance(group_info, dict):
+        return str(group_info.get("group_id") or group_info.get("id") or "").strip()
+    # 极端兜底：group_info 非 dict 时按对象属性取（宿主结构变更不炸链路）
+    return str(getattr(group_info, "group_id", "") or "").strip()
 
 
 def outbound_text_len(message: Any) -> Optional[int]:
@@ -116,5 +140,6 @@ __all__ = [
     "looks_like_command",
     "message_text",
     "extract_user_id",
+    "extract_group_id",
     "outbound_text_len",
 ]

@@ -17,7 +17,7 @@ send_service.before_send / maisaka.planner.before_request / expression.*）；
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import asyncio
 import contextlib
@@ -36,6 +36,7 @@ from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
 from .config import MaiNarrativePluginConfig
 from .services import (
+    GroupStreamRegistry,
     NarrativeEngine,
     ProactiveScheduler,
     StreamRegistry,
@@ -68,6 +69,7 @@ from .services.proactive.scheduler import validate_rules
 from .services.render.audience import drop_diary, filter_entries, visible_chronicle
 from .services.render.replyer_block import build_replyer_block, build_style_item, is_style_item
 from .services.message import (
+    extract_group_id,
     extract_user_id,
     is_private_chat,
     looks_like_command,
@@ -147,6 +149,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._telemetry: Optional[Telemetry] = None
         # uid↔stream 注册表（含 kv 持久化，防重启后主动消息失联）
         self._streams: Optional[StreamRegistry] = None
+        # gid↔session 注册表（R35：replyer hook 载荷没有群字段，只能靠入站登记）
+        self._group_streams: Optional[GroupStreamRegistry] = None
+        # R35 侦察信号：进程内首条群消息打一条 INFO（见 ``_observe_group``）
+        self._group_recon_logged: bool = False
         # 互动配对追踪（批 4-C2 / R31：只建不消费，为批 5 的 LLM 提案攒数据）
         self._pairs: Optional[PairTracker] = None
         # 慢变晋升机（批 4）：提案提炼器 + 晋升状态机
@@ -172,6 +178,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # uid↔stream 注册表：启动时从 kv 回填（防重启后主动消息失联）
         self._streams = StreamRegistry(self._store, self.ctx.logger)
         self._streams.restore()
+        # R35：群会话映射同样要回填（不回填 = 重启后群漂移层注入静默停摆）
+        self._group_streams = GroupStreamRegistry(self._store, self.ctx.logger)
+        self._group_streams.restore()
         # 互动配对追踪（批 4-C2 / R31）：pending 槽在内存，配对落 interaction_pairs 表。
         # **只建不消费**——批 4 的任何晋升判定都不读它（AST 断言见 test_pairs.py）。
         self._pairs = PairTracker(self._store, logger=self.ctx.logger)
@@ -545,6 +554,30 @@ class MaiNarrativePlugin(MaiBotPlugin):
         uid = self._streams.uid_of(session_id) if self._streams is not None else ""
         return self._is_mode_uid(uid)
 
+    def _observed_group_ids(self) -> List[str]:
+        """配置里登记的观察群号（规范化去重，空列表 = 观察关闭）。"""
+        raw = getattr(self.config.narrative, "observe_group_ids", None) or []
+        seen: Dict[str, None] = {}
+        for item in raw:
+            gid = str(item).strip()
+            if gid:
+                seen[gid] = None
+        return list(seen.keys())
+
+    def observed_group_ids(self) -> List[str]:
+        """需要参与**事件清理**的群号（= 配置名单 ∪ 已知会话映射）。
+
+        比 ``_observed_group_ids`` 多一份「已学过的群」：用户把某个群从名单里
+        摘掉后，它积累的历史事件必须还能被扫到，否则变成永久孤儿数据
+        （清道夫只有 tick 这一个入口）。
+        """
+        merged: Dict[str, None] = {gid: None for gid in self._observed_group_ids()}
+        if self._group_streams is not None:
+            for gid in self._group_streams.known_gids():
+                if gid:
+                    merged[gid] = None
+        return list(merged.keys())
+
     def _local_now(self) -> datetime.datetime:
         """按插件配置时区取本地时间（与引擎统一）。"""
         return local_now(self.config.narrative.timezone_offset_hours)
@@ -598,6 +631,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
             message_text(message)[:30],
         )
         if not is_private:
+            # R35：群聊观察（只读落库；恒 continue，**绝不 abort**——回复判定归宿主）
+            self._observe_group(message, stream_id)
             return {"action": "continue", "modified_kwargs": kwargs}
         if not is_mode:
             self.ctx.logger.debug("narrative inbound: 用户不在模式名单，uid=%r", user_id)
@@ -608,7 +643,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
 
         plain = message_text(message)
         # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）。
-        # RESERVED(R9)：宿主 is_command 字段不可靠，补本地正则兜底——命令被当成
+        # OBSERVE(R9)：宿主 is_command 字段不可靠，补本地正则兜底——命令被当成
         # 对话素材会污染创作层与关系值。宿主修好后删掉 looks_like_command 即可。
         is_command = bool(message.get("is_command")) or looks_like_command(plain)
         if is_command or bool(message.get("is_notify")):
@@ -643,6 +678,65 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self._pairs.note_inbound(user_id, message_id_of(message), now)
         self.ctx.logger.debug("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
         return {"action": "continue", "modified_kwargs": kwargs}
+
+    def _observe_group(self, message: Dict[str, Any], stream_id: str) -> None:
+        """R35：群聊消息落一条**纯观察**事件（本批唯一的群聊写库动作）。
+
+        三条设计约束（2026-09-29 群聊 grill 裁定）：
+        1. **恒 continue、绝不 abort** —— 群里该不该回完全交给宿主的
+           ``reply_necessity``（Q9=A：意愿门不自建），本方法不参与任何回复判定；
+        2. **fail-closed** —— gid 取不到 / 群不在观察名单 / 命令通知 一律拒绝落库；
+        3. **不接任何私聊语义链路** —— 不写支线、不更新互动、不进 telemetry、
+           不做承接结算、不做分享欲反馈、不建互动配对（Q2=B）。
+
+        ⚠️ 步骤 0 侦察：上线初期请把 logger 调到 debug，确认第一条日志里的
+        ``gid`` 非空——取不到群号说明宿主载荷结构与本实现的预期不符，
+        此时**整个 R35 应停在这里**，去修 ``extract_group_id``；
+        绝不可降级为「按私聊素材处理」，那正是 09-21 泄露事故的路径。
+        """
+        if not (self.config.plugin.enabled and self.config.narrative.enabled):
+            return
+        if self._engine is None or self._store is None:
+            return
+        group_id = extract_group_id(message)
+        group_info = (message.get("message_info") or {}).get("group_info") if isinstance(message, dict) else None
+        self.ctx.logger.debug(
+            "narrative inbound(group): gid=%r | session=%r | group_info=%r | keys=%s | text=%s",
+            group_id, stream_id, group_info,
+            sorted(message.keys()) if isinstance(message, dict) else [],
+            message_text(message)[:30],
+        )
+        # 侦察信号：每条群消息都打会刷屏，但**一次都不打**又等于没有侦察证据
+        # → 每次进程只打第一条（够用来确认 group_info 结构，重启后再确认一次）。
+        # ⚠️ 这是 R35 上线验收的第一步：**部署后必须在日志里看到 gid 非空**。
+        if not self._group_recon_logged:
+            self._group_recon_logged = True
+            self.ctx.logger.info(
+                "narrative 群聊侦察（首条）：gid=%r | session=%r | group_info=%r | keys=%s",
+                group_id, stream_id, group_info,
+                sorted(message.keys()) if isinstance(message, dict) else [],
+            )
+        if not group_id:
+            # ❗ fail-closed：取不到群号 = 无法打受众标 = 会被当成通用素材进私聊，
+            # 宁可不记。这是 09-21 泄露事故的同型路径，绝不放行。
+            self.ctx.logger.warning(
+                "narrative 群聊观察：取不到群号（group_info=%r），拒绝落库", group_info
+            )
+            return
+        allowed = set(self._observed_group_ids())
+        if not allowed:
+            return  # 观察整体关闭（默认状态）：连名单都没有，不必再看消息内容
+        if group_id not in allowed:
+            self.ctx.logger.debug("narrative 群聊观察：群 %s 不在观察名单", group_id)
+            return
+        plain = message_text(message)
+        # OBSERVE(R9) 同款兜底：命令/通知不是"她说的话"，不进语料
+        if bool(message.get("is_command")) or bool(message.get("is_notify")) or looks_like_command(plain):
+            return
+        self._engine.record_group_material(group_id, plain, now=self._local_now())
+        if stream_id and self._group_streams is not None:
+            # replyer hook 载荷没有群字段 → 只能靠入站时把 session→gid 记下来
+            self._group_streams.record(group_id, stream_id)
 
     # ===== 出站 Hook：采样（受入站事件不派发影响，出站同样改用命名 hook） =====
 
@@ -769,8 +863,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
         items = kwargs.get("items")
         if self._engine is None or self._store is None:
             return {"action": "continue", "modified_kwargs": kwargs}
-        # 会话过滤：``session_id`` 实测原样等于 stream_id（H8）→ 直接复用判定
-        if not self._is_mode_session(session_id):
+        # 会话过滤：``session_id`` 实测原样等于 stream_id（H8）→ 直接复用判定。
+        # 群聊（R35）：群会话**不是** mode session，但观察名单内的群同样要注入
+        # 漂移层（Q6=A：漂移层调制不属"多层表达融合"，群聊照常）。
+        group_id = self._group_streams.gid_of(session_id) if self._group_streams is not None else ""
+        if group_id and group_id not in set(self._observed_group_ids()):
+            group_id = ""  # 已从名单摘除 / 不再观察 → 按非群聊会话处理
+        if not self._is_mode_session(session_id) and not group_id:
             return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(items, list) or not items:
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -783,18 +882,33 @@ class MaiNarrativePlugin(MaiBotPlugin):
         state = self._engine.load_self_state()
         branch = self._engine.load_branch_state(user_id) if user_id else None
         relationship = (branch or {}).get("relationship") or {}
+        if group_id:
+            # 🔴 群聊三处必须与私聊不同：
+            # ① relationship 传空 → Build 出的块天然不含关系语境
+            #    （"你们是什么关系"这种信息不该出现在第三方面前，Q2=B）；
+            # ② audience=g:<gid> 而 owner 为空 → 即便将来有人塞了 stage，
+            #    relationship_line 也会因 audience != owner 而 fail-closed 返回空串；
+            # ③ learned_style **强制为空** —— 它是 config.toml [learned] 区块里
+            #    私聊学到的表达习惯（ADR-0002），投进群 = 跨流泄露。
+            audience = f"g:{group_id}"
+            stage = ""
+            learned_style: Sequence[str] = ()
+        else:
+            audience = user_id
+            stage = str(
+                relationship.get("stage")
+                or current_relationship_stage(relationship)
+            )
+            learned_style = get_style_projection(self._config_path(), logger=self.ctx.logger)
         context_text = build_replyer_block(
             drift_text=describe_drift(state.get("state") or {}),
             # 与 /narrative status 同款取值顺序：显式 ``stage``（批 4 晋升机写入的晋升值）
             # 优先，批 4 前回退到只读事实推导（``continuity.current_relationship_stage``）。
-            stage=str(
-                relationship.get("stage")
-                or current_relationship_stage(relationship)
-            ),
-            # 私聊剧本模式下受众即归属人本人；群聊就绪时两者分离，可见性 fail-closed
-            audience=user_id,
+            stage=stage,
+            # 私聊剧本模式下受众即归属人本人；群聊时两者分离，可见性 fail-closed
+            audience=audience,
             owner=user_id,
-            learned_style=get_style_projection(self._config_path(), logger=self.ctx.logger),
+            learned_style=learned_style,
         )
         items.append(build_style_item(context_text))
         kwargs["items"] = items
@@ -1048,6 +1162,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 事件队列一并清空；编年史 append-only 刻意保留
         self._store.clear_all_events()
         self._streams.clear()
+        if self._group_streams is not None:
+            self._group_streams.clear()
         self._telemetry.clear_pending_rounds()
         self._proactive.clear_sent()
         # 全清 kv 会连 state 一起抹掉 → 立即重建默认 state（带当前 schema_version）。
@@ -1090,7 +1206,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
                     .get("stage")
                     or "陌生人"
                 ),
-                # RESERVED(R6)：互动计数是**内部证据计数**，不进 API 输出
+                # OBSERVE(R6)：互动计数是**内部证据计数**，不进 API 输出
                 # （ADR-0002 §2：不进注入块、不进 status）
             }
             for uid in self._mode_user_ids()
@@ -1172,7 +1288,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
                     if inner.get("focus", {}).get("pending_events")
                     else ""
                 ),
-                # RESERVED(R18)：口径维持现状（继续给原文，用户 Q1-b 裁定）。
+                # OBSERVE(R18)：口径维持现状（继续给原文，用户 Q1-b 裁定）。
                 # 但「diary 产物完全隔离」是立项铁律，不随该裁定豁免 → 只短路 diary。
                 "recent_chronicle": [
                     str(entry.get("text", ""))[:INJECT_TEXT_CAP]

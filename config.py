@@ -400,6 +400,35 @@ class NarrativeSection(PluginConfigBase):
         ),
         json_schema_extra={"label": "临近入睡提示", "hint": "分钟；0=关闭；默认 25", "order": 20},
     )
+    observe_group_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "R35 群聊观察：参与观察的群号列表。留空 = 群聊观察整体关闭"
+            "（此时群素材不落库、群回复也不注入漂移层）。"
+            "⚠️ 落库的每条群事件都强制打 ``g:<群号>`` 受众标，"
+            "不带标的群素材会被拒绝写入——群里的内容永不会流进私聊。"
+        ),
+        json_schema_extra={
+            "label": "群聊观察群号",
+            "hint": "纯数字群号，例 [\"123456\"]；留空=关闭",
+            "item_type": "string",
+            "order": 21,
+        },
+    )
+    group_event_retention_days: int = Field(
+        default=60,
+        ge=1,
+        le=365,
+        description=(
+            "R35 群聊观察事件的保留天数（超期由 tick 清理）。"
+            "观察期目的是攒语料给未来的三轨路由定规则，砍太短等于白攒。"
+        ),
+        json_schema_extra={
+            "label": "群事件保留天数",
+            "hint": "天；默认 60（约 200 条/天 × 300B ≈ 3.6MB）",
+            "order": 22,
+        },
+    )
 
 
 class UserWindowRule(PluginConfigBase):

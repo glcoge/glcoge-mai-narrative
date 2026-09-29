@@ -263,7 +263,7 @@ def default_branch_state() -> Dict[str, Any]:
         },
         "state": {
             "last_interaction_ts": "",
-            # RESERVED(R6)：互动计数器降级为**内部证据计数**——不进注入块、
+            # OBSERVE(R6)：互动计数器降级为**内部证据计数**——不进注入块、
             # 不进 /narrative status，只作晋升证据链的确定性时间戳来源。
             "interaction_count": 0,
         },
@@ -436,6 +436,7 @@ class NarrativeEngine:
         )
         self._snapshot_if_day_changed(state, current)
         self._dequeue_expired_branch_events(current)
+        self._dequeue_expired_group_events(current)
         # 创作层：按间隔+上限闸门尝试生成生活片段（内部自控频率，失败不影响规则 tick）
         try:
             await self.maybe_generate_life_fragment(current)
@@ -684,6 +685,25 @@ class NarrativeEngine:
         for user_id in self._plugin.config.narrative.mode_user_ids or []:
             self._store.clear_events_before(f"branch:{user_id}", cutoff)
 
+    def _dequeue_expired_group_events(self, now: datetime) -> None:
+        """清理超期的群聊观察事件（R35，默认 60 天窗口）。
+
+        ❗ 为什么必须有：``_dequeue_expired_branch_events`` 只遍历私聊的
+        ``mode_user_ids``，群事件**无人清理会无限增长**（事件队列唯一的清道夫
+        就是这两个方法）。
+
+        ❗ 清理范围必须是「配置名单 ∪ 已知映射」：只按名单清理的话，用户把某个
+        群从 ``observe_group_ids`` 摘掉后，它已积累的历史事件就再也没人扫到，
+        变成永久孤儿数据。
+        """
+        cfg = self._plugin.config.narrative
+        days = int(getattr(cfg, "group_event_retention_days", 60) or 0)
+        if days <= 0:
+            return
+        cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+        for group_id in self._plugin.observed_group_ids():
+            self._store.clear_events_before(f"group:{group_id}", cutoff)
+
     # ─── 对话素材采集 ────────────────────────────────────────────
 
     def record_interaction(self, user_id: str, text: str, now: Optional[datetime] = None) -> None:
@@ -718,6 +738,38 @@ class NarrativeEngine:
                 "source_uid": str(user_id),
                 # 2026-09-21：保留长度 80 → 300 字符。入库时不知道未来是否重要，
                 # 统一多留原文，由创作层按档位决定展示多少（见 _FRAGMENT_TIER_MATERIAL_CAP）
+                "bysource": normalized[:_FRAGMENT_MATERIAL_STORE_CAP] or "（一条消息）",
+            }
+        )
+
+    def record_group_material(self, group_id: str, text: str, now: Optional[datetime] = None) -> None:
+        """R35：群聊消息落一条**纯观察**事件（不碰任何状态）。
+
+        与私聊 ``record_interaction`` 的关键差别：这里**什么都不更新**——不写支线、
+        不更新互动时点、不做“被吵醒”结算、不进晋升证据池（2026-09-29 Q2=B 裁定）。
+        只留一份带受众标的原文样本，供未来的三轨路由攒判定规则。
+
+        ❗ ``source_uid = g:<gid>`` 是**硬要求**而非可选项：群素材一旦落空受众标
+        就会被当成「通用素材」畅通进私聊（09-21 泄露事故的同型路径）。
+        store 侧另有 fail-closed 守卫：拿不到受众标的 ``group:`` 事件会被拒绝写入。
+
+        Args:
+            group_id: 群号（**必须非空**；调用方负责 fail-closed 前置校验）。
+            text: 群消息原文。
+            now: 事件时刻（缺省取当前本地时间）。
+        """
+        current = now or self._local_now()
+        normalized = str(text or "").strip()
+        if not normalized:
+            return
+        self._store.push_event(
+            {
+                "ts": current.isoformat(timespec="seconds"),
+                "scope": f"group:{group_id}",
+                # ⚠️ kind 故意**不叫** life/daily：``EVIDENCE_ELIGIBLE_KINDS`` 只认这两类，
+                # 群素材因此永不进晋升证据池（隔离三重保险之一）。
+                "kind": "group_material",
+                "source_uid": f"g:{group_id}",
                 "bysource": normalized[:_FRAGMENT_MATERIAL_STORE_CAP] or "（一条消息）",
             }
         )

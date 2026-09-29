@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from .store import NarrativeStore
 
 # stream 映射在 kv 中的 key（单 JSON dict：uid -> stream_id）
 _STREAM_MAP_KEY = "stream_map"
+# 群会话映射在 kv 中的 key（单 JSON dict：gid -> session_id）
+_GROUP_STREAM_MAP_KEY = "group_stream_map"
 
 
 class StreamRegistry:
@@ -77,4 +79,68 @@ class StreamRegistry:
         self._stream_to_uid.clear()
 
 
-__all__ = ["StreamRegistry"]
+class GroupStreamRegistry:
+    """观察群的 gid↔session 映射（R35 群漂移层注入的前提，kv 持久化）。
+
+    为什么需要它：``maisaka.replyer.before_model_request`` 的载荷**只有
+    ``session_id``、没有任何群字段**（主程序 ``maisaka_generator_base.py:765-781``
+    实测），replyer 侧无法反查这条会话属于哪个群 → 只能靠入站时自己登记。
+
+    ⚠️ 必须 kv 持久化（P0 踩坑 #5 同款）：只存内存 = 重启清空 = 群注入静默停摆，
+    且这种失效**没有任何报错**，排查成本极高。
+    """
+
+    def __init__(self, store: NarrativeStore, logger: logging.Logger) -> None:
+        self._store = store
+        self._logger = logger
+        self._gid_to_stream: Dict[str, str] = {}
+        self._stream_to_gid: Dict[str, str] = {}
+
+    def record(self, group_id: str, stream_id: str) -> None:
+        """登记 gid<->session 映射（群回复注入时用 session 反查 gid）。"""
+        if not group_id or not stream_id:
+            return
+        self._gid_to_stream[str(group_id)] = str(stream_id)
+        self._stream_to_gid[str(stream_id)] = str(group_id)
+        if self._store is not None:
+            try:
+                current_map = self._store.get_kv(_GROUP_STREAM_MAP_KEY) or {}
+                current_map[str(group_id)] = str(stream_id)
+                self._store.set_kv(_GROUP_STREAM_MAP_KEY, current_map)
+            except Exception as exc:
+                self._logger.debug("群会话映射持久化失败: %s", exc)
+
+    def restore(self) -> None:
+        """从 store 回填 gid->session 映射（启动恢复，防重启后群注入失联）。"""
+        if self._store is None:
+            return
+        try:
+            saved = self._store.get_kv(_GROUP_STREAM_MAP_KEY) or {}
+            for group_id, stream_id in saved.items():
+                gid = str(group_id)
+                sid = str(stream_id)
+                if gid and sid:
+                    self._gid_to_stream[gid] = sid
+                    self._stream_to_gid[sid] = gid
+        except Exception as exc:
+            self._logger.debug("群会话映射恢复失败: %s", exc)
+
+    def gid_of(self, stream_id: str) -> str:
+        """反查会话对应的群号（未知会话返回空串）。"""
+        return self._stream_to_gid.get(str(stream_id or ""), "")
+
+    def stream_of(self, group_id: str) -> str:
+        """查询群已知的会话 ID。"""
+        return self._gid_to_stream.get(str(group_id or ""), "")
+
+    def known_gids(self) -> List[str]:
+        """全部已知群号（保留窗口清理用：名单摘除后仍能清干净历史群事件）。"""
+        return list(self._gid_to_stream.keys())
+
+    def clear(self) -> None:
+        """清空全部映射（状态重置用；kv 由重置流程统一清空）。"""
+        self._gid_to_stream.clear()
+        self._stream_to_gid.clear()
+
+
+__all__ = ["StreamRegistry", "GroupStreamRegistry"]

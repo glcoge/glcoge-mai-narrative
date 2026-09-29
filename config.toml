@@ -30,6 +30,11 @@ enabled = false
 # v0.1 最小切片：只填你自己的 QQ 号（私聊剧本模式）
 mode_user_ids = []
 mode_stream_ids = []
+# R35 群聊观察：参与观察的群号列表（留空 = 群聊观察整体关闭）
+# ⚠️ 落库事件强制打 g:<群号> 受众标；取不到群号的消息一律拒绝落库
+observe_group_ids = []
+# 群聊观察事件保留天数（超期由 tick 清理）
+group_event_retention_days = 60
 # 世界时钟 tick 间隔（分钟）。⚠️ 有效值 30-240，小于 30 会按 30 计
 clock_tick_minutes = 30
 # 时区偏移（UTC+）。⚠️ 服务器系统时区为 UTC 时本项无效，请直接改服务器系统时区

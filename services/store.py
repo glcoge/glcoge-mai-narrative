@@ -31,15 +31,26 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _uid_from_branch_scope(scope: str) -> str:
-    """从支线作用域名反推用户号：``branch:123`` → ``123``；非支线作用域返回空串。
+def _source_uid_from_scope(scope: str) -> str:
+    """从作用域名反推受众标（写入侧打标的兜底层）。
 
-    对话素材的 scope 即来源，写入侧据此自动打标（调用方不必每次都传 ``source_uid``）。
+    - ``branch:123`` → ``123``（支线素材天然只对该用户可见）
+    - ``group:456``  → ``g:456``（R35：群素材必须带群受众标）
+
+    为什么 branch 之外的前缀也要支持：``push_event`` 的反推原本只认 ``branch:``，
+    于是 ``group:{gid}`` 会被反推成**空串** → 落进「通用」桶 → 畅通进私聊，
+    一比一复刻 HDSI §6.2 那个洞（它的 ``participantId=''`` 恰好是全局晋升门的
+    放行条件）。**任何新增 scope 前缀都必须在这里补对应规则**，否则该 scope 的
+    素材会默认对所有人可见。
+
+    未知前缀返回空串（保持既有行为，不擅自发明受众语义）。
     """
     normalized = str(scope or "")
-    prefix = "branch:"
-    if normalized.startswith(prefix):
-        return normalized[len(prefix) :].strip()
+    if normalized.startswith("branch:"):
+        return normalized[len("branch:") :].strip()
+    if normalized.startswith("group:"):
+        gid = normalized[len("group:") :].strip()
+        return f"g:{gid}" if gid else ""
     return ""
 
 
@@ -540,18 +551,27 @@ class NarrativeStore:
         """入队一条事件（由头签发器的原料）。
 
         写入打标（ADR-0004 第 1 层）：``source_uid`` 缺省时从 ``scope`` 反推
-        （``branch:{uid}`` → ``uid``），使对话素材天然只对该用户可见。
+        （``branch:{uid}`` → ``uid``、``group:{gid}`` → ``g:{gid}``），使对话素材
+        天然只对该受众可见。
+
+        ❗ fail-closed 守卫：``group:{gid}`` 作用域若最终拿不到非空 ``source_uid``，
+        **直接拒绝写入**——不带受众标的群素材会落进「通用」桶畅通进私聊，
+        这是 09-21 泄露事故的同型路径，宁可不记也不能漏标。
         """
         source_uid = str(event.get("source_uid", "") or "").strip()
+        scope = str(event.get("scope", ""))
         if not source_uid:
-            source_uid = _uid_from_branch_scope(str(event.get("scope", "")))
+            source_uid = _source_uid_from_scope(scope)
+        if scope.startswith("group:") and not source_uid:
+            # 见 docstring：不带受众标的群素材 = 通用素材 = 畅通进私聊，拒绝写入
+            return
         with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO events (ts, scope, kind, bysource, source_uid) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (
                     event.get("ts") or _now_iso(),
-                    str(event.get("scope", "")),
+                    scope,
                     str(event.get("kind", "dialogue_material")),
                     str(event.get("bysource", "")),
                     source_uid,
