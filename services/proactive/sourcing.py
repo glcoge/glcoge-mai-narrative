@@ -75,7 +75,7 @@ def build_bysource(
     """从"bot 自己的生活"签发主动开口的由头（v0.1.3 重构）。
 
     取材优先级（全部来自 bot 自身，禁止取材用户消息镜像，防复述）：
-    1. 创作层最近生活片段（focus.pending_events 最新两条）；
+    1. 创作层生活片段（focus.pending_events 全窗口，容量见 fragment_pending_max）；
     2. 支线里程碑（你们之间发生过的事）；
     3. 情绪/作息（疲惫想倾诉、深夜清醒）。
 
@@ -102,7 +102,8 @@ def build_bysource(
     candidates: List[Tuple[str, str]] = []
     # 受众过滤（ADR-0004）：生活片段默认通用（无标签），但被打标就必须按受众隔离
     pending = filter_entries(state["state"]["focus"].get("pending_events", []), user_id)
-    for item in pending[-2:]:
+    # 全窗口取材（方案 §7 / P20）：窗口与容量同宽，不再只取最近两条
+    for item in pending:
         fragment = str(item.get("text", "") or "").strip()
         if not fragment:
             continue
@@ -148,9 +149,14 @@ def build_bysource(
     seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
     chosen, chosen_ts = candidates[seed % len(candidates)]
     if chosen_ts:
-        # 登记已用（有界 8 条）：下次该片段不再作由头（仅对该用户生效）
+        # 登记已用（宽度与素材池同宽，派生自 fragment_pending_max，不设独立配置）：
+        # 下次该片段不再作由头（仅对该用户生效）。上限与 pending 同宽即足够——
+        # 片段被挤出登记表之前必然先被挤出素材池（两者同为「取最新 N 条」的 LRU，
+        # 且被登记的 ts 一定是素材池里待过的片段），不存在「还在池里却查不到已用」
+        # 的窗口。
+        cap = max(1, int(cfg.narrative.fragment_pending_max))
         used.add(chosen_ts)
-        engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-8:]))
+        engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
     return chosen
 
 

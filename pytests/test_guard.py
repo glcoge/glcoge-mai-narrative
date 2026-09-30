@@ -395,6 +395,7 @@ def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rule
             life_fragment_daily_max=6,
             life_fragment_interval_minutes=120,
             life_fragment_detail_enabled=False,
+            fragment_pending_max=12,
             sleep_time="",
             wake_time="",
             wake_fragment_enabled=False,

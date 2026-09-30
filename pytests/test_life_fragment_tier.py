@@ -79,6 +79,8 @@ def _make_engine(*, detail_enabled=True, energy=0.6, events=None, milestones=Non
             life_fragment_daily_max=6,
             life_fragment_interval_minutes=120,
             life_fragment_detail_enabled=detail_enabled,
+            # 2026-09-30 新增：素材池容量（由头取材/去重登记宽度派生自此值）
+            fragment_pending_max=12,
             # 2026-09-22：本文件不测睡眠，留空关闭睡眠态（prompt 的临近入睡分支随之跳过）
             sleep_time="",
             wake_time="",

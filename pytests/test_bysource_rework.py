@@ -89,6 +89,7 @@ def _make_engine(pending):
             life_fragment_daily_max=6,
             life_fragment_interval_minutes=120,
             life_fragment_detail_enabled=True,
+            fragment_pending_max=12,
         ),
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
         identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], immutable_traits=[]),

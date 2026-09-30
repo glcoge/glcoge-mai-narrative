@@ -68,6 +68,27 @@ def _render(*, round_kind: str = "reply", bysource: str = "", last_interaction_t
     )
 
 
+# ===== 注入端护栏：素材池容量 ≠ 注入条数（方案 §7 / P20，2026-09-30） =====
+
+
+def test_planner_block_injects_at_most_two_fragments():
+    """planner 块仍只取最近 2 条片段（容量放宽只作用于取材侧）。
+
+    素材池容量 5→12 放宽的是**由头取材**范围；planner 块是每轮对话都要塞进
+    prompt 的常驻上下文，条数直接换 token，必须保持最近 2 条。本用例是护栏——
+    防止将来顺手把注入端也改宽（那会让每轮成本随容量线性上涨）。
+    """
+    state = _make_state()
+    state["state"]["focus"]["pending_events"] = [
+        {"ts": "2026-09-11T08:00:00", "text": "最早的片段"},
+        {"ts": "2026-09-11T09:00:00", "text": "中间的片段"},
+        {"ts": "2026-09-11T10:00:00", "text": "最新的片段"},
+    ]
+    text = build_context_block(_make_plugin(), state, None, _NOW, [])
+    assert "最新的片段" in text and "中间的片段" in text
+    assert "最早的片段" not in text, "注入端只应取最近 2 条（容量放宽不改变注入条数）"
+
+
 # ===== 回归用例 =====
 
 

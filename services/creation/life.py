@@ -65,7 +65,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
 
     目的：让 bot 的"生活"不只是数字变化，而是有一段段可被对话引用的生活故事
     （修复主动消息复述问题的第一环）。生成结果双写：
-    - ``focus.pending_events``（有界 5 条，渲染时引用为"最近的生活片段"）；
+    - ``focus.pending_events``（有界 ``fragment_pending_max`` 条，默认 12，渲染时引用为"最近的生活片段"）；
     - ``chronicle``（append-only，kind=life，日记侧可见）。
 
     只读事件队列，不消费（三个原因：编年史 23:30 也要读同一批素材；
@@ -173,7 +173,9 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
             "tier": tier,
         }
     )
-    focus["pending_events"] = pending[-5:]
+    # 容量取自配置（方案 §7 / P20）：max(1,·) 防 0——pending[-0:] 是「全量」不是
+    # 「空」，容量语义下 0 无意义（config 侧已 ge=1，此处兜住测试夹具绕过校验的情况）。
+    focus["pending_events"] = pending[-max(1, int(cfg.narrative.fragment_pending_max)):]
     engine.save_self_state(state)
     # 生活片段照常生成（pending_events 是主动消息的由头来源，不能断），
     # 仅"写入编年史"这一步受 chronicle_enabled 约束（2026-09-16：

@@ -129,6 +129,8 @@ def _make_engine(
         life_fragment_daily_max=daily_max,
         life_fragment_interval_minutes=interval,
         life_fragment_detail_enabled=False,
+        # 2026-09-30 新增：素材池容量（由头取材/去重登记宽度派生自此值）
+        fragment_pending_max=12,
         energy_baseline=0.45,
         energy_baseline_pull=0.3,
         energy_sleep_recovery=0.1,

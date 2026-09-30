@@ -66,7 +66,9 @@ class _FakeStore:
 def _make_engine(pending, events=None):
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
-        narrative=SimpleNamespace(enabled=True, mode_user_ids=[_UID], energy_baseline=0.55),
+        narrative=SimpleNamespace(
+            enabled=True, mode_user_ids=[_UID], energy_baseline=0.55, fragment_pending_max=12
+        ),
         proactive=SimpleNamespace(
             urge_enabled=True,
             urge_base=0.5,
@@ -146,6 +148,40 @@ def test_minor_tier_now_usable_alone():
     """回滚批 1 的 minor 排除（Q1）：详略与资格解耦，无素材切片同样可作由头。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "无素材切片", "tier": "minor"}])
     assert "无素材切片" in engine.build_bysource(_UID, _NOW)
+
+
+def test_full_window_sourcing_beyond_last_two():
+    """全窗口取材（方案 §7 / P20，2026-09-30）：第 3 旧的片段同样可作由头。
+
+    旧实现只取 ``pending[-2:]``——把最新两条预登记为已用后，候选必然为空，
+    ``build_bysource`` 返回 ""（宁可跳过）。全窗口化后第 3 旧的片段重新可见。
+    """
+    pending = [
+        {"ts": "2026-09-22T09:00:00", "text": "最旧的片段", "tier": "normal"},
+        {"ts": "2026-09-22T10:00:00", "text": "次新的片段", "tier": "normal"},
+        {"ts": "2026-09-22T11:00:00", "text": "最新的片段", "tier": "normal"},
+    ]
+    engine = _make_engine(pending)
+    # 最新两条登记为已用 → 旧窗口（[-2:]）下无候选
+    engine._store.set_kv_str(
+        _SOURCING._bysource_used_key(_UID),
+        "2026-09-22T10:00:00,2026-09-22T11:00:00",
+    )
+    chosen = engine.build_bysource(_UID, _NOW)
+    assert "最旧的片段" in chosen, "全窗口下第 3 旧的片段应可作由头"
+
+
+def test_used_registry_width_follows_pending_max():
+    """去重登记表宽度派生自 fragment_pending_max（§15-4）：不再硬编码 8。"""
+    engine = _make_engine([{"ts": "2026-09-22T11:00:00", "text": "片段甲", "tier": "normal"}])
+    engine._plugin.config.narrative.fragment_pending_max = 3
+    key = _SOURCING._bysource_used_key(_UID)
+    # 预填 6 条更旧的登记（2026-01-01）→ 选中后再登记 1 条，共 7 条，只应留最新 3 条
+    engine._store.set_kv_str(key, ",".join(f"2026-01-01T00:{i:02d}:00" for i in range(6)))
+    assert "片段甲" in engine.build_bysource(_UID, _NOW)
+    stored = engine._store.get_kv_str(key)
+    assert len(stored.split(",")) == 3, "登记表宽度应跟随 fragment_pending_max=3"
+    assert "2026-09-22T11:00:00" in stored, "最新选中者必须保留在登记表中"
 
 
 # ===== B8：命令消息本地正则兜底（R9） =====

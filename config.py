@@ -310,6 +310,19 @@ class NarrativeSection(PluginConfigBase):
             "order": 11,
         },
     )
+    fragment_pending_max: int = Field(
+        default=12,
+        ge=1,
+        le=32,
+        description=(
+            "生活片段素材池容量（pending_events 有界保留条数）。素材池是主动消息"
+            "由头的取材范围：容量越大可选素材越多（由头按全窗口取材，planner 注入"
+            "端仍只取最近 2 条不变）。由头去重登记表宽度跟随本值，不设独立配置。"
+            "（2026-09-30：5 → 12，随日上限 16 配套放宽。）"
+            "⚠️ 观察期冻结（P20）：改动＝污染实验。"
+        ),
+        json_schema_extra={"label": "素材池容量", "hint": "1-32；默认 12；观察期冻结", "order": 11},
+    )
 
     # ── 睡眠态（v0.1.10，2026-09-22）─────────────────────────────────────
     # 真源说明：自我层 state 里也有 sleep_time / wake_time 两个键，但那是 v0.1 遗留的
