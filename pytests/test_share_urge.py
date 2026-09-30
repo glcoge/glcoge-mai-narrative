@@ -189,6 +189,8 @@ def _make_scheduler(
     scheduler._next_fire: Dict[str, Any] = {}
     scheduler._sent_records: Dict[str, Any] = {}
     scheduler._pending_at: Dict[str, Any] = {}
+    # engaged 计数窗（第④步新增；__new__ 绕过 __init__ 故须手工初始化）
+    scheduler._engaged_windows: Dict[str, Any] = {}
     scheduler._metrics = metrics
 
     async def fake_fire(user_id: str, stream_id: str, ts: datetime.datetime) -> None:

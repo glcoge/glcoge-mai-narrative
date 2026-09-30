@@ -29,7 +29,7 @@ from ..proactive.sourcing import (
 )
 from ..render.audience import filter_entries, visible_events
 from ..store import NarrativeStore
-from .continuity import current_relationship_stage
+from .continuity import append_milestone, current_relationship_stage
 
 # 每日作息阶段（本地 24h 制）
 _ROUTINE_PHASES: List[Tuple[int, str]] = [
@@ -704,6 +704,14 @@ class NarrativeEngine:
             self._store.clear_events_before(f"group:{group_id}", cutoff)
 
     # ─── 对话素材采集 ────────────────────────────────────────────
+
+    def append_milestone(self, user_id: str, desc: str, now: Optional[datetime] = None) -> bool:
+        """薄委托：落一条 engaged 里程碑（实现在 ``state/continuity.py``）。
+
+        保持与 ``build_bysource`` / ``compute_share_urge`` 相同的既有约定：
+        实现下沉子模块、engine 留一层委托，对外 API 稳定、测试绑定点不散。
+        """
+        return append_milestone(self, user_id, desc, now or self._local_now())
 
     def record_interaction(self, user_id: str, text: str, now: Optional[datetime] = None) -> None:
         """用户互动落痕：更新自我层互动时点，素材入支线事件队列。"""

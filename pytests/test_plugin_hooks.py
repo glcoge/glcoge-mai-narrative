@@ -194,6 +194,52 @@ def test_outbound_text_len_invalid_inputs_return_none():
     assert outbound_text_len({"raw_message": [{"type": "face", "data": "x"}]}) is None
 
 
+# ===== 第④步：engaged 接线（命令消息不流入计数） =====
+
+
+def _inbound_payload(text: str, *, is_command: bool = False) -> dict:
+    """构造 chat.receive.after_process 形态的**私聊**入站载荷。"""
+    return {
+        "session_id": "s1",
+        "message": {
+            "message_id": "m2",
+            "is_command": is_command,
+            "message_info": {"user_info": {"user_id": "u1"}},
+            "raw_message": [{"type": "text", "data": text}],
+        },
+    }
+
+
+def test_inbound_command_not_counted_as_engaged():
+    """命令/通知消息不流入 engaged 计数（第④步）。
+
+    接线位置钉死：``note_engaged`` 在 ``is_command`` 提前 return **之后**才被调用，
+    与素材采集、互动落痕同一口径 —— 命令是"你本人操作"，不是一次对话。
+    """
+    plugin, _telemetry, store = _make_plugin()
+    calls: list = []
+    plugin._engine = SimpleNamespace(
+        record_interaction=lambda *a, **k: None,
+        record_branch_feedback=lambda *a, **k: None,
+        record_urge_feedback=lambda *a, **k: None,
+    )
+    plugin._store = store
+    plugin._pairs = None
+    plugin._streams = SimpleNamespace(record=lambda *a, **k: None)
+    plugin._proactive = SimpleNamespace(
+        resolve_catch=lambda uid, now: None,
+        note_engaged=lambda *a, **k: calls.append(a),
+    )
+
+    asyncio.run(
+        plugin.handle_inbound_message(**_inbound_payload("/narrative status", is_command=True))
+    )
+    assert calls == [], "命令消息不得进入 engaged 计数"
+
+    asyncio.run(plugin.handle_inbound_message(**_inbound_payload("今天天气不错")))
+    assert len(calls) == 1, "普通私聊消息应交给 engaged 计数（开不开窗由 scheduler 判定）"
+
+
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":

@@ -632,6 +632,20 @@ class ProactiveSection(PluginConfigBase):
         ),
         json_schema_extra={"label": "对人系数回归", "hint": "0-1；默认 0.05", "order": 14},
     )
+    # ── engaged 里程碑（2026-09-30，方案 §6 / Q4） ──
+    # 主动消息被接住后若真的聊起来（1 小时窗内 ≥3 条且 ≥30 字），落一条「原话」回忆。
+    # 只存原文不存总结；消费侧三闸（7 天冷却 / 30 天保质 / 3 选 1）为模块常量，
+    # 观察期冻结不可配置（方案 §15.1 的 3+9 拆分）。
+    milestone_enabled: bool = Field(
+        default=True,
+        description=(
+            "是否启用「聊起来了」里程碑（engaged）：主动消息被接住后，若 1 小时内"
+            "用户回应 ≥3 条且合计 ≥30 字，就往该用户的回忆里落一条他/她的原话。"
+            "关闭即回到改造前：回忆恒空，由头只剩生活片段与情绪兜底。"
+            "⚠️ 本开关只管**写入**；已落库条目由 30 天保质期自然衰减，不受本开关影响。"
+        ),
+        json_schema_extra={"label": "启用里程碑", "order": 15},
+    )
 
 
 class LLMSection(PluginConfigBase):

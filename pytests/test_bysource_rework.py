@@ -221,6 +221,8 @@ def _make_scheduler():
     sched._next_fire = {}
     sched._sent_records = {}
     sched._pending_at = {}
+    # engaged 计数窗（第④步新增；__new__ 绕过 __init__ 故须手工初始化）
+    sched._engaged_windows = {}
     return sched
 
 

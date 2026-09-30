@@ -52,6 +52,12 @@ RELATIONSHIP_DERIVED = "stage"
 #: 关系**只读事实**字段（ADR-0002 §2）：是记录不是演化观点，不参与晋升。
 RELATIONSHIP_FACT_FIELDS: Tuple[str, ...] = ("first_met", "milestones")
 
+#: engaged 里程碑 desc 截断长度（方案 §6.2 / Q16）：只存原文、不存总结，
+#: 截断防单条过长拖累注入与存储；300 字足够容纳一次连贯对话的用户原话。
+_MILESTONE_DESC_CAP = 300
+#: 每用户里程碑保留条数（有界，超出丢最旧）。
+_MILESTONE_KEEP_PER_USER = 20
+
 #: 自我层「看法」维度（ADR-0002 §1，批 4-C1）：**general 受众**——可进通用注入，
 #: 也是 ``[learned]`` 投影的唯一来源（relationship 是 per_user，永不进 config.toml）。
 PERSPECTIVE_FIELDS: Tuple[str, ...] = ("world_view", "life_goals")
@@ -112,6 +118,54 @@ def assert_writable(path: str) -> str:
             f"锚定层字段不可写：{normalized!r}（ADR-0002 §9：锚定层永不改变）"
         )
     return normalized
+
+
+def append_milestone(engine: Any, user_id: str, desc: str, now: Any) -> bool:
+    """落一条「聊起来了」的事实条目到该用户 ``relationship.milestones``（方案 §6.2 / Q10a / Q16 / Q17）。
+
+    写入者＝engaged 承接成功（``ProactiveScheduler.note_engaged`` 达标时调用）：
+    只有「用户真的接着聊了一轮」才配当回忆，因此写入端不设其它门槛（Q17 白存，
+    消费端由 ``stage != "陌生人"`` 兜底）。
+
+    硬纪律：
+    - **只存原文不存总结**：让模型总结＝引入「模型认为发生了什么」，
+      是编造记忆的头号入口（零 LLM，本函数只做拼接与截断）；
+    - ``id`` 必须为 ``engaged:<ts>`` —— 绝不能用 ``stage:`` 前缀，
+      否则会劫持 ``current_relationship_stage`` 的显式阶段推导；
+    - 有界 ``_MILESTONE_KEEP_PER_USER`` 条，超出丢最旧；
+    - 三开关全开才写：``plugin.enabled`` / ``narrative.enabled`` /
+      ``[proactive].milestone_enabled``。⚠️ ``milestone_enabled`` **只管写入**，
+      已落库条目靠保质期自然衰减（方案 §13 的回滚面①）。
+
+    ⚠️ **副作用（Q17 / §6.4，已知且接受）**：第一条里程碑会把 stage 由「陌生人」抬到
+    「相识」，从而自己打开自己的消费门槛（``sourcing`` 的 ``stage != "陌生人"``）。
+    写入照做，观察项记在 L0-4（stage 是否被单次 engaged 带飞）。
+
+    本模块零上层依赖（不得 import engine），故 ``engine`` 按鸭子类型使用。
+    返回是否真的落了一条。
+    """
+    cfg = engine._plugin.config
+    if not (cfg.plugin.enabled and cfg.narrative.enabled):
+        return False
+    if not bool(cfg.proactive.milestone_enabled):
+        return False
+    branch = engine.load_branch_state(user_id)
+    relationship = branch.setdefault("relationship", {})
+    milestones = list(relationship.get("milestones") or [])
+    ts = now.isoformat(timespec="seconds") if hasattr(now, "isoformat") else str(now)
+    text = str(desc or "")[:_MILESTONE_DESC_CAP]
+    milestones.append({"id": f"engaged:{ts}", "ts": ts, "desc": text})
+    kept = milestones[-_MILESTONE_KEEP_PER_USER:]
+    # 写前守卫（ADR-0002 §9 纪律：任何写入状态路径都先过锚定检查）。
+    # ⚠️ 返回值是「原路径」不是「字段名」——用它的返回值当 key 会写出
+    #    字面量 "relationship.milestones" 键（2026-09-30 实现期实际踩过，由测试抓出）。
+    assert_writable("relationship.milestones")
+    relationship["milestones"] = kept
+    engine.save_branch_state(user_id, branch)
+    engine._plugin.ctx.logger.info(
+        "engaged 里程碑落库: uid=%s 条数=%d desc=%s", user_id, len(kept), text[:30]
+    )
+    return True
 
 
 def is_slow_field_visible(path: str, audience: str, owner_uid: str = "") -> bool:

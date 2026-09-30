@@ -39,6 +39,17 @@ _DELIVER_CONFIRM_GRACE_MINUTES = 10
 # 第一步暂不入 config（对行为影响小），后续按真机数据再定。
 _URGE_RETRY_RANGE = (30, 60)
 
+# engaged 计数窗（方案 §6.1 / Q9=c / OBSERVE(P21)）：主动消息被接住后开一窗，
+# 窗内用户回应 ≥3 条【且】合计 ≥30 字 才算「聊起来了」，达标记一条里程碑（原文，不总结）。
+# 「嗯」式敷衍只贡献 replies=1/chars=1，两条也拿不下 30 字门槛 —— 这正是 Q9 的目的。
+#
+# ❗ 内存态、不持久化（有意为之）：engaged 描述的是**一次连贯的聊得起劲**，
+# 跨进程续窗会把两段无关对话接成一段，反而错记。
+# ❗ 三值均为模块常量（方案 §15.1 的 3+9 拆分）：观察期内物理上改不动阈值。
+_ENGAGED_WINDOW_MINUTES = 60
+_ENGAGED_REPLY_MIN = 3
+_ENGAGED_CHARS_MIN = 30
+
 # ISO 星期取值：1=周一 … 7=周日（与 datetime.isoweekday() 对齐）
 _VALID_WEEKDAYS = frozenset({"1", "2", "3", "4", "5", "6", "7"})
 
@@ -152,6 +163,22 @@ class _SentRecord:
     bysource: str = field(default="")
 
 
+@dataclass
+class _EngagedWindow:
+    """一次承接之后的「聊起来了」计数窗（进程内内存态，随 tick 回收）。
+
+    与 ``_SentRecord`` 的分工：前者记**主动开口**的生命周期（送达/承接/冷落），
+    本结构记**用户回应**的连续性（几条、多少字）。两者互不引用——
+    「值不值得当回忆」不该由「发没发出去」推导。
+    """
+
+    opened: datetime.datetime
+    replies: int = 0
+    chars: int = 0
+    #: 窗内用户原话（按时间顺序）；达标时拼接为里程碑 desc
+    texts: List[str] = field(default_factory=list)
+
+
 def _trigger_accepted(result: Any) -> bool:
     """主动任务是否真的被主程序接受（用于区分"已排队"与"白跑一趟"）。
 
@@ -177,6 +204,8 @@ class ProactiveScheduler:
         self._next_fire: Dict[str, datetime.datetime] = {}
         # uid -> 主动开口记录（承接判定 / 冷落结算 / 送达确认共用一份）
         self._sent_records: Dict[str, List[_SentRecord]] = {}
+        # uid -> engaged 计数窗（承接命中开窗，达标即销毁；进程内内存态）
+        self._engaged_windows: Dict[str, _EngagedWindow] = {}
         # stream_id -> 最近主动消息触发时刻（渲染侧判断当前轮是否为主动开口轮）
         self._pending_at: Dict[str, Dict[str, Any]] = {}
 
@@ -442,6 +471,65 @@ class ProactiveScheduler:
             return max(0.0, elapsed)
         return None
 
+    # ─── engaged 计数窗（方案 §6.1 / Q9=c / P21） ─────────────────
+
+    def note_engaged(
+        self,
+        user_id: str,
+        text: str,
+        now: datetime.datetime,
+        *,
+        catch: bool = False,
+    ) -> bool:
+        """把一条用户消息计入 engaged 窗；返回本次是否**刚好达标**（落了一条里程碑）。
+
+        - ``catch=True``：本条是承接命中的消息（``resolve_catch`` 返回非 None），
+          无窗则开窗并计入本条（replies=1）；**已有窗时不重置**——一次连贯的对话
+          可能包含多次承接，接着数即可，不必切成两个窗。
+        - 无窗且 ``catch=False`` → 直接返回 False：窗外的普通消息与「回忆」无关，
+          绝不自行开窗（回忆必须由一次真实的承接引出）。
+        - 达标即**销毁窗口**（Q16：一次 engaged 只落一条）：窗内余下消息不再计数，
+          直到下一次承接重新开窗 —— 销毁比打 ``fired`` 标记更不容易写错。
+        - 落库失败（开关关闭 / 存储异常）同样销毁窗口：本窗已用掉，不该反复重试。
+
+        ❗ 入口自带过期判定（与 ``_prune_engaged`` 同条件）：tick 只是每用户每 30 秒
+        扫一次，两次 tick 之间到达的消息若不判过期，会把 61 分钟前那段对话和现在
+        这条接成一段（窗口语义是「一次连贯的对话」）。判定幂等，重复无害。
+        """
+        plain = str(text or "")
+        window = self._engaged_windows.get(user_id)
+        if window is not None and (now - window.opened).total_seconds() / 60 > _ENGAGED_WINDOW_MINUTES:
+            self._engaged_windows.pop(user_id, None)
+            window = None
+        if window is None:
+            if not catch:
+                return False
+            window = _EngagedWindow(opened=now)
+            self._engaged_windows[user_id] = window
+        window.replies += 1
+        window.chars += len(plain)
+        if plain:
+            window.texts.append(plain)
+        if window.replies < _ENGAGED_REPLY_MIN or window.chars < _ENGAGED_CHARS_MIN:
+            return False
+        desc = "\n".join(window.texts)
+        self._engaged_windows.pop(user_id, None)
+        return bool(self._plugin._engine.append_milestone(user_id, desc, now))
+
+    def _prune_engaged(self, user_id: str, now: datetime.datetime) -> None:
+        """丢弃超时未达标的 engaged 窗（与冷落结算共用同一 tick 路径回收）。
+
+        ⚠️ 必须由 ``settle_expired`` 在**最开头**调用：它有「无发送记录即早退」的
+        分支，而 engaged 窗与发送记录互不引用 —— 放尾部会让「近期 bot 没主动开口、
+        但用户自己找上门聊了一阵」的窗口永不回收（最多只泄漏一个 uid 的窗，
+        但那是无界增长的开始，不能留）。
+        """
+        window = self._engaged_windows.get(user_id)
+        if window is None:
+            return
+        if (now - window.opened).total_seconds() / 60 > _ENGAGED_WINDOW_MINUTES:
+            self._engaged_windows.pop(user_id, None)
+
     def settle_expired(self, user_id: str, now: datetime.datetime) -> Tuple[int, int]:
         """窗口到期结算，返回 ``(冷落条数, 未送达条数)``。
 
@@ -451,7 +539,11 @@ class ProactiveScheduler:
         - 已被承接的记录直接出队，不再计数。
 
         结算即出队，下一轮不会重复惩罚（等价于旧实现的"弹出即罚一次"）。
+
+        本方法同时是 engaged 计数窗的**唯一回收点**（每用户每 tick 经过一次），
+        回收调用放在首行以避开下方的早退分支。
         """
+        self._prune_engaged(user_id, now)
         records = self._sent_records.get(user_id, [])
         if not records:
             return 0, 0
@@ -474,8 +566,9 @@ class ProactiveScheduler:
         return ignored, undelivered
 
     def clear_sent(self) -> None:
-        """清空主动消息发送记录（状态重置用）。"""
+        """清空主动消息发送记录与 engaged 计数窗（状态重置用）。"""
         self._sent_records.clear()
+        self._engaged_windows.clear()
 
     # ─── 内部 ────────────────────────────────────────────────────
 

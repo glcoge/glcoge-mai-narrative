@@ -56,9 +56,15 @@ energy_interaction_boost = 0.12
 # 2026-09-21：240 → 120；2026-09-22：120 → 60（配合日上限 16）。
 life_fragment_interval_minutes = 60
 life_fragment_daily_max = 16
-# 按事件重要度分级创作详略：minor 40~90 / normal 80~180 / major 200~400 字。
-# 命中信号：窗口内新增关系里程碑 · energy 极端 · 窗口内对话素材 ≥4 条。关=回旧行为（统一 40~90 字）。
+# 高光签总开关（2026-09-30 语义换轨，原名保留）：开启后每次正常片段生成前以
+# highlight_probability 抽签；抽中则追加「写一件不寻常的小事」的要求。篇幅随真实
+# 发生的事自然形成，不再有字数档（minor/normal/major 三档已随 P1/R22 废止）。
 life_fragment_detail_enabled = true
+# 高光签抽中概率（P19）；起床片段豁免抽签。⚠️ 观察期冻结：改动＝污染实验
+highlight_probability = 0.12
+# 生活素材池容量（P20）：pending_events 保留条数；由头取材窗口与容量同宽，
+# 对话注入端仍只取最近 2 条（注入是常驻 token 成本，由头是一次性）
+fragment_pending_max = 12
 
 # ── 睡眠态（v0.1.10）────────────────────────────────────────────
 # 真源：本段这三项就是 bot 的作息，自我层 state 里不再存同名键（v0.1 遗留的死字段已删）。
@@ -88,6 +94,10 @@ silent_end = "08:00"
 random_minutes = [60, 240]
 daily_max = 2
 default_active_window = ["09:00-22:00"]
+# 回忆里程碑（方案 §6 / Q4）：主动消息被接住后若真的聊起来（1 小时窗内 ≥3 条且
+# ≥30 字，取且），落一条用户原话回忆供日后当由头。关闭＝回忆恒空、回到改造前。
+# ⚠️ 本开关只管写入；三闸（7 天冷却 / 30 天保质 / 3 选 1）是代码常量，观察期冻结。
+milestone_enabled = true
 
 # 按用户窗口规则（覆盖默认窗口）：一条规则 = QQ 号 × 生效星期 × 时段
 #   星期记法（ISO）：1=周一 2=周二 3=周三 4=周四 5=周五 6=周六 7=周日
@@ -116,7 +126,7 @@ default_active_window = ["09:00-22:00"]
 # 推理模型可在 WebUI 该模型的 extra_params 配 {thinking = {type = "disabled"}} 关思考。
 creation_model = ""
 temperature = 0.9
-# 最大输出 token：生活片段 major 档可达 400 字，1024 是防截断天花板
+# 最大输出 token：只作防失控天花板，不参与「要求」（写多长由事件本身决定）
 creation_max_tokens = 1024
 show_prompt = false
 

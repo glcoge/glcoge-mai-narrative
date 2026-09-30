@@ -16,7 +16,9 @@ import engine。``INJECT_TEXT_CAP`` 采用函数内延迟导入（见 ``build_by
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List, Optional, Tuple
+import json
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from ..render.audience import filter_entries
 from ..state.continuity import current_relationship_stage
@@ -34,10 +36,77 @@ _BYSOURCE_USED_KEY_PREFIX = "bysource:used:"
 #: OBSERVE(P2)：0.5 是批 1 观察值（字符 bigram Jaccard）；调高了由头变复述，调低了可用候选枯竭。
 _OVERLAP_REJECT = 0.5
 
+# 里程碑消费三闸（方案 §6.3 / Q10b / OBSERVE(P21)）：记忆要能想起，但不能翻来覆去。
+# ① 条目冷却 —— 同一件事短期内不反复拿来讲；
+# ② 保质期 —— 「我早就忘了，她还天天提」比不提更糟，过期旧事不再提取；
+# ③ 3 选 1 节流 —— 防回忆素材挤占日常素材，否则她的生活只剩「回忆」。
+# 三值均为模块常量（方案 §15.1 的 3+9 拆分）：观察期内物理上改不动。
+_MILESTONE_COOLDOWN_DAYS = 7
+_MILESTONE_TTL_DAYS = 30
+_MILESTONE_THROTTLE_WINDOW = 3
+#: 已消费里程碑登记表（per-uid JSON ``{id: iso_ts}``）——条目级冷却，有界同上限。
+_MILESTONE_USED_KEY_PREFIX = "milestone:consumed:"
+#: 最近若干次由头的来源队列（per-uid ``"fragment,milestone,mood"``），供 3 选 1 节流。
+_ORIGIN_KEY_PREFIX = "bysource:origin:"
+
+#: 每用户已消费登记表条数上限（与 milestones 保留上限同宽即可：
+#: 被登记的条目一定来自该用户的 milestones，条目被挤出时登记也已无意义）。
+_MILESTONE_USED_KEEP = 20
+
+
+@dataclass
+class _BySourceCandidate:
+    """一个由头候选。
+
+    - ``ts``：生活片段的时间戳（**空串＝非片段来源**，不进由头去复用表）；
+    - ``origin``：``fragment`` / ``milestone`` / ``mood`` —— 供 3 选 1 节流统计；
+    - ``milestone_id``：仅 ``origin="milestone"`` 时非空，用于条目级冷却登记。
+    """
+
+    text: str
+    ts: str = ""
+    origin: str = "fragment"
+    milestone_id: str = ""
+
 
 def _bysource_used_key(user_id: str) -> str:
     """某用户已用作由头的片段 ts 集合的 kv 键（按 uid 隔离）。"""
     return f"{_BYSOURCE_USED_KEY_PREFIX}{user_id}"
+
+
+def _parse_iso(value: str) -> Optional[datetime.datetime]:
+    """解析 ISO 时间戳；失败返回 None（调用方一律按 fail-closed 处理）。
+
+    条目 ts 由我们自己写入（``datetime.isoformat()``），但归档库里可能有旧形状数据，
+    **解析不出就不用它** —— 宁可少讲一件旧事，不可拿捏不准的时间做减法。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_origins(engine: Any, user_id: str) -> List[str]:
+    """最近若干次由头的来源队列（最旧在前，最多 ``_MILESTONE_THROTTLE_WINDOW`` 项）。"""
+    raw = engine._store.get_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}") or ""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _milestone_consumed_map(engine: Any, user_id: str) -> Dict[str, str]:
+    """该用户已消费里程碑的登记表 ``{milestone_id: 上次消费 iso_ts}``（坏数据退空表）。"""
+    raw = engine._store.get_kv_str(f"{_MILESTONE_USED_KEY_PREFIX}{user_id}") or ""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): str(value) for key, value in data.items()}
 
 
 def _bigrams(text: str) -> set:
@@ -76,13 +145,16 @@ def build_bysource(
 
     取材优先级（全部来自 bot 自身，禁止取材用户消息镜像，防复述）：
     1. 创作层生活片段（focus.pending_events 全窗口，容量见 fragment_pending_max）；
-    2. 支线里程碑（你们之间发生过的事）；
+    2. 支线里程碑（你们之间发生过的事，受**消费三闸**约束）；
     3. 情绪/作息（疲惫想倾诉、深夜清醒）。
 
     **详略与资格解耦**（2026-09-30 回滚批 1 的 minor 排除，Q1）：任何非空
     片段都可作由头，不设档位资格门；真正的取材优先级是 ① 未用过（同一段
     关系内去复用）+ ② 与最近对话不撞车（文本重叠，R23）。高光片段（Q12）
     只作 **2 倍权重加成**（占槽实现），同样不设资格门。
+
+    **里程碑三闸**（方案 §6.3 / Q10b）：① 条目 7 天冷却 ② 30 天保质期
+    ③ 最近 3 次由头里最多 1 次来自里程碑。`stage != "陌生人"` 门槛（Q10c）保留。
 
     没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
     """
@@ -98,8 +170,8 @@ def build_bysource(
     used = {item.strip() for item in (used_raw or "").split(",") if item.strip()}
     recent_text = _recent_dialogue_text(engine, user_id)
 
-    # (候选文本, 片段 ts)；非片段来源 ts 为空串，用于选中后登记"已用"
-    candidates: List[Tuple[str, str]] = []
+    # 候选列表；ts 仅片段来源非空（用于选中后登记"已用"），origin 供 3 选 1 节流统计
+    candidates: List[_BySourceCandidate] = []
     # 受众过滤（ADR-0004）：生活片段默认通用（无标签），但被打标就必须按受众隔离
     pending = filter_entries(state["state"]["focus"].get("pending_events", []), user_id)
     # 全窗口取材（方案 §7 / P20）：窗口与容量同宽，不再只取最近两条
@@ -116,13 +188,14 @@ def build_bysource(
             continue
         # 高光 2 倍权重（Q12 / §4.2）：第二次入列 = 占槽实现，保持确定性选择；
         # 只加权不设资格门；重复入列不产生二次登记（used.add 与去重查询皆幂等）。
-        entry = (f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts)
+        entry = _BySourceCandidate(text=f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts=ts)
         candidates.append(entry)
         if item.get("highlight"):
             candidates.append(entry)
 
     # 关系里程碑取自 relationship 命名空间（批 2 四维 schema）；stage 缺省时由
-    # 只读事实推导（continuity），不再读被删的 familiarity 规则线
+    # 只读事实推导（continuity），不再读被删的 familiarity 规则线。
+    # 消费三闸（方案 §6.3 / Q10b）：3 选 1 节流 → 保质期 → 条目冷却，任一不过即不取。
     relationship = branch.get("relationship", {})
     milestones = list(relationship.get("milestones", []))
     stage = str(
@@ -130,39 +203,79 @@ def build_bysource(
         or current_relationship_stage({"milestones": milestones})
     )
     if milestones and stage != "陌生人":
-        latest_milestone = milestones[-1]
-        candidates.append((f"想起我们之间那件事：{latest_milestone.get('desc', '')}", ""))
+        origins = _recent_origins(engine, user_id)
+        consumed = _milestone_consumed_map(engine, user_id)
+        # ③ 3 选 1 节流：最近 3 次由头里已有 milestone → 本轮不取回忆（防茧房：
+        #    否则「她的生活」会退化成只剩往事）。查在遍历之前，省一次无谓循环。
+        if "milestone" not in origins:
+            for item in reversed(milestones):
+                m_ts = _parse_iso(str(item.get("ts", "") or ""))
+                if m_ts is None:
+                    continue  # 无 ts / 解析不出：无法判保质 → fail-closed 跳过
+                # ② 保质期：过期旧事不再提取
+                if (current - m_ts).days > _MILESTONE_TTL_DAYS:
+                    continue
+                m_id = str(item.get("id", "") or "")
+                # ① 条目冷却：这件往事最近讲过 → 换下一件（不是整个放弃）
+                last = _parse_iso(str(consumed.get(m_id, "") or ""))
+                if last is not None and (current - last).days < _MILESTONE_COOLDOWN_DAYS:
+                    continue
+                candidates.append(
+                    _BySourceCandidate(
+                        text=f"想起我们之间那件事：{str(item.get('desc', '') or '')}",
+                        origin="milestone",
+                        milestone_id=m_id,
+                    )
+                )
+                break  # 只取最新一条可用条目：候选多一条也只会被取模选中一条
 
     if not candidates:
         mood = str(state["state"]["mood"].get("label", "平静"))
         if mood in ("低落", "疲惫"):
-            candidates.append((f"今天有点{mood}，想找人聊聊", ""))
+            candidates.append(
+                _BySourceCandidate(text=f"今天有点{mood}，想找人聊聊", origin="mood")
+            )
         routine = state["state"].get("routine", {})
         phase = str(routine.get("phase", ""))
         # 睡着就别说「还不想睡」——睡眠态上线后这条只在清醒的深夜才成立
         # （实际上深夜既在静默期又在睡眠窗口内，本分支基本不可达，留着只为
         #  日后把静默期调窄时语义仍然正确）
         if phase == "深夜" and str(routine.get("sleep_state", "awake")) != "asleep":
-            candidates.append(("夜深了，我还不想睡，想跟你说点什么", ""))
+            candidates.append(
+                _BySourceCandidate(text="夜深了，我还不想睡，想跟你说点什么", origin="mood")
+            )
         elif phase == "清晨":
-            candidates.append(("刚醒，今天莫名的想先跟你说句话", ""))
+            candidates.append(
+                _BySourceCandidate(text="刚醒，今天莫名的想先跟你说句话", origin="mood")
+            )
 
     if not candidates:
         return ""  # 无可借由的生活素材：本轮主动取消（宁可缺席，不干聊）
 
     # 场景感补全：确定性选一个（按小时稳定），避免同一天重复同一由头
     seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
-    chosen, chosen_ts = candidates[seed % len(candidates)]
-    if chosen_ts:
+    chosen = candidates[seed % len(candidates)]
+    if chosen.ts:
         # 登记已用（宽度与素材池同宽，派生自 fragment_pending_max，不设独立配置）：
         # 下次该片段不再作由头（仅对该用户生效）。上限与 pending 同宽即足够——
         # 片段被挤出登记表之前必然先被挤出素材池（两者同为「取最新 N 条」的 LRU，
         # 且被登记的 ts 一定是素材池里待过的片段），不存在「还在池里却查不到已用」
         # 的窗口。
         cap = max(1, int(cfg.narrative.fragment_pending_max))
-        used.add(chosen_ts)
+        used.add(chosen.ts)
         engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
-    return chosen
+    if chosen.origin == "milestone" and chosen.milestone_id:
+        # 条目级冷却登记（选中即登记，与"已用"同步：未送达也照样冷却，
+        # 兜底预案见方案 §4.3 —— 若 L1「选中未送达率」>20% 再改为送达时登记）
+        consumed[chosen.milestone_id] = current.isoformat(timespec="seconds")
+        engine._store.set_kv_str(
+            f"{_MILESTONE_USED_KEY_PREFIX}{user_id}",
+            json.dumps(dict(list(consumed.items())[-_MILESTONE_USED_KEEP:]), ensure_ascii=False),
+        )
+    # 来源队列（3 选 1 节流的输入）：无论哪一路来源都记，窗口滑动保留最近 N 次
+    origins = (_recent_origins(engine, user_id) + [chosen.origin])[-_MILESTONE_THROTTLE_WINDOW:]
+    engine._store.set_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}", ",".join(origins))
+    return chosen.text
 
 
 # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ──────

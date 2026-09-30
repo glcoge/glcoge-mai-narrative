@@ -669,9 +669,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
             self._telemetry.record("proactive_replied", latency, user_id=user_id)
             # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
             self._engine.record_urge_feedback(user_id, "caught")
-        elif self._telemetry.is_user_initiated(stream_id or user_id, now):
-            # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
-            self._engine.record_urge_feedback(user_id, "user_initiated")
+            # engaged 计数窗（方案 §6.1 / Q9=c）：承接命中 = 开窗，本条计入 replies=1。
+            # 达标（窗内 ≥3 条且 ≥30 字）时由 scheduler 直接落一条里程碑。
+            self._proactive.note_engaged(user_id, plain, now, catch=True)
+        else:
+            # 窗内的普通消息照常计入（命令/通知已在上方 return，天然继承该口径）
+            self._proactive.note_engaged(user_id, plain, now)
+            if self._telemetry.is_user_initiated(stream_id or user_id, now):
+                # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
+                # ❗ 必须留在 else 内：拆成并列 if 会让承接分支也触发本反馈（双抬分享欲）
+                self._engine.record_urge_feedback(user_id, "user_initiated")
         # 互动配对（批 4-C2 / R31）：把本次入站登记为「待配对的用户反馈」，
         # 等本轮出站时与之配成（用户反馈 id → 已送达回应 id）。只建不消费。
         if self._pairs is not None:
