@@ -299,16 +299,27 @@ class NarrativeSection(PluginConfigBase):
     life_fragment_detail_enabled: bool = Field(
         default=True,
         description=(
-            "按事件重要度分级创作详略（2026-09-21 新增）。开启后生活片段分三档："
-            "minor（无素材，40~90 字）／normal（有素材，80~180 字）／"
-            "major（命中里程碑·状态极端·素材密集，200~400 字，要求写细）。"
-            "关闭则回到旧行为（一律 40~90 字，渲染引用仍截 56 字）。"
+            "高光签总开关（2026-09-30 语义换轨，原名保留）：开启后每次正常生活片段"
+            "生成前按 highlight_probability 抽签，抽中则追加「写一件不寻常的小事」的"
+            "要求（每日上限 2 条、起床片段豁免）。关闭则一律走基础句、永不抽签。"
+            "（旧语义「三信号分级详略」已随 tier 删除而废弃，见废弃表 R22。）"
         ),
         json_schema_extra={
-            "label": "分级详略",
-            "hint": "关=旧行为（统一 40~90 字）",
+            "label": "高光签",
+            "hint": "开=抽签注入详略方差（每日上限 2）；关=永不抽签",
             "order": 11,
         },
+    )
+    highlight_probability: float = Field(
+        default=0.12,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "高光签抽中概率（方案 §5 / P19）。开启 life_fragment_detail_enabled 后，"
+            "每次正常生活片段生成前以本概率抽签；抽中则该段追加「写一件不寻常的小事」"
+            "的要求，并落 chronicle kind=life_highlight。⚠️ 观察期冻结（P19）：改动＝污染实验。"
+        ),
+        json_schema_extra={"label": "高光签概率", "hint": "0-1；默认 0.12；观察期冻结", "order": 11},
     )
     fragment_pending_max: int = Field(
         default=12,

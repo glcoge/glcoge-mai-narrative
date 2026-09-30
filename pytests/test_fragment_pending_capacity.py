@@ -91,6 +91,8 @@ def _make_engine(*, interval=30, daily_max=16, pending_max=12):
             life_fragment_interval_minutes=interval,
             life_fragment_detail_enabled=False,
             fragment_pending_max=pending_max,
+            # 高光签概率：0.0 = 本文件内永不抽签（本文件只测容量 LRU）
+            highlight_probability=0.0,
             sleep_time="",
             wake_time="",
             wake_fragment_enabled=False,

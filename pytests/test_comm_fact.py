@@ -54,9 +54,9 @@ def _state():
     }
 
 
-def _fragment_prompt(*, tier="flat", wake=False, materials=("聊到想养只猫",)):
+def _fragment_prompt(*, highlight=False, wake=False, materials=("聊到想养只猫",)):
     return build_life_fragment_prompt(
-        _engine(), _NOW, _state(), list(materials), tier=tier, wake=wake
+        _engine(), _NOW, _state(), list(materials), highlight=highlight, wake=wake
     )
 
 
@@ -84,21 +84,21 @@ def test_rule_covers_the_three_contact_verbs():
 # ─── 接入创作合约 ───────────────────────────────────────────────
 
 
-def test_life_fragment_flat_has_rule():
-    assert COMM_FACT_RULE in _fragment_prompt(tier="flat")
+def test_life_fragment_has_rule():
+    assert COMM_FACT_RULE in _fragment_prompt()
 
 
-def test_life_fragment_major_has_rule():
-    assert COMM_FACT_RULE in _fragment_prompt(tier="major", materials=("聊了很久",) * 5)
+def test_life_fragment_highlight_has_rule():
+    assert COMM_FACT_RULE in _fragment_prompt(highlight=True, materials=("聊了很久",) * 5)
 
 
 def test_life_fragment_wake_variant_has_rule():
     """起床补一段也要带（醒来第一件事常常就是"想起要回谁"）。"""
-    assert COMM_FACT_RULE in _fragment_prompt(tier="flat", wake=True)
+    assert COMM_FACT_RULE in _fragment_prompt(wake=True)
 
 
 def test_life_fragment_without_materials_still_has_rule():
-    assert COMM_FACT_RULE in _fragment_prompt(tier="minor", materials=())
+    assert COMM_FACT_RULE in _fragment_prompt(materials=())
 
 
 def test_chronicle_prompt_has_rule():
@@ -116,8 +116,8 @@ def test_no_sent_list_injection_yet():
     R25 的登记状态，而不是让「已实现」静默溜过文档。
     """
     prompts = [
-        _fragment_prompt(tier="flat"),
-        _fragment_prompt(tier="major", materials=("a",) * 5),
+        _fragment_prompt(),
+        _fragment_prompt(highlight=True, materials=("a",) * 5),
         build_chronicle_prompt(_engine(), _NOW, _state(), ["今天聊了猫"]),
     ]
     for prompt in prompts:
@@ -127,7 +127,7 @@ def test_no_sent_list_injection_yet():
 
 def test_rule_is_positioned_before_output_instruction():
     """合约句必须排在最后那条「请以第一人称写…」之前，否则会被当成正文要求。"""
-    prompt = _fragment_prompt(tier="flat")
+    prompt = _fragment_prompt()
     assert prompt.index(COMM_FACT_RULE) < prompt.index("请以第一人称")
 
 

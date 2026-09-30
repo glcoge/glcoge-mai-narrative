@@ -133,6 +133,8 @@ def _make_engine(
             life_fragment_detail_enabled=False,
             # 2026-09-30 新增：素材池容量（由头取材/去重登记宽度派生自此值）
             fragment_pending_max=12,
+            # 高光签概率：0.0 = 本文件内永不抽签
+            highlight_probability=0.0,
             # 2026-09-22 新增：本文件测的是**时钟兜底**那条路径，故把睡眠态关掉
             # （sleep_time 留空 = 不睡觉）。「入睡才写小结」的新分支见 test_sleep_state.py。
             sleep_time="",

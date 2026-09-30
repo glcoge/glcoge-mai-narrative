@@ -78,10 +78,10 @@ def test_eligible_kinds_equal_general_kinds():
     做一次显式决定，而不是让两处静默分叉。
     """
     assert EVIDENCE_ELIGIBLE_KINDS == GENERAL_KINDS
-    assert EVIDENCE_ELIGIBLE_KINDS == frozenset({"life", "daily"})
+    assert EVIDENCE_ELIGIBLE_KINDS == frozenset({"life", "daily", "life_highlight"})
 
 
-@pytest.mark.parametrize("kind", ["life", "daily"])
+@pytest.mark.parametrize("kind", ["life", "daily", "life_highlight"])
 def test_eligible_kinds_pass(kind):
     assert is_evidence_eligible(_row(kind=kind))
 

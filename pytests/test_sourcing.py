@@ -184,6 +184,28 @@ def test_used_registry_width_follows_pending_max():
     assert "2026-09-22T11:00:00" in stored, "最新选中者必须保留在登记表中"
 
 
+def test_highlight_fragment_double_weight_slot():
+    """高光片段 2 倍权重（Q12 / §4.2）：**占槽实现**——3 普通 + 1 高光 = 5 槽，高光占 2 槽。
+
+    选择是确定性的（``candidates[seed % len(candidates)]``），故枚举 5 个连续小时覆盖
+    ``seed % 5`` 的全部余数，统计选中高光的次数应为 2/5。每次新建 engine（选中的 ts
+    会被登记进去重表，污染后续候选集）。
+    """
+    pending = [
+        {"ts": "2026-09-22T09:00:00", "text": "普通甲", "highlight": False},
+        {"ts": "2026-09-22T10:00:00", "text": "普通乙", "highlight": False},
+        {"ts": "2026-09-22T11:00:00", "text": "普通丙", "highlight": False},
+        {"ts": "2026-09-22T12:00:00", "text": "高光片段", "highlight": True},
+    ]
+    hits = 0
+    for hour in range(5):
+        engine = _make_engine([dict(item) for item in pending])
+        now = datetime.datetime(2026, 9, 22, hour, 0, 0)
+        if "高光片段" in engine.build_bysource(_UID, now):
+            hits += 1
+    assert hits == 2, f"高光应占 5 槽中的 2 槽（实测 {hits}/5）"
+
+
 # ===== B8：命令消息本地正则兜底（R9） =====
 
 

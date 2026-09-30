@@ -63,7 +63,7 @@ DIARY_KIND = "diary"
 #: 批 4 掩码改走 kind 白名单），本行仅为文档约定，判定一律不读 kind。
 #: 新增产出类型应登记到这里（当前仅作文档与写入侧约定，判定不读它——
 #: 判定一律 fail-closed：带 source_uid 就按受众过滤，与 kind 无关）。
-GENERAL_KINDS = frozenset({"life", "daily"})
+GENERAL_KINDS = frozenset({"life", "daily", "life_highlight"})  # life_highlight：生活高光片段（Q14）
 
 #: 过滤后可能不足 limit（被过滤掉的条目仍占位），故按倍数多取再截断。
 _OVERFETCH = 3

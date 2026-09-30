@@ -20,7 +20,6 @@ from ..creation.chronicle import (
 )
 from ..creation.life import (
     build_life_fragment_prompt as _build_life_fragment_prompt,
-    life_fragment_tier as _life_fragment_tier,
     maybe_generate_life_fragment as _maybe_generate_life_fragment,
 )
 from ..proactive.sourcing import (
@@ -737,7 +736,8 @@ class NarrativeEngine:
                 # store 侧另有 branch:{uid} → uid 的兜底推导，此处显式写是为了溯源可读。
                 "source_uid": str(user_id),
                 # 2026-09-21：保留长度 80 → 300 字符。入库时不知道未来是否重要，
-                # 统一多留原文，由创作层按档位决定展示多少（见 _FRAGMENT_TIER_MATERIAL_CAP）
+                # 统一多留原文，由创作层统一按 _FRAGMENT_MATERIAL_CAP=120 展示
+                # （2026-09-30：原「按档位」展示已随 tier 删除，改为统一上限）。
                 "bysource": normalized[:_FRAGMENT_MATERIAL_STORE_CAP] or "（一条消息）",
             }
         )
@@ -835,24 +835,18 @@ class NarrativeEngine:
         """创作层消费器：闸门下生成一段"生活片段"（实现已迁 creation/life.py）。"""
         await _maybe_generate_life_fragment(self, now)
 
-    def _life_fragment_tier(
-        self, now: datetime, state: Dict[str, Any], window_start: datetime
-    ) -> str:
-        """判定本次生活片段的详略档位（实现已迁 creation/life.py）。"""
-        return _life_fragment_tier(self, now, state, window_start)
-
     def _build_life_fragment_prompt(
         self,
         now: datetime,
         state: Dict[str, Any],
         materials: Sequence[str],
         persona: str = "",
-        tier: str = "flat",
+        highlight: bool = False,
         wake: bool = False,
     ) -> str:
         """构造生活片段生成 prompt（实现已迁 creation/life.py）。"""
         return _build_life_fragment_prompt(
-            self, now, state, materials, persona=persona, tier=tier, wake=wake
+            self, now, state, materials, persona=persona, highlight=highlight, wake=wake
         )
 
     def _build_chronicle_prompt(

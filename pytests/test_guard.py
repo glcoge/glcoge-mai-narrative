@@ -396,6 +396,8 @@ def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rule
             life_fragment_interval_minutes=120,
             life_fragment_detail_enabled=False,
             fragment_pending_max=12,
+            # 2026-09-30 新增：高光签概率。0.0 = 本文件内永不抽签（开关已是 False 双保险）
+            highlight_probability=0.0,
             sleep_time="",
             wake_time="",
             wake_fragment_enabled=False,

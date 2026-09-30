@@ -81,8 +81,8 @@ def build_bysource(
 
     **详略与资格解耦**（2026-09-30 回滚批 1 的 minor 排除，Q1）：任何非空
     片段都可作由头，不设档位资格门；真正的取材优先级是 ① 未用过（同一段
-    关系内去复用）+ ② 与最近对话不撞车（文本重叠，R23）。将来高光签
-    （Q12）也只作权重加成，不设资格门。
+    关系内去复用）+ ② 与最近对话不撞车（文本重叠，R23）。高光片段（Q12）
+    只作 **2 倍权重加成**（占槽实现），同样不设资格门。
 
     没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
     """
@@ -114,7 +114,12 @@ def build_bysource(
         # 与最近对话撞车则跳过（OBSERVE(R23)）：由头要是"新事"，不是刚聊过的复述
         if recent_text and overlap_ratio(fragment, recent_text) >= _OVERLAP_REJECT:
             continue
-        candidates.append((f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts))
+        # 高光 2 倍权重（Q12 / §4.2）：第二次入列 = 占槽实现，保持确定性选择；
+        # 只加权不设资格门；重复入列不产生二次登记（used.add 与去重查询皆幂等）。
+        entry = (f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts)
+        candidates.append(entry)
+        if item.get("highlight"):
+            candidates.append(entry)
 
     # 关系里程碑取自 relationship 命名空间（批 2 四维 schema）；stage 缺省时由
     # 只读事实推导（continuity），不再读被删的 familiarity 规则线
