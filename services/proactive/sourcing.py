@@ -79,9 +79,10 @@ def build_bysource(
     2. 支线里程碑（你们之间发生过的事）；
     3. 情绪/作息（疲惫想倾诉、深夜清醒）。
 
-    **tier 只定详略，不定优先级**（v0.2.0 批 1 / R22）：真正的取材优先级是
-    ① 未用过（同一段关系内去复用）+ ② 与最近对话不撞车（文本重叠，R23）。
-    minor 档的质量门槛保留——内容太薄，发出去大概率没人接。
+    **详略与资格解耦**（2026-09-30 回滚批 1 的 minor 排除，Q1）：任何非空
+    片段都可作由头，不设档位资格门；真正的取材优先级是 ① 未用过（同一段
+    关系内去复用）+ ② 与最近对话不撞车（文本重叠，R23）。将来高光签
+    （Q12）也只作权重加成，不设资格门。
 
     没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
     """
@@ -108,9 +109,6 @@ def build_bysource(
         ts = str(item.get("ts", "") or "").strip()
         # 去复用：同一片段不作二次由头
         if ts and ts in used:
-            continue
-        # 质量门槛：minor 档（无素材）不单独作由头
-        if str(item.get("tier", "") or "").strip() == "minor":
             continue
         # 与最近对话撞车则跳过（OBSERVE(R23)）：由头要是"新事"，不是刚聊过的复述
         if recent_text and overlap_ratio(fragment, recent_text) >= _OVERLAP_REJECT:

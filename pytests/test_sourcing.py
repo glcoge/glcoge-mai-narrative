@@ -142,10 +142,10 @@ def test_bysource_keeps_non_overlapping_fragment():
     assert "去海边走了走" in engine.build_bysource(_UID, _NOW)
 
 
-def test_minor_tier_still_not_used_alone():
-    """minor 档质量门槛保留（tier 不参与优先级，但仍拦太薄的内容）。"""
+def test_minor_tier_now_usable_alone():
+    """回滚批 1 的 minor 排除（Q1）：详略与资格解耦，无素材切片同样可作由头。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "无素材切片", "tier": "minor"}])
-    assert engine.build_bysource(_UID, _NOW) == ""
+    assert "无素材切片" in engine.build_bysource(_UID, _NOW)
 
 
 # ===== B8：命令消息本地正则兜底（R9） =====

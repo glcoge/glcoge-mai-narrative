@@ -165,7 +165,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     inner = state["state"]
     focus = inner.setdefault("focus", {})
     pending = list(focus.get("pending_events", []))
-    # tier 随片段落库：由头签发要按档位做质量门槛（minor 不单独作由头，见 build_bysource）
+    # tier 随片段落库：只作详略记录（2026-09-30 起由头端不再设档位资格门，见 build_bysource）
     pending.append(
         {
             "ts": current.isoformat(timespec="seconds"),

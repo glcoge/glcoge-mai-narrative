@@ -2,7 +2,7 @@
 
 覆盖三项：
 - **B 去复用**：已用作由头的片段不再二次使用（kv `bysource:used:{user_id}`，按用户隔离）
-- **C 质量门槛**：minor 档（无素材的纯状态切片）不单独作由头 → 宁可跳过本轮
+- **C 资格解耦**（2026-09-30 回滚批 1）：片段不论档位都可作由头（原 minor 排除已撤销，Q1）
 - **G 承接结算**：`resolve_catch` 返回延迟分钟，每条主动消息至多结算一次
 
 运行（项目根）：
@@ -175,13 +175,13 @@ def third_is_empty(engine) -> bool:
     return engine.build_bysource("10001", _NOW) == ""
 
 
-# ===== C 质量门槛 =====
+# ===== C 资格解耦（2026-09-30 回滚批 1）=====
 
 
-def test_minor_fragment_not_used_alone():
-    """minor 档（无素材的纯状态切片）太薄，不单独作由头 → 本轮跳过。"""
+def test_minor_fragment_usable_alone():
+    """回滚批 1 的 minor 排除（Q1）：纯状态切片同样可作由头。"""
     engine = _make_engine([_frag("2026-09-22T10:00:00", "minor", "只是发了个呆")])
-    assert engine.build_bysource("10001", _NOW) == "", "minor 档不应单独作由头"
+    assert "只是发了个呆" in engine.build_bysource("10001", _NOW)
 
 
 def test_major_fragment_usable():
