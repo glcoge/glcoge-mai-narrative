@@ -85,6 +85,50 @@ _AVAILABLE_SHOW_LIMIT = 10
 #: 超预算说明注入路径被拖慢，宿主不会报错（异常全吞），只能靠这条 WARN 预警。
 _DRIFT_BUDGET_MS = 500
 
+# ===== 跨插件契约：给 diary 的「当日生活片段」取数（2026-10-01 接线） =====
+
+#: 回给 diary 的当日**普通**生活片段条数上限（2/4/6 三选一 → 用户裁定 4）
+_DIARY_FRAGMENT_LIMIT = 4
+#: 普通片段每条的截断字数（用户裁定 120：够"有个印象"，又不让 prompt 膨胀；
+#: 高光另算——条目少且要求写进正文，给全文，只受 INJECT_TEXT_CAP 兜底）
+_DIARY_FRAGMENT_CAP = 120
+#: 单 kind 的读取上限（store.list_chronicle_rows 内部还会夹到 2000）
+_DIARY_KIND_FETCH_LIMIT = 200
+
+
+def _same_day_chronicle(store: Any, kind: str, day: str) -> List[str]:
+    """取 scope=self 某一天的某类编年史正文，**按时间升序**返回。
+
+    为什么按 date 精取、而不是直接给"最近 N 条"（2026-10-01 设计裁决）：
+    日记在次日 04:00 生成、写的是**昨天**——此时的"最近 N 条"恰好落在今天
+    凌晨，会把昨天的片段全挤掉。口径必须跟着**被写的那天**走，故由调用方
+    显式传 ``date``；空则由调用方兜底成插件时区的今天（即时重试仍然正确）。
+
+    ⚠ **口径边界（已知、暂不修）**：diary 的收集窗口是 ``[date 04:00, date+1 04:00)``，
+    这里按**自然日** ``[date 00:00, date 23:59]`` 取片段，两端各差 4 小时。
+    实际影响可忽略——作息默认 23:30 睡 / 07:00 起，00:00-04:00 几乎不产片段；
+    若日后关掉睡眠态或改了作息，先回来确认这条再决定是否改成传区间。
+
+    读取策略刻意**绕过** ``visible_chronicle``：那条路径会按受众过滤，而
+    用户 2026-10-01 裁定「涉私与否不区分，生活片段全部进日记」（日记是作者
+    本人的私密产物，不外发他人）。但 ADR-0004「diary 产物完全隔离」是立项
+    铁律、不随该裁定豁免 → 仍用 ``drop_diary`` 兜住 kind=diary /
+    source_uid=diary 的条目。
+    """
+    target = str(day or "").strip()[:10]
+    if not target:
+        return []
+    texts: List[str] = []
+    rows = store.list_chronicle_rows("self", limit=_DIARY_KIND_FETCH_LIMIT, kind=kind)
+    for entry in drop_diary(rows):
+        if str(entry.get("ts") or "").strip()[:10] != target:
+            continue
+        body = str(entry.get("text") or "").strip()
+        if body:
+            texts.append(body)
+    texts.reverse()  # store 返回新→旧；转**时间升序**再交给 diary，便于按流水写
+    return texts
+
 
 def format_available_tasks_line(names: Optional[List[str]]) -> str:
     """把宿主 ``llm.get_available_models()`` 的结果格式化为 status 展示行；空则空串。
@@ -1226,14 +1270,23 @@ class MaiNarrativePlugin(MaiBotPlugin):
         "narrative_diary_context",
         description=(
             "供 mai-diary 等插件握手：返回剧本会话判定所需的用户/会话列表，"
-            "以及自我层人格摘要（锚定 identity + 心情 + 作息 + 最近编年史）。"
-            "不含聊天正文；编年史仅回 60 字截断片段。"
+            "以及自我层人格摘要（锚定 identity + 心情 + 作息 + 当日生活素材）。"
+            "不含聊天正文；编年史片段有截断。可选入参 date=被写日记的日期"
+            "（YYYY-MM-DD，diary 04:00 写的是昨天）。"
         ),
         version="1",
         public=True,
     )
-    async def handle_narrative_diary_context_api(self, **kwargs: Any) -> Dict[str, Any]:
-        """日记生成时的剧本模式分诊数据源。"""
+    async def handle_narrative_diary_context_api(
+        self, date: str = "", **kwargs: Any
+    ) -> Dict[str, Any]:
+        """日记生成时的剧本模式分诊数据源。
+
+        Args:
+            date: **被写日记的日期**（``YYYY-MM-DD``）。diary 在次日 04:00 生成、
+                写的是昨天，必须显式传对方那天；不传（旧版 diary）退化为本插件
+                时区的今天 —— 04:00 补写昨天那篇会因此取到空，**降级不误取**。
+        """
         del kwargs
         if self._engine is None or self._store is None:
             return {"ok": False, "available": False, "error": "not_initialized"}
@@ -1270,6 +1323,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
         expression_hint = native_reply_style
 
         mood = inner["mood"]
+        # 当日生活素材（2026-10-01 接线）：此前 latest_life_fragment /
+        # recent_chronicle 两个字段 diary 侧一个都没读 → 日记里只剩聊天话题。
+        target_day = str(date or "").strip()[:10] or self._local_now().strftime("%Y-%m-%d")
+        day_highlights = _same_day_chronicle(self._store, "life_highlight", target_day)
+        day_fragments = _same_day_chronicle(self._store, "life", target_day)[
+            -_DIARY_FRAGMENT_LIMIT:
+        ]
         return {
             "ok": True,
             "available": True,
@@ -1283,6 +1343,14 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 "mood_energy": float(mood.get("energy", 0.5)),
                 "mood_shift_ts": str(mood.get("last_shift_ts", "")),
                 "routine_phase": str(inner["routine"].get("phase", "")),
+                # 当日生活素材（高光全部 + 普通片段最近 4 条，各自按时间升序）。
+                # ⚠ 跨插件 lockstep：diary 必须**同版部署**才会传 date；旧 diary
+                # 不传参数（或 narrative 侧尚无 life_highlight 时）取到空列表属
+                # 预期降级，**不得**据此判定"生活片段又没了"。
+                "today_highlights": [text[:INJECT_TEXT_CAP] for text in day_highlights],
+                "today_life_fragments": [
+                    text[:_DIARY_FRAGMENT_CAP] for text in day_fragments
+                ],
                 # 2026-09-26 用户裁定删除 hot_thread（推翻同日批 2 的「冻结保留」决定）：
                 # 该字段自 v0.1.3 起无写入点（恒空），diary 侧读取点已同轮删除
                 # （`glcoge-mai-diary/services/diary/prompts.py`）→ 双侧 lockstep 收敛，
