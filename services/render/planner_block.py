@@ -374,8 +374,13 @@ def build_context_block(
         # 聊天历史淹没，让它在生成时成为强锚点（复读话尾的结构性修复之一）
         if bysource:
             lines.append(f"- 你这次主动开口想说的是（由头）：{bysource}")
-        # 时间锚点：让模型知道距上次对话多久，自行判断该履约还是开新头
-        elapsed = _elapsed_hours(str(inner.get("last_interaction_ts", "")), now)
+        # 时间锚点：读 **branch 层**（当前对话用户）的互动时点，不读 self 层
+        # 全局值——全局值是"最近一次和**任何人**对话"（engine.record_interaction
+        # 维护），多用户下会把"刚跟别人聊完"误报成"刚跟你聊完"，履约/开新头
+        # 的判断随之失真。branch 缺失或无该用户记录 → 锚点行不显示
+        # （fail-closed：宁可不说，不拿别人的互动冒充跟你的）。
+        branch_state = (branch or {}).get("state") or {}
+        elapsed = _elapsed_hours(str(branch_state.get("last_interaction_ts", "")), now)
         if elapsed is not None and elapsed >= 1:
             if elapsed >= 6:
                 lines.append(

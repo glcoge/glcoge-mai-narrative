@@ -7,6 +7,10 @@
 修复原则（用户场景确认）：**禁字面复读，但放行语义履约**——"昨天约好今天聊"
 这类承接必须保留（拟真加分项），禁的只是"重复自己说过的句式和用词"。
 
+时间锚点数据源（2026-10-06 裁定）：读 **branch 层**（per-user）互动时点，
+不读 self 层全局值——全局值是"最近一次和**任何人**对话"，多用户下会把
+"刚跟别人聊完"误报成"刚跟你聊完"（履约/开新头判断随之失真）。
+
 运行（项目根）：
 
     .venv/Scripts/python.exe -m pytest plugins/glcoge-mai-narrative/pytests/test_render_turn.py -q
@@ -18,6 +22,7 @@ from __future__ import annotations
 import datetime
 import sys
 from types import SimpleNamespace
+from typing import Optional
 
 import _synth_loader
 
@@ -56,11 +61,30 @@ def _make_state(last_interaction_ts: str = "") -> dict:
     }
 
 
-def _render(*, round_kind: str = "reply", bysource: str = "", last_interaction_ts: str = "") -> str:
+def _make_branch(last_interaction_ts: str = "") -> dict:
+    """支线层状态（per-user，engine.load_branch_state 的默认模板形状）。
+
+    时间锚点自 2026-10-06 起读本层 ``state.last_interaction_ts``（批 4 裁定：
+    全局值是"最近一次和任何人对话"，不能拿来当"跟你的"用）。
+    """
+    return {
+        "relationship": {"stage": "", "first_met": "", "milestones": []},
+        "state": {"last_interaction_ts": last_interaction_ts, "interaction_count": 0},
+        "meta": {"version": 1, "updated_ts": ""},
+    }
+
+
+def _render(
+    *,
+    round_kind: str = "reply",
+    bysource: str = "",
+    last_interaction_ts: str = "",
+    branch: Optional[dict] = None,
+) -> str:
     return build_context_block(
         _make_plugin(),
         _make_state(last_interaction_ts),
-        None,
+        branch,
         _NOW,
         [],
         round_kind=round_kind,
@@ -118,9 +142,13 @@ def test_proactive_bysource_before_hint():
 
 
 def test_proactive_time_anchor_rendered():
-    """时间锚点：距上次对话 20 小时 → 注入'20 小时'提示。"""
+    """时间锚点：距上次对话 20 小时 → 注入'20 小时'提示（读 branch 层时点）。"""
     last_ts = (_NOW - datetime.timedelta(hours=20)).isoformat(timespec="seconds")
-    text = _render(round_kind="proactive", bysource="刚做了个梦", last_interaction_ts=last_ts)
+    text = _render(
+        round_kind="proactive",
+        bysource="刚做了个梦",
+        branch=_make_branch(last_interaction_ts=last_ts),
+    )
 
     assert "20 小时" in text, "缺少'距上次对话 20 小时'时间锚点"
     assert "距离上次对话" in text
@@ -129,14 +157,67 @@ def test_proactive_time_anchor_rendered():
 def test_proactive_time_anchor_skipped_when_fresh():
     """刚聊完（<1 小时）不注入时间锚点（避免噪声），且不因缺时间戳报错。"""
     fresh_ts = (_NOW - datetime.timedelta(minutes=20)).isoformat(timespec="seconds")
-    text = _render(round_kind="proactive", bysource="刚做了个梦", last_interaction_ts=fresh_ts)
+    text = _render(
+        round_kind="proactive",
+        bysource="刚做了个梦",
+        branch=_make_branch(last_interaction_ts=fresh_ts),
+    )
 
     assert "距离上次对话" not in text
     assert "不要重复" in text, "无锚点时主动轮规则仍须生效"
 
-    # 时间戳缺失/损坏也不应抛异常
-    text_empty = _render(round_kind="proactive", bysource="刚做了个梦", last_interaction_ts="")
+    # branch 层时间戳缺失/损坏也不应抛异常
+    text_empty = _render(
+        round_kind="proactive", bysource="刚做了个梦", branch=_make_branch()
+    )
     assert "不要重复" in text_empty
+
+
+def test_proactive_time_anchor_reads_branch_not_global():
+    """锚点必须读 branch 层时点，不得用 self 层全局值冒充（跨用户误报护栏）。
+
+    场景：bot 20 小时前刚跟**别人**聊过（self 层全局值），但跟**这位**用户
+    5 小时前聊过——对这位用户的主动轮应该说"过去约 5 小时"，而不是
+    "隔了一夜或更久"（那是拿别人的互动记录冒充跟你的）。
+    """
+    global_ts = (_NOW - datetime.timedelta(hours=20)).isoformat(timespec="seconds")
+    branch_ts = (_NOW - datetime.timedelta(hours=5)).isoformat(timespec="seconds")
+    text = _render(
+        round_kind="proactive",
+        bysource="刚做了个梦",
+        last_interaction_ts=global_ts,
+        branch=_make_branch(last_interaction_ts=branch_ts),
+    )
+
+    assert "5 小时" in text, "锚点应读 branch 层（跟这位用户 5 小时前聊过）"
+    assert "20 小时" not in text, "锚点不得读 self 层全局值（20 小时前是跟别人的）"
+
+
+def test_proactive_time_anchor_hidden_when_no_branch_record():
+    """branch 缺失或无该用户互动记录 → 锚点行不显示（fail-closed，不回退全局值）。
+
+    宁可不说"距上次对话多久"，也不能拿"跟别人的互动"冒充"跟你的"——
+    回退到全局值会把首次主动开口误报成"我们隔了一夜没聊"。
+    """
+    global_ts = (_NOW - datetime.timedelta(hours=20)).isoformat(timespec="seconds")
+
+    # branch 层存在但无互动记录（新用户默认模板）
+    text_new = _render(
+        round_kind="proactive",
+        bysource="刚做了个梦",
+        last_interaction_ts=global_ts,
+        branch=_make_branch(),
+    )
+    assert "距离上次对话" not in text_new, "无该用户互动记录时不应显示锚点"
+
+    # branch 整个没传（非剧本会话/无 uid）同样不显示
+    text_none = _render(
+        round_kind="proactive",
+        bysource="刚做了个梦",
+        last_interaction_ts=global_ts,
+        branch=None,
+    )
+    assert "距离上次对话" not in text_none, "branch 缺失时不应回退读 self 层全局值"
 
 
 def test_reply_round_keeps_original_principles():
