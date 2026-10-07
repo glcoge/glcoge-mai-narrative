@@ -24,6 +24,7 @@ from ..creation.life import (
 )
 from ..proactive.sourcing import (
     build_bysource as _build_bysource,
+    build_bysource_detail as _build_bysource_detail,
     compute_share_urge as _compute_share_urge,
     record_urge_feedback as _record_urge_feedback,
 )
@@ -819,6 +820,12 @@ class NarrativeEngine:
     def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
         """签发主动开口由头：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
         return _build_bysource(self, user_id, now)
+
+    def build_bysource_detail(
+        self, user_id: str, now: Optional[datetime] = None
+    ) -> Optional[Dict[str, str]]:
+        """签发由头并返回完整署名（批 0 / R41，兑现回执数据源）：实现见 sourcing。"""
+        return _build_bysource_detail(self, user_id, now)
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
     # 实现已迁至 ``creation/chronicle.py``（v0.2.0 批 2-C7「类拆分推迟表」）。

@@ -161,6 +161,10 @@ class _SentRecord:
     consumed: bool = False
     # 侧信道由头（渲染层消费），不参与任何指标判定
     bysource: str = field(default="")
+    # 兑现回执署名（批 0 / R41）：签发时随 build_bysource_detail 落下，
+    # 承接结算时落 receipt_catch（scope=origin）。不参与承接判定本身。
+    event_id: str = field(default="")
+    origin: str = field(default="")
 
 
 @dataclass
@@ -331,12 +335,15 @@ class ProactiveScheduler:
         """签发由头并触发 Maisaka 主动任务。由头为空（无可借生活素材）则跳过本轮。"""
         cfg = self._plugin.config
         plugin = self._plugin
-        bysource = plugin._engine.build_bysource(user_id, now)
-        if not bysource:
+        # 批 0（R41）：改用 detail 版取事件实体署名（event_id/origin 落回执）——
+        # 取材与选择逻辑同一实现，text 与旧接口逐字节一致（零行为 diff）。
+        bysource_detail = plugin._engine.build_bysource_detail(user_id, now)
+        if not bysource_detail:
             plugin.ctx.logger.info(
                 "主动消息跳过: uid=%s stream=%s 无可借由的生活素材（不干聊）", user_id, stream_id
             )
             return
+        bysource = str(bysource_detail.get("text", ""))
         intent = "按剧本生活主动开口"
         # msg_id 硬要求（2026-09-22）：主程序 reply 工具强制要求一个上下文里真实
         # 存在的 msg_id，而主动开口没有"被回复的那条消息"，模型极易漏传——实测
@@ -377,7 +384,14 @@ class ProactiveScheduler:
         today = now.strftime("%Y-%m-%d")
         day_count = plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
         plugin._store.set_kv_int(f"proactive:count:{user_id}:{today}", day_count + 1)
-        self.record_sent(user_id, stream_id, now, bysource)
+        self.record_sent(
+            user_id,
+            stream_id,
+            now,
+            bysource,
+            event_id=str(bysource_detail.get("event_id", "")),
+            origin=str(bysource_detail.get("origin", "")),
+        )
         # 话题归因（批 3-C5 / R16，ADR-0003 §7）：记下本轮讲的是什么话题，
         # 等用户接话时结算为主证据权重（P10）
         note_pending_topic(plugin._store, user_id, bysource)
@@ -389,10 +403,18 @@ class ProactiveScheduler:
         stream_id: str,
         now: datetime.datetime,
         bysource: str,
+        event_id: str = "",
+        origin: str = "",
     ) -> None:
-        """登记一次主动开口。**此时尚未确认送达**，delivered 由出站侧回填。"""
+        """登记一次主动开口。**此时尚未确认送达**，delivered 由出站侧回填。
+
+        ``event_id``/``origin``（批 0 / R41）：由头的事件实体署名，承接结算时
+        随 receipt_catch 落指标（scope=origin）；缺省空串——旧签名调用零影响。
+        """
         records = self._sent_records.setdefault(user_id, [])
-        records.append(_SentRecord(ts=now, stream_id=stream_id, bysource=bysource))
+        records.append(
+            _SentRecord(ts=now, stream_id=stream_id, bysource=bysource, event_id=event_id, origin=origin)
+        )
         self._sent_records[user_id] = records[-_SENT_KEEP_PER_USER:]
         self._pending_at[stream_id] = {
             "ts": now,
@@ -468,6 +490,19 @@ class ProactiveScheduler:
             # 话题归因（批 3-C5 / R16）：接住 → 本轮话题记主证据权重（P10=1.0），
             # 生活片段自身主题只有 0.4（降权），长期看用户爱聊的会占主导
             reward_pending_topic(self._plugin._store, user_id)
+            # 兑现回执（批 0 / R41 / 执行路线 §批 0-4）：**只记指标，不做一致性约束**
+            # ——由头被岔开 = 特性（总览 §5.1），不写回状态、不罚不发。
+            # scope=origin 供供给质量分析（批 2 后可比 fragment vs seed 接住率）。
+            # 走通用 record 通道而非 record_counter（后者是晋升链路专属，R17）。
+            # getattr 守卫沿用 life.py:153 的可选子系统取用先例（旧测试夹具不带 _telemetry）。
+            telemetry = getattr(self._plugin, "_telemetry", None)
+            if telemetry is not None:
+                telemetry.record(
+                    "receipt_catch",
+                    max(0.0, elapsed),
+                    user_id=user_id,
+                    scope=rec.origin,
+                )
             return max(0.0, elapsed)
         return None
 

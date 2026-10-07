@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from ..render.audience import visible_events
 from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
 from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
+from .event_entity import make_fragment_event
 
 #: 通信事实标记（批 4-C9 / R25 / ADR-0003 §8；E8 裁定 (b)：**只做合约句**，
 #: 注入真实发送清单需接宿主账本，留收尾里程碑）。
@@ -160,12 +161,14 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     pending = list(focus.get("pending_events", []))
     # highlight 随片段落库（Q14）：true 则 chronicle kind=life_highlight（进晋升证据池），
     # 且由头端给 2 倍权重（占槽实现，见 sourcing.build_bysource）。
+    # 批 0（R41）：条目升级为事件实体（event_id + kind=fragment）——构造单一入口
+    # 在 creation/event_entity.py；text/ts/highlight 原语义不变，读取端零迁移。
     pending.append(
-        {
-            "ts": current.isoformat(timespec="seconds"),
-            "text": text,
-            "highlight": highlight,
-        }
+        make_fragment_event(
+            ts=current.isoformat(timespec="seconds"),
+            text=text,
+            highlight=highlight,
+        )
     )
     # 容量取自配置（方案 §7 / P20）：max(1,·) 防 0——pending[-0:] 是「全量」不是
     # 「空」，容量语义下 0 无意义（config 侧已 ge=1，此处兜住测试夹具绕过校验的情况）。

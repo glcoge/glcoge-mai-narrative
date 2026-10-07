@@ -373,5 +373,72 @@ def test_trigger_accepted():
     assert _PROACTIVE._trigger_accepted(None) is False
 
 
+# ===== 批 0（v0.3.0 / R41）：build_bysource_detail + used 键位泛化 =====
+
+
+def test_detail_matches_bysource_output():
+    """零行为 diff：detail 与旧接口同状态同选择、text 逐字节一致，且带 origin/event_id。"""
+    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
+
+    detail = engine.build_bysource_detail("10001", _NOW)
+    assert detail is not None
+    assert "一段有画面的生活片段" in detail["text"]
+    assert detail["origin"] == "fragment"
+    assert detail["event_id"], "新条目应有事件实体 id"
+
+    # 同一状态重放旧接口：选择一致（event_id 确定性 ⇒ used 登记同键 ⇒ 同跳过链）
+    engine2 = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
+    assert engine2.build_bysource("10001", _NOW) == detail["text"]
+
+
+def test_detail_none_when_no_candidates():
+    """无可借素材：detail 返回 None、旧接口返回空串（跳过本轮，不干聊）。"""
+    engine = _make_engine([])
+    assert engine.build_bysource_detail("10001", _NOW) is None
+    assert engine.build_bysource("10001", _NOW) == ""
+
+
+def test_new_entry_registered_by_event_id():
+    """新条目（带 event_id）签发后 used 登记的是 event_id，不是 ts。"""
+    entry = {
+        "ts": "2026-09-22T10:00:00",
+        "text": "一段有画面的生活片段",
+        "event_id": "ev_20260922100000_abcd1234",
+        "kind": "fragment",
+    }
+    engine = _make_engine([entry])
+    assert engine.build_bysource("10001", _NOW)
+
+    used = engine._store.get_kv_str("bysource:used:10001")
+    assert "ev_20260922100000_abcd1234" in used, "应登记 event_id"
+    assert "2026-09-22T10:00:00" not in used, "不应再登记 ts（键位已泛化）"
+
+
+def test_legacy_entry_still_registered_by_ts():
+    """旧条目（无 event_id）签发后 used 登记的是 ts——存量零迁移。"""
+    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
+    assert engine.build_bysource("10001", _NOW)
+    assert engine._store.get_kv_str("bysource:used:10001") == "2026-09-22T10:00:00"
+
+
+def test_mixed_window_dedup():
+    """新旧条目混存窗口：各自登记各自键，去复用对两者都生效。"""
+    engine = _make_engine(
+        [
+            {"ts": "2026-09-22T10:00:00", "text": "旧片段"},
+            {
+                "ts": "2026-09-22T11:00:00",
+                "text": "新片段",
+                "event_id": "ev_20260922110000_efef5678",
+                "kind": "fragment",
+            },
+        ]
+    )
+    first = engine.build_bysource("10001", _NOW)
+    second = engine.build_bysource("10001", _NOW)
+    assert first != second, "两条都该被取到且不重复"
+    assert engine.build_bysource("10001", _NOW) == "", "都用完后应无由头"
+
+
 if __name__ == "__main__":
     sys.exit(__import__("pytest").main([__file__, "-q"]))

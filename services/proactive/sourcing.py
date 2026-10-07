@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from ..render.audience import filter_entries
 from ..state.continuity import current_relationship_stage
+from ..creation.event_entity import event_key
 
 # 由头去复用：已用作由头的生活片段 ts 集合（逗号分隔，有界 8 条）
 # 按 user_id 命名空间隔离——store.get_kv_str 没有 scope 参数，而生活片段挂在
@@ -60,13 +61,17 @@ class _BySourceCandidate:
 
     - ``ts``：生活片段的时间戳（**空串＝非片段来源**，不进由头去复用表）；
     - ``origin``：``fragment`` / ``milestone`` / ``mood`` —— 供 3 选 1 节流统计；
-    - ``milestone_id``：仅 ``origin="milestone"`` 时非空，用于条目级冷却登记。
+    - ``milestone_id``：仅 ``origin="milestone"`` 时非空，用于条目级冷却登记；
+    - ``event_id``：事件实体 id（批 0 / R41）——fragment 来源时为去复用键
+      （新条目=event_id、旧条目回退 ts，见 ``event_entity.event_key``），
+      milestone 来源时为条目 id（供回执排查），mood 来源为空串。
     """
 
     text: str
     ts: str = ""
     origin: str = "fragment"
     milestone_id: str = ""
+    event_id: str = ""
 
 
 def _bysource_used_key(user_id: str) -> str:
@@ -141,7 +146,24 @@ def _recent_dialogue_text(engine: Any, user_id: str, limit: int = 5) -> str:
 def build_bysource(
     engine: Any, user_id: str, now: Optional[datetime.datetime] = None
 ) -> str:
-    """从"bot 自己的生活"签发主动开口的由头（v0.1.3 重构）。
+    """签发由头（**薄包装**，v0.1.3 起的对外签名不变——零行为 diff）。
+
+    取材与签发逻辑全在 ``build_bysource_detail``（批 0 / R41 拆出：scheduler
+    需要事件实体 id/origin 落回执，纯文本签名装不下）；本函数只取 ``text``。
+    """
+    detail = build_bysource_detail(engine, user_id, now)
+    return str(detail.get("text", "")) if detail else ""
+
+
+def build_bysource_detail(
+    engine: Any, user_id: str, now: Optional[datetime.datetime] = None
+) -> Optional[Dict[str, str]]:
+    """签发由头并返回完整署名（批 0 / R41 拆出，兑现回执的数据源）。
+
+    Returns:
+        ``{"text": 由头文本, "origin": fragment/milestone/mood,
+        "event_id": 事件实体 id（mood 来源为空串）}``；
+        无可借素材返回 ``None``——上层应**跳过本次主动开口**，而不是发干聊。
 
     取材优先级（全部来自 bot 自身，禁止取材用户消息镜像，防复述）：
     1. 创作层生活片段（focus.pending_events 全窗口，容量见 fragment_pending_max）；
@@ -155,8 +177,6 @@ def build_bysource(
 
     **里程碑三闸**（方案 §6.3 / Q10b）：① 条目 7 天冷却 ② 30 天保质期
     ③ 最近 3 次由头里最多 1 次来自里程碑。`stage != "陌生人"` 门槛（Q10c）保留。
-
-    没有可用素材时返回空串——上层应**跳过本次主动开口**，而不是发干聊。
     """
     from ..state.engine import INJECT_TEXT_CAP  # 延迟导入：避开 engine ↔ sourcing 循环
 
@@ -180,15 +200,19 @@ def build_bysource(
         if not fragment:
             continue
         ts = str(item.get("ts", "") or "").strip()
-        # 去复用：同一片段不作二次由头
-        if ts and ts in used:
+        # 去复用：同一事件不作二次由头。批 0（R41）键位泛化：新条目=event_id、
+        # 旧条目回退 ts（event_entity.event_key）——存量 used（ts 集）零迁移混用。
+        item_event_id = event_key(item)
+        if item_event_id and item_event_id in used:
             continue
         # 与最近对话撞车则跳过（OBSERVE(R23)）：由头要是"新事"，不是刚聊过的复述
         if recent_text and overlap_ratio(fragment, recent_text) >= _OVERLAP_REJECT:
             continue
         # 高光 2 倍权重（Q12 / §4.2）：第二次入列 = 占槽实现，保持确定性选择；
         # 只加权不设资格门；重复入列不产生二次登记（used.add 与去重查询皆幂等）。
-        entry = _BySourceCandidate(text=f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts=ts)
+        entry = _BySourceCandidate(
+            text=f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts=ts, event_id=item_event_id
+        )
         candidates.append(entry)
         if item.get("highlight"):
             candidates.append(entry)
@@ -225,6 +249,7 @@ def build_bysource(
                         text=f"想起我们之间那件事：{str(item.get('desc', '') or '')}",
                         origin="milestone",
                         milestone_id=m_id,
+                        event_id=m_id,  # 回执排查用（scope=milestone 可分析接住率）
                     )
                 )
                 break  # 只取最新一条可用条目：候选多一条也只会被取模选中一条
@@ -250,19 +275,19 @@ def build_bysource(
             )
 
     if not candidates:
-        return ""  # 无可借由的生活素材：本轮主动取消（宁可缺席，不干聊）
+        return None  # 无可借由的生活素材：本轮主动取消（宁可缺席，不干聊）
 
     # 场景感补全：确定性选一个（按小时稳定），避免同一天重复同一由头
     seed = sum(ord(char) for char in user_id) + current.hour + (current.date().day * 7)
     chosen = candidates[seed % len(candidates)]
     if chosen.ts:
         # 登记已用（宽度与素材池同宽，派生自 fragment_pending_max，不设独立配置）：
-        # 下次该片段不再作由头（仅对该用户生效）。上限与 pending 同宽即足够——
+        # 下次该事件不再作由头（仅对该用户生效）。上限与 pending 同宽即足够——
         # 片段被挤出登记表之前必然先被挤出素材池（两者同为「取最新 N 条」的 LRU，
-        # 且被登记的 ts 一定是素材池里待过的片段），不存在「还在池里却查不到已用」
-        # 的窗口。
+        # 且被登记的键一定是素材池里待过的片段），不存在「还在池里却查不到已用」
+        # 的窗口。批 0（R41）键位泛化：新条目登记 event_id、旧条目回退 ts。
         cap = max(1, int(cfg.narrative.fragment_pending_max))
-        used.add(chosen.ts)
+        used.add(chosen.event_id or chosen.ts)
         engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
     if chosen.origin == "milestone" and chosen.milestone_id:
         # 条目级冷却登记（选中即登记，与"已用"同步：未送达也照样冷却，
@@ -275,7 +300,7 @@ def build_bysource(
     # 来源队列（3 选 1 节流的输入）：无论哪一路来源都记，窗口滑动保留最近 N 次
     origins = (_recent_origins(engine, user_id) + [chosen.origin])[-_MILESTONE_THROTTLE_WINDOW:]
     engine._store.set_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}", ",".join(origins))
-    return chosen.text
+    return {"text": chosen.text, "origin": chosen.origin, "event_id": chosen.event_id}
 
 
 # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ──────
@@ -379,6 +404,7 @@ def compute_share_urge(engine: Any, user_id: str) -> float:
 
 __all__ = [
     "build_bysource",
+    "build_bysource_detail",
     "compute_share_urge",
     "overlap_ratio",
     "record_urge_feedback",
