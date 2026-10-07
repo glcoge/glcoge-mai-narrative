@@ -31,6 +31,7 @@ from maibot_sdk import (
     HookHandler,
     MaiBotPlugin,
     PluginConfigBase,
+    ReplyExtension,
 )
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
@@ -83,6 +84,9 @@ from .services.store import SOURCE_DIARY, NarrativeStore
 
 # status 中可用列表的展示上限（超出截断，避免刷屏）
 _AVAILABLE_SHOW_LIMIT = 10
+
+# REPLY_EXTENSION 组件名（批 4 / R39）：full_name = f"{manifest_id}.{本名}"
+_REPLY_EXTENSION_NAME = "proactive_bysource"
 
 #: 漂移注入耗时预算（ms）。宿主 hook 硬超时 6 秒，此处是**内部告警门槛**（R-C）：
 #: 超预算说明注入路径被拖慢，宿主不会报错（异常全吞），只能靠这条 WARN 预警。
@@ -204,6 +208,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._pairs: Optional[PairTracker] = None
         # 世界书 loader（v0.3.0 批 1 / R43：on_load 按 [lorebook].enabled 创建）
         self._lorebook: Optional[LorebookLoader] = None
+        # REPLY_EXTENSION 组件全名（批 4 / R39：on_load 按 manifest id 组装；
+        # scheduler 的 reason 教学与 handler 都经它取用，缺省空串=不教学）
+        self.reply_extension_full_name: str = ""
         # 慢变晋升机（批 4）：提案提炼器 + 晋升状态机
         self._promotion: Optional[ProposalRunner] = None
         self._promotion_engine: Optional[PromotionEngine] = None
@@ -248,6 +255,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 放到看门狗首轮（见 _maybe_seed_perspective）。
         self._promotion = ProposalRunner(self)
         self._promotion_engine = PromotionEngine(self)
+        # REPLY_EXTENSION 全名（批 4 / R39）：宿主 plugin_options 的键 = f"{plugin_id}.{name}"
+        # （component_registry:116），id 以 _manifest.json 为准（版本号同源读取先例）
+        self.reply_extension_full_name = f"{self._manifest_id()}.{_REPLY_EXTENSION_NAME}"
         await self._reconcile_all()
         # R14：启动期锚定一致性比对（默认关，见 [anchor].consistency_check）。
         # 放在 _reconcile_all 之后、watchdog 之前——即便它慢/失败，后台任务已就绪。
@@ -387,6 +397,19 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if normalized.startswith("冲突") or "矛盾" in normalized:
             return {"conflicts": normalized.split("：", 1)[-1].split(":", 1)[-1].strip() or normalized}
         return {"conflicts": ""}
+
+    def _manifest_id(self) -> str:
+        """从 _manifest.json 读插件 id（REPLY_EXTENSION full_name 组装用，批 4 / R39）。"""
+        try:
+            data = json.loads((Path(__file__).parent / "_manifest.json").read_text(encoding="utf-8"))
+            plugin_id = str(data.get("id") or "").strip()
+        except (OSError, ValueError) as exc:
+            self.ctx.logger.warning("读取 _manifest.json id 失败: %s", exc)
+            return ""
+        if not plugin_id:
+            self.ctx.logger.warning("_manifest.json 缺少 id 字段")
+            return ""
+        return plugin_id
 
     def _plugin_version(self) -> str:
         """从插件自带的 _manifest.json 读版本号（加载日志不再写死版本漂移文案）。"""
@@ -1046,6 +1069,45 @@ class MaiNarrativePlugin(MaiBotPlugin):
         if self._is_mode_session(session_id):
             return {"action": "abort", "modified_kwargs": kwargs}
         return {"action": "continue", "modified_kwargs": kwargs}
+
+    # ===== REPLY_EXTENSION：主动轮由头进 replyer 指令位（批 4 / R39 / 宿主 1.3.5） =====
+    # OBSERVE(R39)：宿主通道有实现无文档，合同以 src/plugin_runtime/host/reply_extensions.py 为准——
+    # prepare 只允许返回 {"extra_prompt"}（:148）；扩展异常 = 整次 reply 失败（:193-204），
+    # 故 handler 任何异常**全体自捕获**降级 {}（记 ERROR 不静默）；before_send 本批不使用
+    # （出站不动）。仍依赖 planner 配合：模型须在 reply 调用里主动填 plugin_options（见 reason 教学）。
+
+    @ReplyExtension(
+        name=_REPLY_EXTENSION_NAME,
+        description="主动开口回合：把本轮由头放进回复生成的额外要求（承接你想说的那件事）",
+        chat_scope="private",
+    )
+    async def _reply_ext_proactive_bysource(self, **payload: Any) -> Dict[str, Any]:
+        """reply 扩展：prepare 返回由头承接提醒；其余 phase / 无由头 / 未启用一律空操作。"""
+        try:
+            phase = str(payload.get("phase", "") or "")
+            if phase != "prepare":
+                return {}  # before_send 本批不使用；未知 phase 默认空操作
+            if not bool(getattr(self.config.proactive, "reply_extension_enabled", False)):
+                return {}
+            if self._proactive is None:
+                return {}
+            session_id = str(payload.get("session_id", "") or "")
+            bysource = self._proactive.bysource_for_reply(session_id, self._local_now())
+            if not bysource:
+                return {}
+            return {
+                "extra_prompt": (
+                    f"本次是你主动开口的回合。你想说起的是（由头）：{bysource}\n"
+                    "请让回复自然地从这个由头出发——承接它、就着它说，"
+                    "但不要逐字复述，也不要解释这是主动消息。"
+                )
+            }
+        except Exception as exc:
+            # 🔴 宿主语义：扩展异常即整次 reply 失败——宁可这轮没有由头提醒，不拖垮回复
+            self.ctx.logger.error(
+                "回复扩展 %s 异常（降级空操作）: %s", _REPLY_EXTENSION_NAME, exc, exc_info=True
+            )
+            return {}
 
     # ===== Command：/narrative =====
 

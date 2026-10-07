@@ -515,6 +515,16 @@ class ProactiveSection(PluginConfigBase):
         ),
         json_schema_extra={"label": "启用主动消息", "order": 1},
     )
+    reply_extension_enabled: bool = Field(
+        default=False,
+        description=(
+            "主动轮由头进 replyer 指令位（批 4 / R39，宿主 ≥1.3.5 的 REPLY_EXTENSION 通道）。"
+            "开启后主动消息的 reason 会教模型在 reply 调用里选择本插件的回复扩展，"
+            "由头随即出现在「【额外回复要求】」块（指令位强锚点）。"
+            "⚠️ 兑现率对照（基线：10 次主动兑现 5 次）是本项的验收数据。"
+        ),
+        json_schema_extra={"label": "由头进回复指令位", "order": 21},
+    )
     sign_cooldown_hours: int = Field(
         default=6,
         ge=1,

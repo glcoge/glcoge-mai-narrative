@@ -27,6 +27,10 @@ from ..state.engine import parse_clock
 # 插件里只保留这一个阈值。
 _PROACTIVE_CATCH_WINDOW_MINUTES = 16 * 60
 
+# REPLY_EXTENSION 由头回查窗（批 4 / R39）：主动→reply 的真实间隔是秒级，
+# 10 分钟为富余上限；超窗的由头不再提醒（prepare 返回 {}，防陈旧提醒）。
+_REPLY_EXT_WINDOW_MINUTES = 10
+
 # 每用户保留的主动开口记录条数上限（有界，防内存无增长界）
 _SENT_KEEP_PER_USER = 10
 
@@ -181,6 +185,22 @@ class _EngagedWindow:
     chars: int = 0
     #: 窗内用户原话（按时间顺序）；达标时拼接为里程碑 desc
     texts: List[str] = field(default_factory=list)
+
+
+def with_reply_extension_hint(reason: str, full_name: str, enabled: bool) -> str:
+    """reason 追加 REPLY_EXTENSION 选择教学（批 4 / R39；enabled 且有全名时才教）。
+
+    教模型在 reply 调用里主动填 ``plugin_options={"<full_name>": {}}``——
+    宿主 1.3.5 通道会把 prepare 的 extra_prompt 放进「【额外回复要求】」块
+    （排在目标消息块之后的指令位）。这是"仍依赖 planner 配合"的那一层。
+    """
+    if not enabled or not full_name:
+        return reason
+    return (
+        f"{reason}\n"
+        f'调用 reply 工具时，请在参数里同时填 plugin_options={{"{full_name}": {{}}}}——'
+        "这会把你的由头放进回复生成的额外要求，帮助回复贴合你想说的事。"
+    )
 
 
 def _trigger_accepted(result: Any) -> bool:
@@ -357,6 +377,16 @@ class ProactiveScheduler:
             "（开口时必须调用 reply 工具并传入 msg_id：取上下文里最近一条用户消息"
             '前缀中的 msg_id="..." 数字；不要使用 proactive: 开头的 id，那不是可回复的消息。）'
         )
+        # 批 4（R39）：教模型选择 REPLY_EXTENSION（enabled 时；full_name 由 on_load 组装）
+        try:
+            pro_cfg = getattr(cfg, "proactive", None)
+            reason = with_reply_extension_hint(
+                reason,
+                str(getattr(plugin, "reply_extension_full_name", "") or ""),
+                bool(getattr(pro_cfg, "reply_extension_enabled", False)),
+            )
+        except Exception as exc:
+            plugin.ctx.logger.warning("reply 扩展教学拼接失败（不影响触发）: %s", exc)
         plugin.ctx.logger.info(
             "主动消息触发: uid=%s stream=%s 由头=%s", user_id, stream_id, bysource
         )
@@ -460,6 +490,28 @@ class ProactiveScheduler:
         if entry is not None and (self._plugin._local_now() - entry["ts"]).total_seconds() <= window_seconds:
             return "proactive", str(entry.get("bysource", "") or "")
         return "reply", ""
+
+    def bysource_for_reply(self, session_id: str, now: datetime.datetime) -> str:
+        """REPLY_EXTENSION prepare 用：该会话最近一次主动开口的由头（批 4 / R39）。
+
+        ⚠️ 不能复用 ``_pending_at``——它在注入 hook 的 ``consume_pending`` 已被
+        消费清除；本处读 ``_sent_records``（``record_sent`` 落下，含
+        stream_id/ts/bysource），窗口 ``_REPLY_EXT_WINDOW_MINUTES``（主动→reply
+        间隔秒级，10 分钟富余）。内存态：重启丢 = 本轮无由头提醒（可接受，
+        与 engaged 窗同哲学）。
+        """
+        latest_text = ""
+        latest_ts: Optional[datetime.datetime] = None
+        for records in self._sent_records.values():
+            for rec in records:
+                if rec.stream_id != session_id:
+                    continue
+                if (now - rec.ts).total_seconds() > _REPLY_EXT_WINDOW_MINUTES * 60:
+                    continue
+                if latest_ts is None or rec.ts > latest_ts:
+                    latest_ts = rec.ts
+                    latest_text = rec.bysource
+        return latest_text
 
     def resolve_catch(self, user_id: str, now: datetime.datetime) -> Optional[float]:
         """入站承接结算：返回本次承接的**延迟分钟数**，无可结算记录则返回 None。
