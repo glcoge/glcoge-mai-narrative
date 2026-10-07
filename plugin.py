@@ -37,6 +37,7 @@ from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 from .config import MaiNarrativePluginConfig
 from .services import (
     GroupStreamRegistry,
+    LorebookLoader,
     NarrativeEngine,
     ProactiveScheduler,
     StreamRegistry,
@@ -44,6 +45,7 @@ from .services import (
     build_context_block,
     build_injected_item,
     is_injected_item,
+    items_dialogue_text,
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
 from .services.state.continuity import (
@@ -199,6 +201,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         self._group_recon_logged: bool = False
         # 互动配对追踪（批 4-C2 / R31：只建不消费，为批 5 的 LLM 提案攒数据）
         self._pairs: Optional[PairTracker] = None
+        # 世界书 loader（v0.3.0 批 1 / R43：on_load 按 [lorebook].enabled 创建）
+        self._lorebook: Optional[LorebookLoader] = None
         # 慢变晋升机（批 4）：提案提炼器 + 晋升状态机
         self._promotion: Optional[ProposalRunner] = None
         self._promotion_engine: Optional[PromotionEngine] = None
@@ -228,6 +232,16 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 互动配对追踪（批 4-C2 / R31）：pending 槽在内存，配对落 interaction_pairs 表。
         # **只建不消费**——批 4 的任何晋升判定都不读它（AST 断言见 test_pairs.py）。
         self._pairs = PairTracker(self._store, logger=self.ctx.logger)
+        # 世界书 loader（v0.3.0 批 1 / R43）：enabled=false（默认）不创建——
+        # 零行为双保险的一半（另一半在 planner_block 的 detailed 模式闸）。
+        self._lorebook = None
+        if self.config.plugin.enabled and self.config.lorebook.enabled:
+            self._lorebook = LorebookLoader(
+                data_dir / str(self.config.lorebook.file),
+                budget=int(self.config.lorebook.inject_budget_chars),
+                max_entries=int(self.config.lorebook.max_entries),
+                logger=self.ctx.logger,
+            )
         # 慢变晋升机（批 4-C3/C4）：提案提炼器 + 确定性晋升状态机。
         # ⚠️ 不在这里 seed——seed 要调 LLM（最多 30s），会拖慢插件加载；
         # 放到看门狗首轮（见 _maybe_seed_perspective）。
@@ -867,6 +881,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 受众过滤（ADR-0004 第 2 层）：涉私素材只讲给本人，diary 产物对所有人短路
         recent = visible_chronicle(self._store, "self", user_id, 3)
         round_kind, bysource = self._proactive.consume_pending(session_id)
+        # 世界书触发扫描输入（批 1 / R43）：最近几轮对话文本，零 LLM token；
+        # loader 未建（enabled=false）时跳过提取，省一次 items 遍历。
+        dialogue_text = items_dialogue_text(items) if self._lorebook is not None else ""
         context_text = build_context_block(
             self,
             state,
@@ -876,6 +893,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             round_kind=round_kind,
             bysource=bysource,
             audience=user_id,
+            dialogue_text=dialogue_text,
         )
         items.append(build_injected_item(context_text))
         kwargs["items"] = items
@@ -1188,6 +1206,18 @@ class MaiNarrativePlugin(MaiBotPlugin):
             lines.append("学习投影(R1): 空（待批 4 晋升机写入）")
         # 漂移注入计数（E8）：宿主 hook 异常全吞，只有这里能证明「注入到底有没有上线」
         lines.append(f"漂移注入: 累计 {self._style_inject_count} 次")
+        # 世界书状态（批 1 / R43）：换人设/填设定集时用这条核对 loader 是否真的读到了
+        # getattr 缺段兜底与 planner_block 同款（旧测试夹具的 config 不带 lorebook 段）
+        lorebook_cfg = getattr(self.config, "lorebook", None)
+        if self._lorebook is not None and lorebook_cfg is not None:
+            book = self._lorebook.entries()
+            constants = sum(1 for entry in book if entry.constant)
+            lines.append(
+                f"世界书: {lorebook_cfg.mode} | 条目 {len(book)}（常驻 {constants}）| "
+                f"NPC 名册 {len(self._lorebook.list_cast())} | 预算 {lorebook_cfg.inject_budget_chars} 字"
+            )
+        else:
+            lines.append("世界书: 关")
         lines.append(f"数据目录: {self.ctx.paths.data_dir / 'narrative'}")
         # 宿主只开放「任务名」列表（非模型名），仅作连通性参考；失败不影响 status
         try:

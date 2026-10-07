@@ -901,6 +901,55 @@ class TelemetrySection(PluginConfigBase):
     )
 
 
+class LorebookSection(PluginConfigBase):
+    """世界知识基座（v0.3.0 批 1 / R43；grill 定案 2026-09-05）。
+
+    与锚定层的分界：锚定层（[identity]）管「她是谁、底线是什么」，本段管的
+    世界书管「她的世界有什么」。双模式语义：
+    - ``simple``（默认）：世界书完全不读，``[identity].world`` 照旧注入——现状；
+    - ``detailed``：``[identity].world`` 不注入（世界观由世界书接管，单一事实源，
+      防双世界观并置）；``values`` / ``world_rules`` 铁律**两种模式都注入、不动**。
+    """
+
+    __ui_label__: ClassVar[str] = "世界书"
+    __ui_icon__: ClassVar[str] = "book"
+    __ui_order__: ClassVar[int] = 7
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "世界书总闸。false 时 loader 不创建、注入段不存在（零行为）。"
+            "⚠️ 还需 [narrative].enabled=true（世界书只进剧本模式会话）。"
+        ),
+        json_schema_extra={"label": "启用世界书", "order": 1},
+    )
+    mode: str = Field(
+        default="simple",
+        description=(
+            "simple=世界书不读（现状）；detailed=世界书接管世界观，"
+            "[identity].world 一句话行不再注入（values/world_rules 铁律不受影响）。"
+        ),
+        json_schema_extra={"label": "模式", "hint": "simple / detailed 二选一", "order": 2},
+    )
+    file: str = Field(
+        default="lorebook.toml",
+        description="世界书文件名（相对 data/narrative/ 目录），手编 + mtime 热重载。",
+        json_schema_extra={"label": "文件名", "order": 3},
+    )
+    inject_budget_chars: int = Field(
+        default=800,
+        ge=1,
+        description="命中条目的累计注入预算（字符）。constant 优先 → high 优先 → 文件序，超预算整条丢弃。",
+        json_schema_extra={"label": "注入预算（字符）", "order": 4},
+    )
+    max_entries: int = Field(
+        default=100,
+        ge=1,
+        description="条目数软上限：超出打 WARNING 不阻断、不截断（公开功能防手滑写崩）。",
+        json_schema_extra={"label": "条目软上限", "order": 5},
+    )
+
+
 class MaiNarrativePluginConfig(PluginConfigBase):
     """mai-narrative 顶层配置。"""
 
@@ -912,6 +961,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     promotion: PromotionSection = Field(default_factory=PromotionSection)
     llm: LLMSection = Field(default_factory=LLMSection)
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
+    lorebook: LorebookSection = Field(default_factory=LorebookSection)
 
 
 __all__ = [
@@ -924,5 +974,6 @@ __all__ = [
     "PromotionSection",
     "LLMSection",
     "TelemetrySection",
+    "LorebookSection",
     "MaiNarrativePluginConfig",
 ]

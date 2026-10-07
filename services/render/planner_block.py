@@ -106,6 +106,29 @@ def is_injected_item(item: Any) -> bool:
     return str(item_id or "").startswith(_EXTRA_ITEM)
 
 
+def items_dialogue_text(items: Any, max_items: int = 3) -> str:
+    """提取 items 里最近若干个**非注入** item 的文本 parts（世界书触发扫描输入）。
+
+    prework §4 定案：扫描输入 = 本轮 + 最近 2~3 轮对话文本，零 LLM token；
+    本插件自己注入的上下文 item 必须排除（否则世界书会被自己的注入内容触发）。
+    """
+    texts: List[str] = []
+    for item in reversed(list(items or [])):
+        if is_injected_item(item):
+            continue
+        parts = item.get("parts", []) if isinstance(item, dict) else []
+        chunk = " ".join(
+            str(part.get("text", "") or "").strip()
+            for part in (parts or [])
+            if isinstance(part, dict) and str(part.get("type", "") or "") == "text"
+        ).strip()
+        if chunk:
+            texts.append(chunk)
+        if len(texts) >= max_items:
+            break
+    return "\n".join(reversed(texts))
+
+
 def build_sleep_hint(plugin: Any, state: Dict[str, Any], now: datetime) -> str:
     """睡眠相关的一句话状态提示（v0.1.10）；不需要提示时返回空串。
 
@@ -245,6 +268,7 @@ def build_context_block(
     round_kind: str = "reply",
     bysource: str = "",
     audience: Optional[str] = None,
+    dialogue_text: str = "",
 ) -> str:
     """把剧本特有内容渲染成一段紧凑的上下文文本。
 
@@ -259,6 +283,9 @@ def build_context_block(
         audience: 当前会话受众（私聊即用户号）。**注入前按受众过滤素材**
             （ADR-0004 第 2 层）—— 过滤规则单一实现在 ``render/audience.py``。
             ``None``＝受众未知，只放行通用素材。
+        dialogue_text: 世界书触发扫描输入（本轮+最近 2~3 轮对话文本，
+            由调用方从 before_request items 提取，见 ``items_dialogue_text``）。
+            批 1（R43）：仅 detailed 模式消费，空串=只注常驻条目。
 
     Returns:
         str: 注入给模型的剧本上下文段。
@@ -356,7 +383,16 @@ def build_context_block(
             + (f"（最初见面：{first_met}）" if first_met else "")
         )
 
-    if identity.world:
+    # 世界观行（批 1 / R43 双模式）：simple（默认）照旧注入；detailed 下世界书
+    # 接管世界观，本行不再注入——单一事实源，防双世界观并置（v0.1.2 教训）。
+    # values/world_rules 铁律**两种模式都注入、逻辑不动**（留在锚定层，grill 定案）。
+    lorebook_cfg = getattr(cfg, "lorebook", None)
+    lorebook_active = bool(
+        lorebook_cfg
+        and lorebook_cfg.enabled
+        and str(lorebook_cfg.mode) == "detailed"
+    )
+    if identity.world and not lorebook_active:
         lines.append(f"- 你生活在：{identity.world}")
 
     # ⚠️ 锚定层行**不过守卫**：world_rules/values 是守卫关键词的**来源**，
@@ -368,6 +404,23 @@ def build_context_block(
         lines.append(f"- 你的价值观底线（不可违背）：{'、'.join(anchored_values[:5])}")
     if anchored_rules:
         lines.append("- 你的世界观规则（不可违背）：\n" + "\n".join(f"    - {item}" for item in anchored_rules[:5]))
+
+    # 世界书注入（批 1 / R43）：只登记与读取；触发文本 = dialogue_text（零 LLM token）。
+    # ⚠️ lorebook 段**不过守卫**：条目是用户手写声明，与锚定层同级信任——
+    # 让它过闸 = world_rules 抽出的关键词命中条目自删（上方锚定行同理由）。
+    # getattr 取段沿用 continuity.build_guard_keywords 的「缺段不炸」先例
+    # （老测试夹具的 SimpleNamespace 不带 lorebook 段，语义 = 关闭）。
+    if lorebook_active:
+        loader = getattr(plugin, "_lorebook", None)
+        if loader is not None:
+            picked = loader.select(dialogue_text)
+            if picked:
+                lines.append(
+                    "- 世界观·相关设定：\n"
+                    + "\n".join(
+                        f"    - {entry.content[:INJECT_TEXT_CAP]}" for entry in picked
+                    )
+                )
 
     if round_kind == "proactive":
         # 由头前置（v0.1.5.x）：先给"想说什么"，再给规则——避免由头被靠后的
@@ -405,4 +458,5 @@ __all__ = [
     "build_slow_tendencies",
     "collect_slow_tendencies",
     "is_injected_item",
+    "items_dialogue_text",
 ]

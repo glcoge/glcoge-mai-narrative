@@ -252,6 +252,118 @@ def test_state_change_still_expressed_in_words():
     assert "情绪和状态变化" not in text, "不应再强制外露情绪（压抑型人设会被迫表达）"
 
 
+# ===== 世界书注入（v0.3.0 批 1 / R43 / grill 定案 2026-09-05） =====
+#
+# 零行为 diff 双保险：enabled=false（默认）或空世界书 → 注入块与现状一致；
+# detailed 模式接管世界观（world 行让位给世界书），values/world_rules 铁律两种
+# 模式都注入、逻辑不动（单一事实源，防双世界观并置——v0.1.2 同款教训）。
+# lorebook 段不过守卫：条目是用户手写声明，与锚定层同级信任（过闸 = 关键词
+# 命中自删，锚定层行同理由）。
+
+_LOADER = _synth_loader.load("services.lorebook.loader")
+
+_BOOK = (
+    '[[entries]]\n'
+    'name = "临海市"\n'
+    'keys = ["临海"]\n'
+    'content = "一座常年起海雾的沿海城市。"\n'
+    'kind = "world"\n'
+    'constant = true\n'
+    'priority = "high"\n'
+    '\n'
+    '[[entries]]\n'
+    'name = "面馆老板娘"\n'
+    'keys = ["面馆"]\n'
+    'content = "巷口面馆的老板娘认得每个常客。"\n'
+    'kind = "cast"\n'
+)
+
+
+def _make_lorebook_plugin(tmp_path, *, toml_text=_BOOK, enabled=True, mode="detailed"):
+    """带世界书 loader 的 plugin（loader 直接挂实例属性，与 on_load 生产装配同形）。"""
+    plugin = _make_plugin()
+    plugin.config.lorebook = _synth_loader.lorebook_config(enabled=enabled, mode=mode)
+    path = tmp_path / "lorebook.toml"
+    path.write_text(toml_text, encoding="utf-8")
+    plugin._lorebook = _LOADER.LorebookLoader(path, budget=800, max_entries=100)
+    return plugin
+
+
+def test_no_lorebook_attr_renders_unchanged():
+    """零行为 diff（夹具缺段形态）：plugin 无 lorebook 属性 → 无注入段、world 行照旧。"""
+    plugin = _make_plugin()
+    text = build_context_block(plugin, _make_state(), None, _NOW, [])
+    assert "世界观·相关设定" not in text
+    assert "你生活在：赛博朋克沿海城市" in text
+
+
+def test_lorebook_enabled_empty_book_zero_diff(tmp_path):
+    """零行为 diff（空书形态）：enabled=true 但世界书为空 → 注入块与现状一致。"""
+    plugin = _make_lorebook_plugin(tmp_path, toml_text="", mode="simple")
+    text = build_context_block(plugin, _make_state(), None, _NOW, [])
+    assert "世界观·相关设定" not in text
+    assert "你生活在：赛博朋克沿海城市" in text
+
+
+def test_simple_mode_keeps_world_line(tmp_path):
+    """simple 模式（默认）：世界书不接管，world 行照旧注入。"""
+    plugin = _make_lorebook_plugin(tmp_path, mode="simple")
+    text = build_context_block(plugin, _make_state(), None, _NOW, [], dialogue_text="去面馆吃碗面")
+    assert "你生活在：赛博朋克沿海城市" in text
+
+
+def test_detailed_mode_world_line_yields_to_book(tmp_path):
+    """detailed 模式：world 行不再注入（世界观由世界书接管），铁律行不动。"""
+    plugin = _make_lorebook_plugin(tmp_path, mode="detailed")
+    text = build_context_block(plugin, _make_state(), None, _NOW, [], dialogue_text="")
+    assert "你生活在" not in text, "detailed 下 [identity].world 不注入（单一事实源）"
+    assert "价值观底线" in text and "世界观规则" in text, "values/world_rules 两模式都注入"
+
+
+def test_detailed_mode_injects_matched_entries(tmp_path):
+    """detailed + 触发文本：常驻条目恒进、触发词命中的条目进，未命中不进。"""
+    plugin = _make_lorebook_plugin(tmp_path, mode="detailed")
+    text = build_context_block(
+        plugin, _make_state(), None, _NOW, [], dialogue_text="今晚想去面馆看看"
+    )
+    assert "世界观·相关设定" in text
+    assert "一座常年起海雾的沿海城市" in text, "constant 条目不需要触发词"
+    assert "巷口面馆的老板娘" in text, "keys 子串命中"
+    assert "旧书店" not in text
+
+
+def test_detailed_mode_no_dialogue_only_constants(tmp_path):
+    """detailed + 无触发文本：只注常驻条目（本轮无对话可扫时也不断供）。"""
+    plugin = _make_lorebook_plugin(tmp_path, mode="detailed")
+    text = build_context_block(plugin, _make_state(), None, _NOW, [], dialogue_text="")
+    assert "一座常年起海雾的沿海城市" in text
+    assert "巷口面馆的老板娘" not in text
+
+
+def test_lorebook_section_bypasses_guard(tmp_path):
+    """lorebook 段不过守卫：条目内容含守卫关键词也不自删（锚定层同级信任）。"""
+    plugin = _make_lorebook_plugin(tmp_path, mode="detailed")
+    # _make_plugin 的 world_rules=["不能透露自己是 bot"] → 守卫关键词含「bot」相关碎片，
+    # 常驻条目内容若过闸会被关键词命中自删；本用例钉住「不过守卫」裁定。
+    text = build_context_block(plugin, _make_state(), None, _NOW, [], dialogue_text="")
+    assert "一座常年起海雾的沿海城市" in text, "世界书条目是用户手写声明，不过守卫"
+
+
+def test_items_dialogue_text_joins_recent_non_injected():
+    """触发扫描输入提取：跳过本插件注入的 item，取最近若干轮的文本 parts。"""
+    items = [
+        {"parts": [{"type": "text", "text": "更早的一轮"}]},
+        _RENDER.build_injected_item("本插件注入的上下文，绝不能当触发文本"),
+        {"parts": [{"type": "text", "text": "中间一轮"}]},
+        {"parts": [{"type": "text", "text": "最近一轮甲"}]},
+        {"parts": [{"type": "text", "text": "最近一轮乙"}, {"type": "image"}]},
+    ]
+    text = _RENDER.items_dialogue_text(items)
+    assert "最近一轮甲" in text and "最近一轮乙" in text and "中间一轮" in text
+    assert "本插件注入的上下文" not in text
+    assert "更早的一轮" not in text, "默认只取最近 3 个非注入 item"
+
+
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":

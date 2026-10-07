@@ -201,6 +201,7 @@ def _make_plugin_for_status():
     plugin._store = store
     plugin._streams = SimpleNamespace(known_count=lambda: 2)
     plugin._telemetry = None
+    plugin._lorebook = None  # 批 1（R43）：__new__ 绕过 __init__，须同款手工补默认
     plugin._ctx = SimpleNamespace(
         send=send,
         logger=_Logger(),

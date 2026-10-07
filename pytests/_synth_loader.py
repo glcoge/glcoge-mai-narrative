@@ -128,6 +128,24 @@ def promotion_config(**overrides) -> types.SimpleNamespace:
     return types.SimpleNamespace(**merged)
 
 
+# [lorebook] 出厂值（v0.3.0 批 1 / R43，与 config.py 的 Field default 保持一致）。
+# enabled 默认 False：既有测试夹具不带本段也零影响（planner_block 对缺段按关闭处理）。
+LOREBOOK_DEFAULTS = {
+    "enabled": False,
+    "mode": "simple",
+    "file": "lorebook.toml",
+    "inject_budget_chars": 800,
+    "max_entries": 100,
+}
+
+
+def lorebook_config(**overrides) -> types.SimpleNamespace:
+    """世界书配置夹具（默认与 config.py 出厂值一致，enabled=False 零行为）。"""
+    merged = dict(LOREBOOK_DEFAULTS)
+    merged.update(overrides)
+    return types.SimpleNamespace(**merged)
+
+
 class KvStoreMixin:
     """假 store 的 JSON 化 kv 契约（可混入）。
 

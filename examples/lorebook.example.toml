@@ -1,0 +1,36 @@
+# 世界书示例（v0.3.0 批 1 / R43）——复制到 data/narrative/lorebook.toml 后按需修改。
+# 启用：config.toml 里 [lorebook] enabled=true、mode="detailed"。
+# 热重载：改完保存即生效（mtime 检测，无需重启）。
+#
+# 字段说明（最小字段集，缺省字段可整行省略）：
+#   name     条目名（自读备注；cast 条目填 NPC 名）
+#   keys     触发词列表（对话文本含其一即注入；cast/world 可省略）
+#   content  注入正文（累计超 inject_budget_chars 的条目整条丢弃）
+#   kind     entry=普通关词条目（默认）| world=世界设定 | cast=NPC 名册
+#   constant true=每轮常驻注入（不需要触发词；world 条目建议 true）
+#   priority high=超预算时优先于 low（默认 low）
+#   enabled  false=停用该条目（默认 true）
+#
+# 模式语义：
+#   mode="simple"   世界书不读，[identity].world 照旧注入（现状）
+#   mode="detailed" 世界书接管世界观：[identity].world 不再注入；
+#                   values/world_rules 铁律不受影响，两种模式都注入
+
+[[entries]]
+name = "临海市"
+content = "一座常年起海雾的沿海城市，老城区还跑着有轨电车，夜里雾大时灯是晕开的。"
+kind = "world"
+constant = true
+priority = "high"
+
+[[entries]]
+name = "面馆老板娘"
+content = "巷口面馆的老板娘，五十来岁，记性好得出奇，认得每个常客的口味；bot 是熟客，常被多加一勺辣。"
+kind = "cast"
+keys = ["面馆", "老板娘"]
+
+[[entries]]
+name = "旧书店的白猫"
+content = "河堤旁旧书店养的一只白猫，不怕人，爱趴在临窗的书堆上晒太阳。"
+kind = "entry"
+keys = ["书店", "白猫"]
