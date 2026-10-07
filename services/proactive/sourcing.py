@@ -125,8 +125,11 @@ def _milestone_consumed_map(engine: Any, user_id: str) -> Dict[str, str]:
     return {str(key): str(value) for key, value in data.items()}
 
 
-def _bigrams(text: str) -> set:
-    """字符 bigram 集合（中文无空格，bigram 比分词更稳且零依赖）。"""
+def bigrams(text: str) -> set:
+    """字符 bigram 集合（中文无空格，bigram 比分词更稳且零依赖）。
+
+    公开 seam（批 3）：建议通道的挂靠判定复用同一 bigram 实现（单一实现纪律）。
+    """
     normalized = "".join(ch for ch in str(text or "") if not ch.isspace())
     if len(normalized) < 2:
         return {normalized} if normalized else set()
@@ -135,8 +138,8 @@ def _bigrams(text: str) -> set:
 
 def overlap_ratio(left: str, right: str) -> float:
     """两段文本的字符 bigram Jaccard 相似度 ∈ [0,1]（空文本返回 0）。"""
-    left_set = _bigrams(left)
-    right_set = _bigrams(right)
+    left_set = bigrams(left)
+    right_set = bigrams(right)
     if not left_set or not right_set:
         return 0.0
     return len(left_set & right_set) / len(left_set | right_set)
@@ -454,6 +457,7 @@ def compute_share_urge(engine: Any, user_id: str) -> float:
 
 
 __all__ = [
+    "bigrams",
     "build_bysource",
     "build_bysource_detail",
     "compute_share_urge",

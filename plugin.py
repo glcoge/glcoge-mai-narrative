@@ -63,6 +63,7 @@ from .services.learning.projection import (
 # 互动配对（批 4-C2 / R31）：**只建不消费**——落点照建，晋升通道先不接。
 # ⚠️ 注意本 import 只出现在 plugin 层：晋升链路（continuity/proposal/evidence）
 # 禁止 import 本模块，由 pytests/test_pairs.py 的 AST 断言守住。
+from .services.learning.suggestion import record_suggestion
 from .services.learning.pairs import PairTracker, message_id_of
 # 慢变晋升（批 4-C3/C4/C5）：提案提炼 + 冷启动 seed
 from .services.learning.evidence import positive_signal_days
@@ -712,6 +713,13 @@ class MaiNarrativePlugin(MaiBotPlugin):
         now = self._local_now()
         self._engine.record_interaction(user_id, plain, now)
         self._engine.record_branch_feedback(user_id, now)
+        # 建议通道（批 3 / R42）：语义路由（规则先行，须挂靠 pending 事件才放行）。
+        # 群聊已在上方提前 return（R35：内容不进生活线）——结构性排除。
+        # 旁路纪律同 pairs：路由/写入失败绝不拖垮入站主链路。
+        try:
+            record_suggestion(self._engine, user_id, plain, now)
+        except Exception as exc:
+            self.ctx.logger.warning("建议通道路由失败（不阻断）: %s", exc)
         # 验收采样（指标 1/2 的判定与登记下沉 Telemetry，2026-09-13 C5）
         self._telemetry.note_inbound(
             stream_id=stream_id, user_id=user_id, text=plain, now=now

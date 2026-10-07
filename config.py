@@ -1015,6 +1015,29 @@ class SeederSection(PluginConfigBase):
     )
 
 
+class SuggestionSection(PluginConfigBase):
+    """建议通道（v0.3.0 批 3 / R42；社交层 → 生活层唯一入口）。
+
+    用户建议经语义路由（规则先行：建议句式 + 须挂靠 pending 事件实体）写入
+    事件实体的 suggestions 字段，生活片段生成时作为「倾向」参考——不是指令，
+    不新开事件（bot 可任性不听）。与 materials 回声池两池分离（红线②）。
+    """
+
+    __ui_label__: ClassVar[str] = "建议通道"
+    __ui_icon__: ClassVar[str] = "message"
+    __ui_order__: ClassVar[int] = 9
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "建议通道路由总闸。false 时入站消息不做建议判定（零行为）。"
+            "⚠️ 还需 [plugin].enabled 与 [narrative].enabled；仅剧本模式私聊生效"
+            "（群聊消息按 R35 不进生活线，永不路由）。"
+        ),
+        json_schema_extra={"label": "启用建议通道", "order": 1},
+    )
+
+
 class MaiNarrativePluginConfig(PluginConfigBase):
     """mai-narrative 顶层配置。"""
 
@@ -1028,6 +1051,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
     lorebook: LorebookSection = Field(default_factory=LorebookSection)
     seeder: SeederSection = Field(default_factory=SeederSection)
+    suggestion: SuggestionSection = Field(default_factory=SuggestionSection)
 
 
 __all__ = [
@@ -1042,5 +1066,6 @@ __all__ = [
     "TelemetrySection",
     "LorebookSection",
     "SeederSection",
+    "SuggestionSection",
     "MaiNarrativePluginConfig",
 ]

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..render.audience import visible_events
 from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
+from ..learning.suggestion import tendency_prompt_block
 from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 from .event_entity import make_fragment_event
 
@@ -276,6 +277,13 @@ def build_life_fragment_prompt(
     if materials:
         shown = [text[:material_cap] for text in materials[-6:]]
         chunks.append("最近发生的对话与小事：\n- " + "\n- ".join(shown))
+
+    # 建议倾向段（批 3 / R42 / 总览 §6.1）：社交层 → 生活层的唯一消费点。
+    # 🔴 红线②两池分离：建议只进本段窄通道，绝不并入上面的 materials（echo 池）；
+    # 消费措辞匿名化（「有网友建议」），三连否定框架句在 suggestion.py 单一实现。
+    suggestion_block = tendency_prompt_block(state)
+    if suggestion_block:
+        chunks.append(suggestion_block)
 
     # 通信事实标记（C9）：所有片段都适用，故放在输出指令之前
     chunks.append(COMM_FACT_RULE)
