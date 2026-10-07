@@ -5,3 +5,6 @@ config_back/
 # 本地备份副本
 * - 副本.py
 *副本*.py
+
+# 开发文档含隐私信息（QQ 号等），已迁至主仓本地 .scratch/narrative-docs/，不入库
+docs/
