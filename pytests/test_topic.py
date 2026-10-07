@@ -184,6 +184,31 @@ def test_top_topics_tolerates_dirty_value() -> None:
     assert top_topics(store, 5) == [("好话题", 1.0)]
 
 
+# ===== P1（批 2 / R16 重做第一步）：由头前缀剥离 =====
+#
+# 2026-10-07 实测病灶：由头文本统一带「最近一段生活：」前缀占 6 字，
+# topic_key 前 12 字签名里只剩 6 字实义 ⇒ 98 个 key 条条唯一（聚合层废）。
+# 修法：签名前剥掉由头前缀，让 12 字全部落在实义内容上。
+
+
+def test_topic_key_strips_fragment_prefix() -> None:
+    """fragment 前缀剥离：带前缀与不带前缀的同一内容 → 同一签名。"""
+    assert topic_key("最近一段生活：午后去江边走了走") == topic_key("午后去江边走了走")
+    assert topic_key("最近一段生活：午后去江边走了走") == "午后去江边走了走"
+
+
+def test_topic_key_strips_seed_prefix() -> None:
+    """seed 前缀（批 2 新由头）同样剥离。"""
+    assert topic_key("外面发生的一件事：巷口面馆进了新米") == topic_key("巷口面馆进了新米")
+    assert topic_key("外面发生的一件事：巷口面馆进了新米") == "巷口面馆进了新米"
+
+
+def test_topic_key_plain_text_unchanged() -> None:
+    """无前缀文本行为不变（P1 是增量修正，不改变既有归一化语义）。"""
+    assert topic_key("今天，去看了猫！") == "今天去看了猫"
+    assert topic_key("") == ""
+
+
 if __name__ == "__main__":
     from pytests._synth_loader import run_standalone
 

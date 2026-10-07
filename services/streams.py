@@ -73,6 +73,10 @@ class StreamRegistry:
         """已知会话数（状态摘要展示用）。"""
         return len(self._uid_to_stream)
 
+    def known_uids(self) -> List[str]:
+        """已知用户 id 全量（批 2 / R40：播种器参与者拦截词表的数据源）。"""
+        return list(self._uid_to_stream.keys())
+
     def clear(self) -> None:
         """清空全部映射（状态重置用；kv 中的 stream_map 由重置的 kv 清空覆盖）。"""
         self._uid_to_stream.clear()

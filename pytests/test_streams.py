@@ -97,6 +97,17 @@ def test_unknown_lookups_return_empty_string():
         assert registry.known_count() == 0
 
 
+def test_known_uids_lists_all_users():
+    """known_uids 全量枚举（批 2 / R40：播种器参与者拦截词表的数据源）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = _make_registry(Path(tmp))
+        registry.record("u1", "s1")
+        registry.record("u2", "s2")
+
+        assert sorted(registry.known_uids()) == ["u1", "u2"]
+        assert registry.known_uids() == list(registry.known_uids()), "返回列表可重复调用"
+
+
 # ===== 独立运行入口 =====
 
 if __name__ == "__main__":

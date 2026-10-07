@@ -63,7 +63,10 @@ DIARY_KIND = "diary"
 #: 批 4 掩码改走 kind 白名单），本行仅为文档约定，判定一律不读 kind。
 #: 新增产出类型应登记到这里（当前仅作文档与写入侧约定，判定不读它——
 #: 判定一律 fail-closed：带 source_uid 就按受众过滤，与 kind 无关）。
-GENERAL_KINDS = frozenset({"life", "daily", "life_highlight"})  # life_highlight：生活高光片段（Q14）
+GENERAL_KINDS = frozenset({"life", "daily", "life_highlight", "life_seed"})
+# life_highlight：生活高光片段（Q14）
+# life_seed：世界事件源播种产物（批 2 / R40）。⚠️ 晋升证据白名单（evidence.
+# EVIDENCE_ELIGIBLE_KINDS）直接引用本集合——扩容自动联动，勿在 evidence 侧重复登记
 
 #: 过滤后可能不足 limit（被过滤掉的条目仍占位），故按倍数多取再截断。
 _OVERFETCH = 3

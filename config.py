@@ -515,6 +515,16 @@ class ProactiveSection(PluginConfigBase):
         ),
         json_schema_extra={"label": "启用主动消息", "order": 1},
     )
+    sign_cooldown_hours: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "跨用户签发冷却（P4 / R44）：同一事件/片段 T 小时内只签给 1 人，"
+            "治同片段同时段多人群发。⚠️ 明文：本项不构成生活线分叉/素材隔离"
+            "——只限时间窗内的签发人数，素材内容不改、生活线仍单条。"
+        ),
+        json_schema_extra={"label": "签发冷却（小时）", "order": 20},
+    )
     silent_start: str = Field(
         default="23:00",
         description="静默开始（HH:MM）。静默期内不主动开口。",
@@ -950,6 +960,61 @@ class LorebookSection(PluginConfigBase):
     )
 
 
+class SeederSection(PluginConfigBase):
+    """世界事件源（播种器）（v0.3.0 批 2 / R40；HDSI 供给思想轻量版）。
+
+    独立题材源：周期低概率生成「她的世界里正在发生的小事」，语义为
+    「事实权威、反应自由」。🔴 参与者禁入双层为红线：生成 prompt 明示 +
+    落库前词面拦截（uid/gid/手工网名），命中丢弃整条并计数。
+    """
+
+    __ui_label__: ClassVar[str] = "世界事件播种"
+    __ui_icon__: ClassVar[str] = "globe"
+    __ui_order__: ClassVar[int] = 8
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "播种器总闸。false 时完全不生成（零行为）。"
+            "⚠️ 还需 [plugin].enabled 与 [narrative].enabled；"
+            "建议 Lorebook（[lorebook]）先填好世界基调与 NPC 名册再开启。"
+        ),
+        json_schema_extra={"label": "启用播种器", "order": 1},
+    )
+    interval_minutes: int = Field(
+        default=240,
+        ge=1,
+        description="两次播种尝试的最小间隔（分钟）。默认 240 = 每 4 小时尝试一次。",
+        json_schema_extra={"label": "尝试间隔（分钟）", "order": 2},
+    )
+    probability: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="每次尝试的实际播种概率（低概率起步；HDSI 参考量级：期望每天 1~2 条）。",
+        json_schema_extra={"label": "播种概率", "order": 3},
+    )
+    daily_max: int = Field(
+        default=2,
+        ge=1,
+        description="每日成功播种条数上限（被参与者拦截的不占配额）。",
+        json_schema_extra={"label": "每日上限", "order": 4},
+    )
+    blocked_names: List[str] = Field(
+        default_factory=list,
+        description=(
+            "参与者拦截补充词表：mode_user_ids、已知会话用户号与群号之外的"
+            "网名/昵称/称呼（产出文本命中即整条丢弃）。"
+        ),
+        json_schema_extra={
+            "label": "拦截补充词表",
+            "hint": '例 ["小明","隔壁老王"]；模式用户与已知会话已自动覆盖',
+            "item_type": "string",
+            "order": 5,
+        },
+    )
+
+
 class MaiNarrativePluginConfig(PluginConfigBase):
     """mai-narrative 顶层配置。"""
 
@@ -962,6 +1027,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     llm: LLMSection = Field(default_factory=LLMSection)
     telemetry: TelemetrySection = Field(default_factory=TelemetrySection)
     lorebook: LorebookSection = Field(default_factory=LorebookSection)
+    seeder: SeederSection = Field(default_factory=SeederSection)
 
 
 __all__ = [
@@ -975,5 +1041,6 @@ __all__ = [
     "LLMSection",
     "TelemetrySection",
     "LorebookSection",
+    "SeederSection",
     "MaiNarrativePluginConfig",
 ]

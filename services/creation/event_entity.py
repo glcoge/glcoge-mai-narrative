@@ -43,6 +43,7 @@ __all__ = [
     "KIND_SEED",
     "DEFAULT_KIND",
     "make_fragment_event",
+    "make_seed_event",
     "event_kind",
     "event_key",
     "normalize_event",
@@ -83,6 +84,28 @@ def make_fragment_event(ts: str, text: str, highlight: bool = False) -> Dict[str
         "highlight": highlight,
         "event_id": _event_id(ts, text),
         "kind": KIND_FRAGMENT,
+    }
+
+
+def make_seed_event(
+    ts: str, text: str, importance: str = "low", urgency: str = "short"
+) -> Dict[str, Any]:
+    """构造一条 seed 事件实体（批 2 / R40，seeder.py 写入端唯一入口）。
+
+    与 fragment 同池同 schema；``highlight`` 恒 False（红线④：播种器与高光签
+    两个物种互不触碰）。``importance``/``urgency`` 为 seed 特有元数据
+    （HDSI 重要性×时效分类学直抄；本批只登记不消费——「先数据后功能」）。
+    """
+    # OBSERVE(R40)：seed 落账入口（登记表 R40 行）；元数据默认值与 seeder
+    # 降级路径共用「low/short」单一来源。
+    return {
+        "ts": ts,
+        "text": text,
+        "highlight": False,
+        "event_id": _event_id(ts, text),
+        "kind": KIND_SEED,
+        "importance": importance,
+        "urgency": urgency,
     }
 
 

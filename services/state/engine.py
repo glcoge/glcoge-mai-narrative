@@ -22,6 +22,7 @@ from ..creation.life import (
     build_life_fragment_prompt as _build_life_fragment_prompt,
     maybe_generate_life_fragment as _maybe_generate_life_fragment,
 )
+from ..creation.seeder import maybe_seed_world_event as _maybe_seed_world_event
 from ..proactive.sourcing import (
     build_bysource as _build_bysource,
     build_bysource_detail as _build_bysource_detail,
@@ -448,6 +449,11 @@ class NarrativeEngine:
             await self.maybe_daily_chronicle(current)
         except Exception as exc:
             self._plugin.ctx.logger.error("编年史压缩异常: %s", exc, exc_info=True)
+        # 世界事件播种（批 2 / R40）：四闸自控频率（enabled 默认关），异常不影响规则 tick
+        try:
+            await self.maybe_seed_world_event(current)
+        except Exception as exc:
+            self._plugin.ctx.logger.error("世界事件播种异常: %s", exc, exc_info=True)
 
     def _apply_state_rules(self, state: Dict[str, Any], now: datetime) -> None:
         """纯规则：作息与睡眠流转、精力衰减/回升、心情映射、日程到点。"""
@@ -849,6 +855,10 @@ class NarrativeEngine:
     async def maybe_generate_life_fragment(self, now: Optional[datetime] = None) -> None:
         """创作层消费器：闸门下生成一段"生活片段"（实现已迁 creation/life.py）。"""
         await _maybe_generate_life_fragment(self, now)
+
+    async def maybe_seed_world_event(self, now: Optional[datetime] = None) -> None:
+        """世界事件播种 tick（批 2 / R40）：实现见 ``creation/seeder.py``（四闸自控频率）。"""
+        await _maybe_seed_world_event(self, now)
 
     def _build_life_fragment_prompt(
         self,

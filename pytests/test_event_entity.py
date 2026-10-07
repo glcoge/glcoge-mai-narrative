@@ -26,6 +26,7 @@ _ENTITY = _synth_loader.load("services.creation.event_entity")
 _AUDIENCE = _synth_loader.load("services.render.audience")
 
 make_fragment_event = _ENTITY.make_fragment_event
+make_seed_event = _ENTITY.make_seed_event
 event_kind = _ENTITY.event_kind
 event_key = _ENTITY.event_key
 normalize_event = _ENTITY.normalize_event
@@ -235,6 +236,35 @@ def test_life_write_end_produces_event_entity():
     # 编年史双写不受影响（零行为 diff）
     assert engine._store.chronicle[0]["kind"] == "life"
     assert engine._store.chronicle[0]["text"] == "今天在厨房煮了粥。"
+
+
+# ===== seed 分型（批 2 / R40：世界事件源落账入口） =====
+
+
+def test_make_seed_event_shape():
+    """seed 实体：kind=seed + importance/urgency 元数据透传 + highlight 恒 False。"""
+    entry = make_seed_event(ts=_TS, text="巷口的猫生了小猫。", importance="mid", urgency="short")
+    assert entry["kind"] == "seed"
+    assert entry["text"] == "巷口的猫生了小猫。"
+    assert entry["ts"] == _TS
+    assert entry["highlight"] is False, "P19 红线④：播种器与高光签两个物种，seed 恒不高光"
+    assert entry["event_id"].startswith("ev_")
+    assert entry["importance"] == "mid"
+    assert entry["urgency"] == "short"
+
+
+def test_make_seed_event_defaults():
+    """元数据缺省 = low/short（JSON 解析失败降级的同一默认，单一来源）。"""
+    entry = make_seed_event(ts=_TS, text="某件小事。")
+    assert entry["importance"] == "low"
+    assert entry["urgency"] == "short"
+
+
+def test_seed_event_visible_as_general():
+    """seed 条目不带 source_uid → 通用可见（与 fragment 一致，进所有会话候选）。"""
+    entry = make_seed_event(ts=_TS, text="某件小事。")
+    assert is_visible(entry, None) is True
+    assert is_visible(entry, "10001") is True
 
 
 if __name__ == "__main__":

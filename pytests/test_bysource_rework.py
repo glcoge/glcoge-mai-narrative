@@ -20,6 +20,7 @@ import _synth_loader
 _ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
 _PROACTIVE = _synth_loader.load("services.proactive.scheduler")
+_SOURCING = _synth_loader.load("services.proactive.sourcing")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 ProactiveScheduler = _PROACTIVE.ProactiveScheduler
@@ -153,11 +154,14 @@ def test_two_fragments_rotated():
 
 
 def test_used_marks_are_per_user():
-    """去复用只约束**同一段关系**，不跨用户（同一件事讲给不同朋友听是自然的）。
+    """去复用只约束**同一段关系**，kv 键按 uid 隔离（同一件事讲给不同朋友听是自然的）。
 
     生活片段存在自我层（全局共享），7 位测试者共用同一批素材。若去重键不带 uid，
     先触发的用户会把素材耗尽，后触发的用户拿不到由头 → build_bysource 返回空
     → 本轮主动开口被跳过，触达面进一步收窄。
+
+    批 2（R44）语义变更：签发冷却（默认 6h）内同一事件不签给第二人——跨用户的
+    素材共享观察窗移到冷却结束之后（used 键的 per-uid 隔离由分键本身保证）。
     """
     engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
 
@@ -165,9 +169,9 @@ def test_used_marks_are_per_user():
     assert "一段有画面的生活片段" in first
     assert engine._store.get_kv_str("bysource:used:10001"), "应登记到甲自己的键"
 
-    other = engine.build_bysource("10002", _NOW)
-    assert "一段有画面的生活片段" in other, "跨用户不应互相耗尽素材"
-    assert engine._store.get_kv_str("bysource:used:10002")
+    other = engine.build_bysource("10002", _NOW + datetime.timedelta(hours=7))
+    assert "一段有画面的生活片段" in other, "冷却窗外跨用户可共享素材"
+    assert engine._store.get_kv_str("bysource:used:10002"), "乙登记到乙自己的键"
 
     assert engine.build_bysource("10001", _NOW) == "", "同一用户内去复用应仍然生效"
 
@@ -438,6 +442,108 @@ def test_mixed_window_dedup():
     second = engine.build_bysource("10001", _NOW)
     assert first != second, "两条都该被取到且不重复"
     assert engine.build_bysource("10001", _NOW) == "", "都用完后应无由头"
+
+
+# ===== 批 2（v0.3.0 / R40）：seed 取材接线 + R44 签发冷却 =====
+
+
+def test_seed_entry_sourced_with_seed_prefix():
+    """seed 条目进候选（与 fragment 同闸同权），由头前缀区分素材类型。"""
+    engine = _make_engine(
+        [
+            {
+                "ts": "2026-10-07T10:00:00",
+                "text": "巷口面馆的老板娘进了新米",
+                "event_id": "ev_20261007100000_seed0001",
+                "kind": "seed",
+                "importance": "mid",
+                "urgency": "short",
+            }
+        ]
+    )
+    detail = engine.build_bysource_detail("10001", _NOW)
+    assert detail is not None
+    assert "外面发生的一件事：巷口面馆的老板娘进了新米" == detail["text"]
+    assert detail["origin"] == "seed", "origin=seed 供回执 scope 分析（批 0 裁定：可比 fragment vs seed 接住率）"
+    assert detail["event_id"] == "ev_20261007100000_seed0001"
+
+
+def test_seed_dedup_via_event_id():
+    """seed 条目签发后按 event_id 去复用（同 fragment 语义）。"""
+    engine = _make_engine(
+        [
+            {
+                "ts": "2026-10-07T10:00:00",
+                "text": "巷口的猫生了小猫",
+                "event_id": "ev_20261007100000_seed0002",
+                "kind": "seed",
+            }
+        ]
+    )
+    assert engine.build_bysource("10001", _NOW)
+    assert "ev_20261007100000_seed0002" in engine._store.get_kv_str("bysource:used:10001")
+    assert engine.build_bysource("10001", _NOW) == ""
+
+
+def _make_cooldown_engine(*, fragment, sign_cooldown_hours=None):
+    """带可选 [proactive].sign_cooldown_hours 的 engine（P4 冷却测试用）。
+
+    单 engine 多用户：冷却 kv 挂 store（按 event_key 命名空间、与用户无关），
+    与生产同一 store 共享语义一致。
+    """
+    engine = _make_engine([fragment])
+    if sign_cooldown_hours is not None:
+        engine._plugin.config.proactive = SimpleNamespace(sign_cooldown_hours=sign_cooldown_hours)
+    return engine
+
+
+def test_sign_cooldown_blocks_second_user_within_window():
+    """R44：同一事件 T 小时内只签 1 人——用户甲签发后，乙在窗内取不到。"""
+    fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
+    engine = _make_cooldown_engine(fragment=fragment)
+    assert engine.build_bysource("10001", _NOW)
+
+    assert engine.build_bysource("10002", _NOW + datetime.timedelta(hours=1)) == "", (
+        "签发冷却窗内，同一事件不得签给第二人"
+    )
+
+
+def test_sign_cooldown_expired_allows():
+    """冷却窗过后，乙可取到该事件（冷却只限时间窗，不是隔离）。"""
+    fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
+    engine = _make_cooldown_engine(fragment=fragment)
+    assert engine.build_bysource("10001", _NOW)
+
+    assert "一段有画面的生活片段" in engine.build_bysource(
+        "10002", _NOW + datetime.timedelta(hours=7)
+    ), "默认 6h 窗过后应放行"
+
+
+def test_sign_cooldown_respects_config():
+    """冷却时长走 [proactive].sign_cooldown_hours 配置（无数据不写死常量）。"""
+    fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
+    engine = _make_cooldown_engine(fragment=fragment, sign_cooldown_hours=1)
+    assert engine.build_bysource("10001", _NOW)
+
+    assert engine.build_bysource("10002", _NOW + datetime.timedelta(minutes=30)) == ""
+    assert "一段有画面的生活片段" in engine.build_bysource("10002", _NOW + datetime.timedelta(hours=2))
+
+
+def test_sign_cooldown_skips_keyless_candidates():
+    """无 event_key 的候选（无 ts 无 event_id）不参与冷却（与 used 去重同一防御语义）。"""
+    fragment = {"text": "没有时间戳的老条目"}
+    engine = _make_cooldown_engine(fragment=fragment)
+    assert engine.build_bysource("10001", _NOW)
+
+    assert engine.build_bysource("10002", _NOW + datetime.timedelta(minutes=1)) != ""
+
+
+def test_r44_comment_ruling_present():
+    """红线⑤双处明文之一：sourcing 源码必须含「不构成生活线分叉」裁定原文。"""
+    import inspect
+
+    source = inspect.getsource(_SOURCING)
+    assert "不构成生活线分叉" in source, "P4 代码注释裁定缺失（登记表 R44 同款明文要求）"
 
 
 if __name__ == "__main__":

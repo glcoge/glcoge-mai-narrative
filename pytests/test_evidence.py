@@ -76,9 +76,13 @@ def test_eligible_kinds_equal_general_kinds():
     两者语义不同（那边管"可见性"，这边管"可作证据"），当前取值相同是刻意的。
     若将来有人改了 audience 的口径，本测试立刻红——逼人就「证据准入是否跟着变」
     做一次显式决定，而不是让两处静默分叉。
+
+    2026-10-07 批 2 显式决定（R40）：``life_seed``（世界事件源播种产物）**准入**
+    证据池——它与 life 片段同为创作层消化产出（通用素材、同池取材），执行路线
+    批 2 条目 3 明文要求扩容，否则晋升证据掩码会把播种事件静默丢弃。
     """
     assert EVIDENCE_ELIGIBLE_KINDS == GENERAL_KINDS
-    assert EVIDENCE_ELIGIBLE_KINDS == frozenset({"life", "daily", "life_highlight"})
+    assert EVIDENCE_ELIGIBLE_KINDS == frozenset({"life", "daily", "life_highlight", "life_seed"})
 
 
 @pytest.mark.parametrize("kind", ["life", "daily", "life_highlight"])

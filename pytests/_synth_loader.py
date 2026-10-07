@@ -30,6 +30,32 @@ def _install_synth_package() -> None:
     sys.modules[f"{_SYNTH_PKG}.services"] = services
 
 
+def _register_synth_package(full_name: str, pkg_dir: Path) -> None:
+    """注册合成父包：有 ``__init__.py`` 的**真包**执行其 init（保持导出面），
+    无 init 的目录才造空壳。
+
+    空壳会顶掉真包——2026-10-07 批 2 实证：先 ``load("services.lorebook.loader")``
+    把 ``services.lorebook`` 注册成空壳，随后 ``services/__init__`` 的
+    ``from .lorebook import LorebookLoader`` 拿到空壳直接 ImportError
+    （全量字母序 b<s 恰好绕开，命令行顺序一变就炸）。
+    """
+    if full_name in sys.modules:
+        return
+    init_file = pkg_dir / "__init__.py"
+    if not init_file.exists():
+        pkg_mod = types.ModuleType(full_name)
+        pkg_mod.__path__ = [str(pkg_dir)]  # type: ignore[attr-defined]
+        sys.modules[full_name] = pkg_mod
+        return
+    spec = importlib.util.spec_from_file_location(full_name, str(init_file))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载 {full_name} from {init_file}")
+    pkg_mod = importlib.util.module_from_spec(spec)
+    pkg_mod.__path__ = [str(pkg_dir)]  # type: ignore[attr-defined]
+    sys.modules[full_name] = pkg_mod
+    spec.loader.exec_module(pkg_mod)
+
+
 def load(rel_name: str) -> types.ModuleType:
     """按相对名加载插件模块（如 ``"services.state.engine"`` / ``"plugin"``）。
 
@@ -42,10 +68,7 @@ def load(rel_name: str) -> types.ModuleType:
     # 模块内相对导入要求所有父包在 sys.modules 中可解析）
     for depth in range(2, len(parts)):
         pkg_full = f"{_SYNTH_PKG}." + ".".join(parts[:depth])
-        if pkg_full not in sys.modules:
-            pkg_mod = types.ModuleType(pkg_full)
-            pkg_mod.__path__ = [str(PLUGIN_ROOT.joinpath(*parts[:depth]))]  # type: ignore[attr-defined]
-            sys.modules[pkg_full] = pkg_mod
+        _register_synth_package(pkg_full, PLUGIN_ROOT.joinpath(*parts[:depth]))
     file_path = PLUGIN_ROOT.joinpath(*parts)
     if file_path.is_dir():
         file_path = file_path / "__init__.py"
@@ -142,6 +165,24 @@ LOREBOOK_DEFAULTS = {
 def lorebook_config(**overrides) -> types.SimpleNamespace:
     """世界书配置夹具（默认与 config.py 出厂值一致，enabled=False 零行为）。"""
     merged = dict(LOREBOOK_DEFAULTS)
+    merged.update(overrides)
+    return types.SimpleNamespace(**merged)
+
+
+# [seeder] 出厂值（v0.3.0 批 2 / R40，与 config.py 的 Field default 保持一致）。
+# enabled 默认 False：播种器完全关闭（零行为），观察期起步量级见 config.py 注释。
+SEEDER_DEFAULTS = {
+    "enabled": False,
+    "interval_minutes": 240,
+    "probability": 0.5,
+    "daily_max": 2,
+    "blocked_names": [],
+}
+
+
+def seeder_config(**overrides) -> types.SimpleNamespace:
+    """世界事件播种配置夹具（默认与 config.py 出厂值一致，enabled=False 零行为）。"""
+    merged = dict(SEEDER_DEFAULTS)
     merged.update(overrides)
     return types.SimpleNamespace(**merged)
 

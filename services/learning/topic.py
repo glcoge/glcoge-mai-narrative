@@ -22,6 +22,9 @@
 # OBSERVE(R16)：话题偏好外部加权——接话 1.0 / 自身片段 0.4，防自主信息茧房。
 # ⚠️ 已知局限：消费端（主动性选材）**尚未接权重**，故它看着像没人读的死代码；
 # 删掉即失去反茧房的唯一证据源。
+# ✅ 批 2（P1）已修聚合层：topic_key 剥由头前缀（_SOURCE_PREFIXES）——
+# 2026-10-07 实测 98 个 key 条条唯一的病灶（前缀占 6 字）已除；消费端接线
+# 仍在观察池（等播种数据积累后按总览 §5.3「整链或拆」评估）。
 
 from __future__ import annotations
 
@@ -33,21 +36,32 @@ TOPIC_WEIGHT_USER_REPLY = 1.0
 #: 自身主题权重（降权：防自主信息茧房）  # OBSERVE(P10)
 TOPIC_WEIGHT_SELF_FRAGMENT = 0.4
 
-#: OBSERVE(P15)：话题签名长度上限 12 字——过粗会误并不同话题、过细会让同一话题分裂；
-#: 调参依据是回放台话题榜的聚合形态。
+# OBSERVE(P15)：话题签名长度上限 12 字——过粗会误并不同话题、过细会让同一话题分裂；
+# 调参依据是回放台话题榜的聚合形态。
 #: 话题签名长度上限（确定性表示，见模块 docstring 的局限说明）
 TOPIC_KEY_MAX_LEN = 12
+
+# P1（批 2 / R16 重做第一步）：由头前缀剥离——2026-10-07 实测病灶：由头统一带
+# 「最近一段生活：」前缀占 6 字，12 字签名只剩 6 字实义 ⇒ 98 个 key 条条唯一
+# （聚合层废）。签名前剥掉前缀，让全部长度落在实义内容上。
+#: 已知由头前缀（新增来源时在此登记；消费端接线仍按 R16 观察池另行评估）
+_SOURCE_PREFIXES = ("最近一段生活：", "外面发生的一件事：")
 
 _WEIGHT_PREFIX = "topic:weight:"
 _PENDING_KEY = "topic:pending:{uid}"
 
 
 def topic_key(text: str) -> str:
-    """把文本归一化成确定性话题签名（去非字母数字 → 截断）。
+    """把文本归一化成确定性话题签名（剥由头前缀 → 去非字母数字 → 截断）。
 
     中文汉字 ``str.isalnum()`` 为真，故中文不会被误删；标点、空白、emoji 被剔除。
     """
-    normalized = "".join(ch for ch in str(text or "") if ch.isalnum())
+    source = str(text or "").strip()
+    for prefix in _SOURCE_PREFIXES:
+        if source.startswith(prefix):
+            source = source[len(prefix):]
+            break
+    normalized = "".join(ch for ch in source if ch.isalnum())
     return normalized[:TOPIC_KEY_MAX_LEN]
 
 

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from ..render.audience import filter_entries
 from ..state.continuity import current_relationship_stage
-from ..creation.event_entity import event_key
+from ..creation.event_entity import KIND_SEED, event_kind, event_key
 
 # 由头去复用：已用作由头的生活片段 ts 集合（逗号分隔，有界 8 条）
 # 按 user_id 命名空间隔离——store.get_kv_str 没有 scope 参数，而生活片段挂在
@@ -49,6 +49,17 @@ _MILESTONE_THROTTLE_WINDOW = 3
 _MILESTONE_USED_KEY_PREFIX = "milestone:consumed:"
 #: 最近若干次由头的来源队列（per-uid ``"fragment,milestone,mood"``），供 3 选 1 节流。
 _ORIGIN_KEY_PREFIX = "bysource:origin:"
+
+# P4 / R44：跨用户签发冷却——同一事件 T 小时内只签给 1 人（治 2026-10-06 实测的
+# 「同片段同时段 19/35 群发」）。kv 表按 event_key 命名空间，容量随 pending LRU
+# 自然过期（活跃键 ≤ fragment_pending_max，无需清理任务）。
+# ⚠️ 明文裁定（红线⑤，与登记表 R44 行同款原文）：**本项不构成生活线分叉/素材隔离**
+# ——冷却只限时间窗内的签发人数，素材内容不改、生活线仍单条。
+# OBSERVE(R44)：写入端在 build_bysource_detail 选中登记处，判定在 _sign_cooled。
+_SIGN_COOLDOWN_KEY_PREFIX = "bysource:signed:"
+#: 冷却时长缺省（小时）：仅当 config 缺 [proactive] 段（老测试夹具）时兜底；
+#: 生产值以 config.py ``[proactive].sign_cooldown_hours``（默认 6）为准，两处保持一致。
+_SIGN_COOLDOWN_DEFAULT_HOURS = 6.0
 
 #: 每用户已消费登记表条数上限（与 milestones 保留上限同宽即可：
 #: 被登记的条目一定来自该用户的 milestones，条目被挤出时登记也已无意义）。
@@ -143,6 +154,27 @@ def _recent_dialogue_text(engine: Any, user_id: str, limit: int = 5) -> str:
 # ─── 由头签发 ──────────────────────────────────────────────────
 
 
+def _sign_cooldown_hours(cfg: Any) -> float:
+    """冷却时长（小时）：读 [proactive].sign_cooldown_hours；缺段回退模块缺省
+    （老测试夹具兼容，build_guard_keywords 同款先例；生产 config 恒有该字段）。"""
+    pro_cfg = getattr(cfg, "proactive", None)
+    if pro_cfg is None:
+        return _SIGN_COOLDOWN_DEFAULT_HOURS
+    try:
+        return float(getattr(pro_cfg, "sign_cooldown_hours", _SIGN_COOLDOWN_DEFAULT_HOURS))
+    except (TypeError, ValueError):
+        return _SIGN_COOLDOWN_DEFAULT_HOURS
+
+
+def _sign_cooled(engine: Any, key: str, now: datetime.datetime) -> bool:
+    """P4 / R44 判定：该事件是否仍在跨用户签发冷却窗内（无登记 = 未冷却）。"""
+    signed_at = _parse_iso(engine._store.get_kv_str(f"{_SIGN_COOLDOWN_KEY_PREFIX}{key}"))
+    if signed_at is None:
+        return False
+    cooldown = _sign_cooldown_hours(engine._plugin.config)
+    return (now - signed_at).total_seconds() < cooldown * 3600
+
+
 def build_bysource(
     engine: Any, user_id: str, now: Optional[datetime.datetime] = None
 ) -> str:
@@ -205,13 +237,25 @@ def build_bysource_detail(
         item_event_id = event_key(item)
         if item_event_id and item_event_id in used:
             continue
+        # P4 / R44 跨用户签发冷却：同一事件 T 小时内只签给 1 人。⚠️ 明文裁定
+        # （红线⑤，登记表 R44 同款原文）：本项**不构成生活线分叉/素材隔离**——
+        # 冷却只限时间窗内的签发人数，素材内容不改、生活线仍单条。
+        if item_event_id and _sign_cooled(engine, item_event_id, current):
+            continue
         # 与最近对话撞车则跳过（OBSERVE(R23)）：由头要是"新事"，不是刚聊过的复述
         if recent_text and overlap_ratio(fragment, recent_text) >= _OVERLAP_REJECT:
             continue
         # 高光 2 倍权重（Q12 / §4.2）：第二次入列 = 占槽实现，保持确定性选择；
         # 只加权不设资格门；重复入列不产生二次登记（used.add 与去重查询皆幂等）。
+        # 批 2（R40）：seed 条目同池取材、同走本闸，不享特权；由头前缀区分素材
+        # 类型（防「播种事件被当成自己的经历」语义混淆），origin=seed 供回执
+        # scope 分析（批 0 裁定：可比 fragment vs seed 接住率）。
+        is_seed = event_kind(item) == KIND_SEED
         entry = _BySourceCandidate(
-            text=f"最近一段生活：{fragment[:INJECT_TEXT_CAP]}", ts=ts, event_id=item_event_id
+            text=f"{'外面发生的一件事' if is_seed else '最近一段生活'}：{fragment[:INJECT_TEXT_CAP]}",
+            ts=ts,
+            origin="seed" if is_seed else "fragment",
+            event_id=item_event_id,
         )
         candidates.append(entry)
         if item.get("highlight"):
@@ -289,6 +333,13 @@ def build_bysource_detail(
         cap = max(1, int(cfg.narrative.fragment_pending_max))
         used.add(chosen.event_id or chosen.ts)
         engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
+    if chosen.event_id:
+        # P4 / R44：登记签发时刻（跨用户冷却写入端；无 event_key 的候选不登记）。
+        # 里程碑与生活片段/播种事件统一走本表——冷却只限时间窗，不是素材隔离。
+        engine._store.set_kv_str(
+            f"{_SIGN_COOLDOWN_KEY_PREFIX}{chosen.event_id}",
+            current.isoformat(timespec="seconds"),
+        )
     if chosen.origin == "milestone" and chosen.milestone_id:
         # 条目级冷却登记（选中即登记，与"已用"同步：未送达也照样冷却，
         # 兜底预案见方案 §4.3 —— 若 L1「选中未送达率」>20% 再改为送达时登记）
