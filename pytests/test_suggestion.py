@@ -303,15 +303,18 @@ def test_suggestion_text_stays_out_of_materials_section():
 def test_group_message_never_routes(monkeypatch):
     """群聊消息不进建议路由（R35：内容不进生活线）；私聊同文本正常路由。"""
     plugin, _, _store = _make_hook_plugin()
-    # ⚠️ load() 每次重执行模块：spy 必须打在**实例所属的同一模块对象**上
+    # ⚠️ load() 每次重执行模块：spy 必须打在**调用方所属的同一模块对象**上
+    # （深化 C1 后 record_suggestion 的调用点在 services.inbound，经 plugin 模块
+    #   的 import 属性取该对象——sink 函数的 __globals__ 即它的 __dict__）
     plugin_mod = sys.modules[type(plugin).__module__]
+    inbound_mod = plugin_mod.inbound
     spy = {"calls": []}
 
     def _spy(engine, uid, text, now=None):
         spy["calls"].append((uid, text))
         return False
 
-    monkeypatch.setattr(plugin_mod, "record_suggestion", _spy)
+    monkeypatch.setattr(inbound_mod, "record_suggestion", _spy)
     base_message = {
         "message_id": "m1",
         "message_info": {

@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import datetime
 import json
-import time
 
 from maibot_sdk import (
     API,
@@ -37,16 +36,15 @@ from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
 from .config import MaiNarrativePluginConfig
 from .services import (
+    inbound,
+    inject,
+    outbound,
     GroupStreamRegistry,
     LorebookLoader,
     NarrativeEngine,
     ProactiveScheduler,
     StreamRegistry,
     Telemetry,
-    build_context_block,
-    build_injected_item,
-    is_injected_item,
-    items_dialogue_text,
 )
 from .services.state.engine import INJECT_TEXT_CAP, local_now
 from .services.state.continuity import (
@@ -54,7 +52,6 @@ from .services.state.continuity import (
     PromotionEngine,
     current_relationship_stage,
 )
-from .services.learning.drift_style import describe_drift
 from .services.learning.projection import (
     get_style_projection,
     is_self_write_in_progress,
@@ -64,34 +61,20 @@ from .services.learning.projection import (
 # 互动配对（批 4-C2 / R31）：**只建不消费**——落点照建，晋升通道先不接。
 # ⚠️ 注意本 import 只出现在 plugin 层：晋升链路（continuity/proposal/evidence）
 # 禁止 import 本模块，由 pytests/test_pairs.py 的 AST 断言守住。
-from .services.learning.suggestion import record_suggestion
-from .services.learning.pairs import PairTracker, message_id_of
+from .services.learning.pairs import PairTracker
 # 慢变晋升（批 4-C3/C4/C5）：提案提炼 + 冷启动 seed
 from .services.learning.evidence import positive_signal_days
 from .services.learning.proposal import ProposalRunner, seed_perspective
 from .services.proactive.scheduler import validate_rules
 from .services.render.audience import drop_diary, filter_entries, visible_chronicle
-from .services.render.replyer_block import build_replyer_block, build_style_item, is_style_item
-from .services.message import (
-    extract_group_id,
-    extract_user_id,
-    is_private_chat,
-    looks_like_command,
-    message_text,
-    outbound_text_len,
-)
+from .services.inject import _REPLY_EXTENSION_NAME
 from .services.kvkeys import PROACTIVE_COUNT as _PROACTIVE_COUNT_KEY
 from .services.store import SOURCE_DIARY, NarrativeStore
 
 # status 中可用列表的展示上限（超出截断，避免刷屏）
 _AVAILABLE_SHOW_LIMIT = 10
 
-# REPLY_EXTENSION 组件名（批 4 / R39）：full_name = f"{manifest_id}.{本名}"
-_REPLY_EXTENSION_NAME = "proactive_bysource"
 
-#: 漂移注入耗时预算（ms）。宿主 hook 硬超时 6 秒，此处是**内部告警门槛**（R-C）：
-#: 超预算说明注入路径被拖慢，宿主不会报错（异常全吞），只能靠这条 WARN 预警。
-_DRIFT_BUDGET_MS = 500
 
 # ===== 跨插件契约：给 diary 的「当日生活片段」取数（2026-10-01 接线） =====
 
@@ -694,155 +677,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def handle_inbound_message(self, **kwargs: Any) -> Dict[str, Any]:
-        """用户消息到达：登记会话、更新互动状态、采集指标（Hook 契约返回 dict）。
-
-        过滤分支均留 debug 级结构化日志（测试期排查入站链不生效用的 INFO
-        已在 v0.1.4 部署稳定化时降级——每条消息都打会刷屏，但排查时仍在）。
-        """
-        message = kwargs.get("message")
-        stream_id = str(
-            kwargs.get("stream_id")
-            or kwargs.get("session_id")
-            or (message.get("session_id") if isinstance(message, dict) else "")
-            or ""
-        )
-        if self._engine is None or self._store is None or self._telemetry is None:
-            self.ctx.logger.warning("narrative inbound: 服务未初始化，跳过")
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if not isinstance(message, dict) or not message:
-            self.ctx.logger.debug("narrative inbound: message 为空/非 dict（type=%s）", type(message).__name__)
-            return {"action": "continue", "modified_kwargs": kwargs}
-
-        user_id = extract_user_id(message)
-        is_private = is_private_chat(message)
-        is_mode = self._is_mode_uid(user_id)
-        self.ctx.logger.debug(
-            "narrative inbound: keys=%s | user_id=%r | stream_id=%r | is_private=%s | is_mode=%s | text=%s",
-            sorted(message.keys()), user_id, stream_id, is_private, is_mode,
-            message_text(message)[:30],
-        )
-        if not is_private:
-            # R35：群聊观察（只读落库；恒 continue，**绝不 abort**——回复判定归宿主）
-            self._observe_group(message, stream_id)
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if not is_mode:
-            self.ctx.logger.debug("narrative inbound: 用户不在模式名单，uid=%r", user_id)
-            return {"action": "continue", "modified_kwargs": kwargs}
-
-        if stream_id:
-            self._streams.record(user_id, stream_id)
-
-        plain = message_text(message)
-        # 命令/通知类消息不进剧本素材（命令是"你本人操作"，不是 bot 的生活）。
-        # OBSERVE(R9)：宿主 is_command 字段不可靠，补本地正则兜底——命令被当成
-        # 对话素材会污染创作层与关系值。宿主修好后删掉 looks_like_command 即可。
-        is_command = bool(message.get("is_command")) or looks_like_command(plain)
-        if is_command or bool(message.get("is_notify")):
-            self.ctx.logger.debug("narrative inbound: 命令/通知消息（is_command=%s is_notify=%s），跳过素材采集 uid=%s",
-                                 message.get("is_command"), message.get("is_notify"), user_id)
-            return {"action": "continue", "modified_kwargs": kwargs}
-
-        now = self._local_now()
-        self._engine.record_interaction(user_id, plain, now)
-        self._engine.record_branch_feedback(user_id, now)
-        # 建议通道（批 3 / R42）：语义路由（规则先行，须挂靠 pending 事件才放行）。
-        # 群聊已在上方提前 return（R35：内容不进生活线）——结构性排除。
-        # 旁路纪律同 pairs：路由/写入失败绝不拖垮入站主链路。
-        try:
-            record_suggestion(self._engine.deps, user_id, plain, now)
-        except Exception as exc:
-            self.ctx.logger.warning("建议通道路由失败（不阻断）: %s", exc)
-        # 验收采样（指标 1/2 的判定与登记下沉 Telemetry，2026-09-13 C5）
-        self._telemetry.note_inbound(
-            stream_id=stream_id, user_id=user_id, text=plain, now=now
-        )
-        # 验收指标 3：主动消息是否被接住（单指标 + 延迟分钟，2026-09-22 定案）
-        #
-        # 原先是 check_reply(30min) → elif check_late_reply(24h) 的判定链：一条用户
-        # 消息只会落进其中一个分支，同时满足时 24h 的分子被吞掉，指标系统性低估
-        # （A2 报告里的 24% 就是这么来的，真实值 78%）。改为单一入口 + 延迟连续量：
-        # 有没有被接住用 count(*) 数，多快被接住用 avg(value) 看，口径在分析层切。
-        latency = self._proactive.resolve_catch(user_id, now)
-        if latency is not None:
-            self._telemetry.record("proactive_replied", latency, user_id=user_id)
-            # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
-            self._engine.record_urge_feedback(user_id, "caught")
-            # engaged 计数窗（方案 §6.1 / Q9=c）：承接命中 = 开窗，本条计入 replies=1。
-            # 达标（窗内 ≥3 条且 ≥30 字）时由 scheduler 直接落一条里程碑。
-            self._proactive.note_engaged(user_id, plain, now, catch=True)
-        else:
-            # 窗内的普通消息照常计入（命令/通知已在上方 return，天然继承该口径）
-            self._proactive.note_engaged(user_id, plain, now)
-            if self._telemetry.is_user_initiated(stream_id or user_id, now):
-                # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
-                # ❗ 必须留在 else 内：拆成并列 if 会让承接分支也触发本反馈（双抬分享欲）
-                self._engine.record_urge_feedback(user_id, "user_initiated")
-        # 互动配对（批 4-C2 / R31）：把本次入站登记为「待配对的用户反馈」，
-        # 等本轮出站时与之配成（用户反馈 id → 已送达回应 id）。只建不消费。
-        if self._pairs is not None:
-            self._pairs.note_inbound(user_id, message_id_of(message), now)
-        self.ctx.logger.debug("narrative inbound: 落痕完成 uid=%s stream=%s", user_id, stream_id)
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """用户消息到达：登记会话、更新互动状态、采集指标（实现见 services/inbound.py；壳只做 **kwargs 整体透传——🔴 不拆键、不新增 try/except）。"""
+        return await inbound.handle_inbound_message(self, **kwargs)
     def _observe_group(self, message: Dict[str, Any], stream_id: str) -> None:
-        """R35：群聊消息落一条**纯观察**事件（本批唯一的群聊写库动作）。
-
-        三条设计约束（2026-09-29 群聊 grill 裁定）：
-        1. **恒 continue、绝不 abort** —— 群里该不该回完全交给宿主的
-           ``reply_necessity``（Q9=A：意愿门不自建），本方法不参与任何回复判定；
-        2. **fail-closed** —— gid 取不到 / 群不在观察名单 / 命令通知 一律拒绝落库；
-        3. **不接任何私聊语义链路** —— 不写支线、不更新互动、不进 telemetry、
-           不做承接结算、不做分享欲反馈、不建互动配对（Q2=B）。
-
-        ⚠️ 步骤 0 侦察：上线初期请把 logger 调到 debug，确认第一条日志里的
-        ``gid`` 非空——取不到群号说明宿主载荷结构与本实现的预期不符，
-        此时**整个 R35 应停在这里**，去修 ``extract_group_id``；
-        绝不可降级为「按私聊素材处理」，那正是 09-21 泄露事故的路径。
-        """
-        if not (self.config.plugin.enabled and self.config.narrative.enabled):
-            return
-        if self._engine is None or self._store is None:
-            return
-        group_id = extract_group_id(message)
-        group_info = (message.get("message_info") or {}).get("group_info") if isinstance(message, dict) else None
-        self.ctx.logger.debug(
-            "narrative inbound(group): gid=%r | session=%r | group_info=%r | keys=%s | text=%s",
-            group_id, stream_id, group_info,
-            sorted(message.keys()) if isinstance(message, dict) else [],
-            message_text(message)[:30],
-        )
-        # 侦察信号：每条群消息都打会刷屏，但**一次都不打**又等于没有侦察证据
-        # → 每次进程只打第一条（够用来确认 group_info 结构，重启后再确认一次）。
-        # ⚠️ 这是 R35 上线验收的第一步：**部署后必须在日志里看到 gid 非空**。
-        if not self._group_recon_logged:
-            self._group_recon_logged = True
-            self.ctx.logger.info(
-                "narrative 群聊侦察（首条）：gid=%r | session=%r | group_info=%r | keys=%s",
-                group_id, stream_id, group_info,
-                sorted(message.keys()) if isinstance(message, dict) else [],
-            )
-        if not group_id:
-            # ❗ fail-closed：取不到群号 = 无法打受众标 = 会被当成通用素材进私聊，
-            # 宁可不记。这是 09-21 泄露事故的同型路径，绝不放行。
-            self.ctx.logger.warning(
-                "narrative 群聊观察：取不到群号（group_info=%r），拒绝落库", group_info
-            )
-            return
-        allowed = set(self._observed_group_ids())
-        if not allowed:
-            return  # 观察整体关闭（默认状态）：连名单都没有，不必再看消息内容
-        if group_id not in allowed:
-            self.ctx.logger.debug("narrative 群聊观察：群 %s 不在观察名单", group_id)
-            return
-        plain = message_text(message)
-        # OBSERVE(R9) 同款兜底：命令/通知不是"她说的话"，不进语料
-        if bool(message.get("is_command")) or bool(message.get("is_notify")) or looks_like_command(plain):
-            return
-        self._engine.record_group_material(group_id, plain, now=self._local_now())
-        if stream_id and self._group_streams is not None:
-            # replyer hook 载荷没有群字段 → 只能靠入站时把 session→gid 记下来
-            self._group_streams.record(group_id, stream_id)
-
+        """R35 群聊纯观察落库（实现见 services/inbound.py）。"""
+        return inbound.observe_group(self, message, stream_id)
     # ===== 出站 Hook：采样（受入站事件不派发影响，出站同样改用命名 hook） =====
 
     @HookHandler(
@@ -854,40 +693,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def handle_post_send(self, **kwargs: Any) -> Dict[str, Any]:
-        """bot 出站消息构建完成后：记录出站时刻/长度与对话轮次配对（指标 1/2 的对照侧）。
-
-        挂载点说明（2026-09-08 修复）：曾挂在 ``send_service.before_send``，但其
-        载荷没有 stream_id，轮次配对与 ``_last_bot_sent`` 结构上无法工作，且真机
-        上 handler 疑似从未被派发（bot_msg_len 上线起 0 条）。``after_build_message``
-        载荷含 stream_id，派发点位于发送链路外层 try/except 内，异常不再静默。
-        """
-        message = kwargs.get("message")
-        resolved_stream = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
-        if self._telemetry is None:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        # 触发层追踪：部署后临时调 debug 日志级别，一轮对话即可确认本 hook 是否被派发
-        self.ctx.logger.debug("narrative outbound: stream=%s", resolved_stream or "-")
-        uid = self._streams.uid_of(resolved_stream)
-        # 主动开口送达确认（2026-09-22）：proactive_sent 记的是"触发"，而触发后
-        # 模型可能选择沉默、也可能 reply 工具失败——只有真正出站了才算数，它才是
-        # 承接率的真分母，也只有它才会因无人回应而罚冷落。
-        if self._proactive is not None and self._proactive.mark_delivered(
-            resolved_stream, self._local_now()
-        ):
-            self._telemetry.record("proactive_delivered", 1, user_id=uid, scope="proactive")
-        # 出站采样（出站时刻/轮次配对/bot 长度判定下沉 Telemetry，2026-09-13 C5）
-        self._telemetry.note_outbound(
-            stream_id=resolved_stream,
-            user_id=uid,
-            message=message,
-            now=self._local_now(),
-        )
-        # 互动配对（批 4-C2 / R31）：把本轮出站与最近一条待配对入站配成一对并落盘。
-        # 只建不消费；落盘失败静默（配对是旁路，绝不拖垮发送链路）。
-        if self._pairs is not None:
-            self._pairs.note_outbound(uid, message_id_of(message), self._local_now())
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """bot 出站消息构建完成后记录采样与配对（实现见 services/outbound.py；壳只做 **kwargs 整体透传）。"""
+        return await outbound.handle_post_send(self, **kwargs)
     # ===== Hook：剧本上下文注入 =====
 
     @HookHandler(
@@ -899,52 +706,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def inject_life_context(self, **kwargs: Any) -> Dict[str, Any]:
-        """把自我层/支线层/编年史渲染成 item 追加进请求。"""
-        # A/B 对照 gate（2026-09-10）：narrative.enabled=false 时剧本行为全停，
-        # 但入站/出站采样 hook 无本 gate 照常采集——对照组数据口径的关键。
-        if not (self.config.plugin.enabled and self.config.narrative.enabled):
-            return {"action": "continue", "modified_kwargs": kwargs}
-        session_id = str(kwargs.get("session_id") or "")
-        items = kwargs.get("items")
-        if self._engine is None or self._store is None:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if not self._is_mode_session(session_id):
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if not isinstance(items, list) or not items:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if any(is_injected_item(item) for item in items):
-            return {"action": "continue", "modified_kwargs": kwargs}
-
-        user_id = self._streams.uid_of(session_id)
-        state = self._engine.load_self_state()
-        branch = self._engine.load_branch_state(user_id) if user_id else None
-        # 受众过滤（ADR-0004 第 2 层）：涉私素材只讲给本人，diary 产物对所有人短路
-        recent = visible_chronicle(self._store, "self", user_id, 3)
-        round_kind, bysource = self._proactive.consume_pending(session_id)
-        # 世界书触发扫描输入（批 1 / R43）：最近几轮对话文本，零 LLM token；
-        # loader 未建（enabled=false）时跳过提取，省一次 items 遍历。
-        dialogue_text = items_dialogue_text(items) if self._lorebook is not None else ""
-        context_text = build_context_block(
-            self,
-            state,
-            branch,
-            self._local_now(),
-            recent,
-            round_kind=round_kind,
-            bysource=bysource,
-            audience=user_id,
-            dialogue_text=dialogue_text,
-        )
-        items.append(build_injected_item(context_text))
-        kwargs["items"] = items
-        # 注入追踪（含日照锚点/心情/精力段，debug 级不刷盘时需临时调高日志级别）
-        self.ctx.logger.debug(
-            "narrative 注入: stream=%s | %s",
-            session_id or "-",
-            context_text[:100].replace("\n", " "),
-        )
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """把自我层/支线层/编年史渲染成 item 追加进请求（实现见 services/inject.py；壳只做 **kwargs 整体透传——🔴 不拆键、不新增 try/except）。"""
+        return await inject.inject_life_context(self, **kwargs)
     # ===== Hook：漂移层调制注入（批 3-C3） =====
 
     @HookHandler(
@@ -956,88 +719,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def inject_drift_style(self, **kwargs: Any) -> Dict[str, Any]:
-        """把此刻状态调制 + 关系语境 + 文学授权追加进 replyer 请求 items。
-
-        ⚠️ 三条硬约束（ADR-0003 §5 + 宿主源码实测 H2/H3/H7）：
-        1. 宿主 ``modified_kwargs`` 是**整体替换非合并** → 必须全量带出 kwargs，只改 items；
-        2. hook 有 **6 秒硬超时** → 本路径只读一次 state，不读编年史，零 LLM；
-        3. 宿主 try/except **吞掉一切异常** → 注入失败完全静默，故埋耗时与注入计数。
-
-        与 planner 注入块分工（E9）：本块只出调制/关系/授权，**不重复**生活内容。
-        """
-        # A/B 对照 gate：与 planner 注入同款双开关，narrative.enabled=false 时行为全停
-        if not (self.config.plugin.enabled and self.config.narrative.enabled):
-            return {"action": "continue", "modified_kwargs": kwargs}
-        session_id = str(kwargs.get("session_id") or "")
-        items = kwargs.get("items")
-        if self._engine is None or self._store is None:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        # 会话过滤：``session_id`` 实测原样等于 stream_id（H8）→ 直接复用判定。
-        # 群聊（R35）：群会话**不是** mode session，但观察名单内的群同样要注入
-        # 漂移层（Q6=A：漂移层调制不属"多层表达融合"，群聊照常）。
-        group_id = self._group_streams.gid_of(session_id) if self._group_streams is not None else ""
-        if group_id and group_id not in set(self._observed_group_ids()):
-            group_id = ""  # 已从名单摘除 / 不再观察 → 按非群聊会话处理
-        if not self._is_mode_session(session_id) and not group_id:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        if not isinstance(items, list) or not items:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        # 幂等：同轮若已有本块（多 handler / 重入）不再追加
-        if any(is_style_item(item) for item in items):
-            return {"action": "continue", "modified_kwargs": kwargs}
-
-        started = time.perf_counter()
-        user_id = self._streams.uid_of(session_id)
-        state = self._engine.load_self_state()
-        branch = self._engine.load_branch_state(user_id) if user_id else None
-        relationship = (branch or {}).get("relationship") or {}
-        if group_id:
-            # 🔴 群聊三处必须与私聊不同：
-            # ① relationship 传空 → Build 出的块天然不含关系语境
-            #    （"你们是什么关系"这种信息不该出现在第三方面前，Q2=B）；
-            # ② audience=g:<gid> 而 owner 为空 → 即便将来有人塞了 stage，
-            #    relationship_line 也会因 audience != owner 而 fail-closed 返回空串；
-            # ③ learned_style **强制为空** —— 它是 config.toml [learned] 区块里
-            #    私聊学到的表达习惯（ADR-0002），投进群 = 跨流泄露。
-            audience = f"g:{group_id}"
-            stage = ""
-            learned_style: Sequence[str] = ()
-        else:
-            audience = user_id
-            stage = str(
-                relationship.get("stage")
-                or current_relationship_stage(relationship)
-            )
-            learned_style = get_style_projection(self._config_path(), logger=self.ctx.logger)
-        context_text = build_replyer_block(
-            drift_text=describe_drift(state.get("state") or {}),
-            # 与 /narrative status 同款取值顺序：显式 ``stage``（批 4 晋升机写入的晋升值）
-            # 优先，批 4 前回退到只读事实推导（``continuity.current_relationship_stage``）。
-            stage=stage,
-            # 私聊剧本模式下受众即归属人本人；群聊时两者分离，可见性 fail-closed
-            audience=audience,
-            owner=user_id,
-            learned_style=learned_style,
-        )
-        items.append(build_style_item(context_text))
-        kwargs["items"] = items
-        self._style_inject_count += 1
-
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        if elapsed_ms > _DRIFT_BUDGET_MS:
-            self.ctx.logger.warning(
-                "narrative 漂移注入耗时 %.0fms 超预算(%dms)：宿主硬超时 6s，超时即静默回退",
-                elapsed_ms,
-                _DRIFT_BUDGET_MS,
-            )
-        self.ctx.logger.debug(
-            "narrative 漂移注入: stream=%s 耗时=%.0fms | %s",
-            session_id or "-",
-            elapsed_ms,
-            context_text[:100].replace("\n", " "),
-        )
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """漂移层调制 + 关系语境 + 文学授权注入（实现见 services/inject.py；壳只做 **kwargs 整体透传）。"""
+        return await inject.inject_drift_style(self, **kwargs)
     # ===== Hook：表达学习隔离 =====  # OBSERVE(R11)：两个 abort 看着像无用中断，实为防群腔调进私聊剧本、防剧本素材进表达库的唯一闸门，删掉即双向污染
 
     @HookHandler(
@@ -1049,17 +732,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def block_expression_select(self, **kwargs: Any) -> Dict[str, Any]:
-        """剧本模式会话直接 abort，让表达选择整体跳过。"""
-        # 隔离是"剧本模式"专属行为：任一开关关闭时放行（continue，不是 abort）。
-        # 2026-09-16 前无此判断，插件/剧本关闭期间仍会 abort 表达选择。
-        cfg = self.config
-        if not (cfg.plugin.enabled and cfg.narrative.enabled):
-            return {"action": "continue", "modified_kwargs": kwargs}
-        session_id = str(kwargs.get("session_id") or "")
-        if self._is_mode_session(session_id):
-            return {"action": "abort", "modified_kwargs": kwargs}
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """剧本模式会话阻断表达选择注入（实现见 services/inject.py）。"""
+        return await inject.block_expression_select(self, **kwargs)
     @HookHandler(
         "expression.learn.before_upsert",
         name="narrative_block_expression_upsert",
@@ -1069,16 +743,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def block_expression_upsert(self, **kwargs: Any) -> Dict[str, Any]:
-        """剧本模式会话 abort 单条写入。"""
-        # 同 block_expression_select：任一开关关闭即放行，交还给主程序处理
-        cfg = self.config
-        if not (cfg.plugin.enabled and cfg.narrative.enabled):
-            return {"action": "continue", "modified_kwargs": kwargs}
-        session_id = str(kwargs.get("session_id") or "")
-        if self._is_mode_session(session_id):
-            return {"action": "abort", "modified_kwargs": kwargs}
-        return {"action": "continue", "modified_kwargs": kwargs}
-
+        """剧本模式会话阻断表达写入（实现见 services/inject.py）。"""
+        return await inject.block_expression_upsert(self, **kwargs)
     # ===== REPLY_EXTENSION：主动轮由头进 replyer 指令位（批 4 / R39 / 宿主 1.3.5） =====
     # OBSERVE(R39)：宿主通道有实现无文档，合同以 src/plugin_runtime/host/reply_extensions.py 为准——
     # prepare 只允许返回 {"extra_prompt"}（:148）；扩展异常 = 整次 reply 失败（:193-204），
@@ -1091,33 +757,8 @@ class MaiNarrativePlugin(MaiBotPlugin):
         chat_scope="private",
     )
     async def _reply_ext_proactive_bysource(self, **payload: Any) -> Dict[str, Any]:
-        """reply 扩展：prepare 返回由头承接提醒；其余 phase / 无由头 / 未启用一律空操作。"""
-        try:
-            phase = str(payload.get("phase", "") or "")
-            if phase != "prepare":
-                return {}  # before_send 本批不使用；未知 phase 默认空操作
-            if not bool(getattr(self.config.proactive, "reply_extension_enabled", False)):
-                return {}
-            if self._proactive is None:
-                return {}
-            session_id = str(payload.get("session_id", "") or "")
-            bysource = self._proactive.bysource_for_reply(session_id, self._local_now())
-            if not bysource:
-                return {}
-            return {
-                "extra_prompt": (
-                    f"本次是你主动开口的回合。你想说起的是（由头）：{bysource}\n"
-                    "请让回复自然地从这个由头出发——承接它、就着它说，"
-                    "但不要逐字复述，也不要解释这是主动消息。"
-                )
-            }
-        except Exception as exc:
-            # 🔴 宿主语义：扩展异常即整次 reply 失败——宁可这轮没有由头提醒，不拖垮回复
-            self.ctx.logger.error(
-                "回复扩展 %s 异常（降级空操作）: %s", _REPLY_EXTENSION_NAME, exc, exc_info=True
-            )
-            return {}
-
+        """reply 扩展：prepare 返回由头承接提醒（实现见 services/inject.py；扩展异常全体自捕获系宿主契约，随实现体保留）。"""
+        return await inject.reply_ext_proactive_bysource(self, **payload)
     # ===== Command：/narrative =====
 
     @Command(

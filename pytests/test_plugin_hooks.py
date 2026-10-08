@@ -29,6 +29,7 @@ _COMPONENT_INFO_ATTR = "__maibot_component_info__"
 _synth_loader.load("services")
 _PLUGIN = _synth_loader.load("plugin")
 _MESSAGE = _synth_loader.load("services.message")
+_PLANNER = _synth_loader.load("services.render.planner_block")
 
 outbound_text_len = _MESSAGE.outbound_text_len
 
@@ -163,7 +164,7 @@ def test_injection_disabled_when_narrative_off():
 
     asyncio.run(plugin.inject_life_context(**kwargs))
 
-    injected = [i for i in kwargs["items"] if _PLUGIN.is_injected_item(i)]
+    injected = [i for i in kwargs["items"] if _PLANNER.is_injected_item(i)]
     assert not injected, "narrative.enabled=false 时不应注入剧本上下文"
 
 

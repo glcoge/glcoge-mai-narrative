@@ -34,6 +34,7 @@ _MESSAGE = _synth_loader.load("services.message")
 _STORE = _synth_loader.load("services.store")
 _STREAMS = _synth_loader.load("services.streams")
 _ENGINE_MOD = _synth_loader.load("services.state.engine")
+_REPLYER = _synth_loader.load("services.render.replyer_block")
 _PLUGIN = _synth_loader.load("plugin")
 
 extract_group_id = _MESSAGE.extract_group_id
@@ -309,7 +310,7 @@ def test_group_injection_carries_no_relation_nor_learned_style(monkeypatch):
         "request_type": "reply",
     }
     result = asyncio.run(plugin.inject_drift_style(**kwargs))
-    injected = [i for i in result["modified_kwargs"]["items"] if _PLUGIN.is_style_item(i)]
+    injected = [i for i in result["modified_kwargs"]["items"] if _REPLYER.is_style_item(i)]
     assert len(injected) == 1
     text = injected[0]["parts"][0]["text"]
     assert "私聊里学到的口头禅" not in text  # 🔴 跨流泄露闸门
@@ -325,7 +326,7 @@ def test_group_outside_list_is_not_injected():
     plugin._group_streams.record(OTHER_GID, GROUP_STREAM)
     items = [{"item_type": "UserMessageItem", "meta": {"item_id": "x:1"}, "parts": []}]
     result = asyncio.run(plugin.inject_drift_style(items=items, session_id=GROUP_STREAM))
-    assert not any(_PLUGIN.is_style_item(i) for i in result["modified_kwargs"]["items"])
+    assert not any(_REPLYER.is_style_item(i) for i in result["modified_kwargs"]["items"])
 
 
 if __name__ == "__main__":
