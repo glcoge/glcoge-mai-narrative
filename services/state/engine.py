@@ -904,23 +904,23 @@ class NarrativeEngine:
 
     def record_urge_feedback(self, user_id: str, event: str) -> None:
         """分享欲事件反馈：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        _record_urge_feedback(self, user_id, event)
+        _record_urge_feedback(self.deps, user_id, event)  # DEPRECATED(B)
 
     def compute_share_urge(self, user_id: str) -> float:
         """合成当前分享欲：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        return _compute_share_urge(self, user_id)
+        return _compute_share_urge(self.deps, user_id)  # DEPRECATED(B)
 
     # ─── 由头签发（主动消息的内容之源） ──────────────────────────
 
     def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
         """签发主动开口由头：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        return _build_bysource(self, user_id, now)
+        return _build_bysource(self.deps, user_id, now)  # DEPRECATED(B)
 
     def build_bysource_detail(
         self, user_id: str, now: Optional[datetime] = None
     ) -> Optional[Dict[str, str]]:
         """签发由头并返回完整署名（批 0 / R41，兑现回执数据源）：实现见 sourcing。"""
-        return _build_bysource_detail(self, user_id, now)
+        return _build_bysource_detail(self.deps, user_id, now)  # DEPRECATED(B)
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
     # 实现已迁至 ``creation/chronicle.py``（v0.2.0 批 2-C7「类拆分推迟表」）。

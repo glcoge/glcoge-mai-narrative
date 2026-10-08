@@ -5,11 +5,11 @@
 归到 proactive 包是因为它们只服务**主动开口**，与"世界推进"无关——engine 已经
 900+ 行，主动链路的逻辑不该再往里堆。
 
-依赖方向：本模块接受 ``engine`` 实例（不持有状态），engine 侧保留一层薄委托方法，
+依赖方向：本模块接受 ``deps`` 依赖束（深化 B）（不持有状态），engine 侧保留一层薄委托方法（B2 起传 ``self.deps``），
 对外 API 不变（``engine.build_bysource`` 等照旧）。
 
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
-import engine。``INJECT_TEXT_CAP`` 采用函数内延迟导入（见 ``build_bysource``）。
+import ``state.engine``。``INJECT_TEXT_CAP`` 采用函数内延迟导入（见 ``build_bysource``）。
 ``continuity`` 是纯声明模块（零上层依赖），可以顶层 import。
 """
 
@@ -104,15 +104,15 @@ def _parse_iso(value: str) -> Optional[datetime.datetime]:
         return None
 
 
-def _recent_origins(engine: Any, user_id: str) -> List[str]:
+def _recent_origins(deps: Any, user_id: str) -> List[str]:
     """最近若干次由头的来源队列（最旧在前，最多 ``_MILESTONE_THROTTLE_WINDOW`` 项）。"""
-    raw = engine._store.get_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}") or ""
+    raw = deps.store.get_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}") or ""
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _milestone_consumed_map(engine: Any, user_id: str) -> Dict[str, str]:
+def _milestone_consumed_map(deps: Any, user_id: str) -> Dict[str, str]:
     """该用户已消费里程碑的登记表 ``{milestone_id: 上次消费 iso_ts}``（坏数据退空表）。"""
-    raw = engine._store.get_kv_str(f"{_MILESTONE_USED_KEY_PREFIX}{user_id}") or ""
+    raw = deps.store.get_kv_str(f"{_MILESTONE_USED_KEY_PREFIX}{user_id}") or ""
     if not raw:
         return {}
     try:
@@ -144,10 +144,10 @@ def overlap_ratio(left: str, right: str) -> float:
     return len(left_set & right_set) / len(left_set | right_set)
 
 
-def _recent_dialogue_text(engine: Any, user_id: str, limit: int = 5) -> str:
+def _recent_dialogue_text(deps: Any, user_id: str, limit: int = 5) -> str:
     """该用户最近的对话原文（用于由头撞车判定），失败降级为空串。"""
     try:
-        events = engine._store.list_events(f"branch:{user_id}", limit=limit)
+        events = deps.store.list_events(f"branch:{user_id}", limit=limit)
     except Exception:  # noqa: BLE001 —— 取材增强不得影响主动开口主链路
         return ""
     return "\n".join(str(item.get("bysource", "") or "") for item in events)
@@ -168,29 +168,29 @@ def _sign_cooldown_hours(cfg: Any) -> float:
         return _SIGN_COOLDOWN_DEFAULT_HOURS
 
 
-def _sign_cooled(engine: Any, key: str, now: datetime.datetime) -> bool:
+def _sign_cooled(deps: Any, key: str, now: datetime.datetime) -> bool:
     """P4 / R44 判定：该事件是否仍在跨用户签发冷却窗内（无登记 = 未冷却）。"""
-    signed_at = _parse_iso(engine._store.get_kv_str(f"{_SIGN_COOLDOWN_KEY_PREFIX}{key}"))
+    signed_at = _parse_iso(deps.store.get_kv_str(f"{_SIGN_COOLDOWN_KEY_PREFIX}{key}"))
     if signed_at is None:
         return False
-    cooldown = _sign_cooldown_hours(engine._plugin.config)
+    cooldown = _sign_cooldown_hours(deps.config)
     return (now - signed_at).total_seconds() < cooldown * 3600
 
 
 def build_bysource(
-    engine: Any, user_id: str, now: Optional[datetime.datetime] = None
+    deps: Any, user_id: str, now: Optional[datetime.datetime] = None
 ) -> str:
     """签发由头（**薄包装**，v0.1.3 起的对外签名不变——零行为 diff）。
 
     取材与签发逻辑全在 ``build_bysource_detail``（批 0 / R41 拆出：scheduler
     需要事件实体 id/origin 落回执，纯文本签名装不下）；本函数只取 ``text``。
     """
-    detail = build_bysource_detail(engine, user_id, now)
+    detail = build_bysource_detail(deps, user_id, now)
     return str(detail.get("text", "")) if detail else ""
 
 
 def build_bysource_detail(
-    engine: Any, user_id: str, now: Optional[datetime.datetime] = None
+    deps: Any, user_id: str, now: Optional[datetime.datetime] = None
 ) -> Optional[Dict[str, str]]:
     """签发由头并返回完整署名（批 0 / R41 拆出，兑现回执的数据源）。
 
@@ -214,15 +214,15 @@ def build_bysource_detail(
     """
     from ..state.engine import INJECT_TEXT_CAP  # 延迟导入：避开 engine ↔ sourcing 循环
 
-    current = now or engine._local_now()
-    cfg = engine._plugin.config
-    state = engine.load_self_state()
-    branch = engine.load_branch_state(user_id)
+    current = now or deps.local_now()
+    cfg = deps.config
+    state = deps.state.load_self_state()
+    branch = deps.state.load_branch_state(user_id)
 
     # 去复用：按用户读取已用记录（同一件事可以讲给不同朋友听，只对同一段关系去重）
-    used_raw = engine._store.get_kv_str(_bysource_used_key(user_id))
+    used_raw = deps.store.get_kv_str(_bysource_used_key(user_id))
     used = {item.strip() for item in (used_raw or "").split(",") if item.strip()}
-    recent_text = _recent_dialogue_text(engine, user_id)
+    recent_text = _recent_dialogue_text(deps, user_id)
 
     # 候选列表；ts 仅片段来源非空（用于选中后登记"已用"），origin 供 3 选 1 节流统计
     candidates: List[_BySourceCandidate] = []
@@ -242,7 +242,7 @@ def build_bysource_detail(
         # P4 / R44 跨用户签发冷却：同一事件 T 小时内只签给 1 人。⚠️ 明文裁定
         # （红线⑤，登记表 R44 同款原文）：本项**不构成生活线分叉/素材隔离**——
         # 冷却只限时间窗内的签发人数，素材内容不改、生活线仍单条。
-        if item_event_id and _sign_cooled(engine, item_event_id, current):
+        if item_event_id and _sign_cooled(deps, item_event_id, current):
             continue
         # 与最近对话撞车则跳过（OBSERVE(R23)）：由头要是"新事"，不是刚聊过的复述
         if recent_text and overlap_ratio(fragment, recent_text) >= _OVERLAP_REJECT:
@@ -273,8 +273,8 @@ def build_bysource_detail(
         or current_relationship_stage({"milestones": milestones})
     )
     if milestones and stage != "陌生人":
-        origins = _recent_origins(engine, user_id)
-        consumed = _milestone_consumed_map(engine, user_id)
+        origins = _recent_origins(deps, user_id)
+        consumed = _milestone_consumed_map(deps, user_id)
         # ③ 3 选 1 节流：最近 3 次由头里已有 milestone → 本轮不取回忆（防茧房：
         #    否则「她的生活」会退化成只剩往事）。查在遍历之前，省一次无谓循环。
         if "milestone" not in origins:
@@ -334,11 +334,11 @@ def build_bysource_detail(
         # 的窗口。批 0（R41）键位泛化：新条目登记 event_id、旧条目回退 ts。
         cap = max(1, int(cfg.narrative.fragment_pending_max))
         used.add(chosen.event_id or chosen.ts)
-        engine._store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
+        deps.store.set_kv_str(_bysource_used_key(user_id), ",".join(sorted(used)[-cap:]))
     if chosen.event_id:
         # P4 / R44：登记签发时刻（跨用户冷却写入端；无 event_key 的候选不登记）。
         # 里程碑与生活片段/播种事件统一走本表——冷却只限时间窗，不是素材隔离。
-        engine._store.set_kv_str(
+        deps.store.set_kv_str(
             f"{_SIGN_COOLDOWN_KEY_PREFIX}{chosen.event_id}",
             current.isoformat(timespec="seconds"),
         )
@@ -346,20 +346,20 @@ def build_bysource_detail(
         # 条目级冷却登记（选中即登记，与"已用"同步：未送达也照样冷却，
         # 兜底预案见方案 §4.3 —— 若 L1「选中未送达率」>20% 再改为送达时登记）
         consumed[chosen.milestone_id] = current.isoformat(timespec="seconds")
-        engine._store.set_kv_str(
+        deps.store.set_kv_str(
             f"{_MILESTONE_USED_KEY_PREFIX}{user_id}",
             json.dumps(dict(list(consumed.items())[-_MILESTONE_USED_KEEP:]), ensure_ascii=False),
         )
     # 来源队列（3 选 1 节流的输入）：无论哪一路来源都记，窗口滑动保留最近 N 次
-    origins = (_recent_origins(engine, user_id) + [chosen.origin])[-_MILESTONE_THROTTLE_WINDOW:]
-    engine._store.set_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}", ",".join(origins))
+    origins = (_recent_origins(deps, user_id) + [chosen.origin])[-_MILESTONE_THROTTLE_WINDOW:]
+    deps.store.set_kv_str(f"{_ORIGIN_KEY_PREFIX}{user_id}", ",".join(origins))
     return {"text": chosen.text, "origin": chosen.origin, "event_id": chosen.event_id}
 
 
 # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ──────
 
 
-def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
+def record_urge_feedback(deps: Any, user_id: str, event: str) -> None:
     """分享欲事件反馈（规则层零 LLM，第一步方案）。
 
     event 取值：
@@ -377,7 +377,7 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
     多主动都回不来。branch 层的长期回温由引擎 tick 的 ``_regress_branch_urge`` 负责
     （本函数只管事件驱动的即时升降）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return
     pro = cfg.proactive
@@ -388,7 +388,7 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
     decay = float(pro.urge_decay)
 
     # self 层：state["state"]["urge"]，clamp [0.05, 1.0]
-    state = engine.load_self_state()
+    state = deps.state.load_self_state()
     inner = state["state"]
     urge = float(inner.get("urge", float(pro.urge_base)))
     if event == "caught":
@@ -401,12 +401,12 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
         # 未知事件立即暴露（项目 debug 规范：不兜底掩盖调用方笔误）
         raise ValueError(f"未知的分享欲事件类型: {event!r}")
     inner["urge"] = round(max(0.05, min(1.0, urge)), 3)
-    engine.save_self_state(state)
+    deps.state.save_self_state(state)
 
     # branch 层：对特定对象的分享欲系数，clamp [urge_branch_floor, 1.0]。
     # 修复前 user_initiated 不进本分支（注释写「只说明被需要，不改对人系数」）——
     # 那是沉默螺旋的成因之一：唯一由用户掌控的正向信号救不了触底的对人系数。
-    branch = engine.load_branch_state(user_id)
+    branch = deps.state.load_branch_state(user_id)
     factor = float(branch["state"].get("urge_factor", 1.0))
     if event == "caught":
         # 与 self 层同比例（gain : decay = 1 : 2.5）；修复前是 gain*0.5，奖惩比 5:1。
@@ -418,10 +418,10 @@ def record_urge_feedback(engine: Any, user_id: str, event: str) -> None:
     branch["state"]["urge_factor"] = round(
         max(float(pro.urge_branch_floor), min(1.0, factor)), 3
     )
-    engine.save_branch_state(user_id, branch)
+    deps.state.save_branch_state(user_id, branch)
 
 
-def compute_share_urge(engine: Any, user_id: str) -> float:
+def compute_share_urge(deps: Any, user_id: str) -> float:
     """合成当前分享欲 ∈ [0,1]：self 层 × branch 层 × 精力因子（相乘）。
 
     - self 层（``state["state"]["urge"]``）：基线漂移 + 事件升降，tick 回归维护；
@@ -433,18 +433,18 @@ def compute_share_urge(engine: Any, user_id: str) -> float:
     开关任一关闭（plugin / narrative / proactive.urge_enabled）→ 返回 1.0，
     即旧行为（到点必发）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return 1.0
     pro = cfg.proactive
     if not pro.urge_enabled:
         return 1.0
 
-    state = engine.load_self_state()
+    state = deps.state.load_self_state()
     inner = state["state"]
     self_urge = float(inner.get("urge", float(pro.urge_base)))
 
-    branch = engine.load_branch_state(user_id)
+    branch = deps.state.load_branch_state(user_id)
     branch_factor = float(branch["state"].get("urge_factor", 1.0))
 
     energy = float(inner["mood"].get("energy", 0.55))

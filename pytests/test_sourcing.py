@@ -112,8 +112,8 @@ def test_engine_methods_still_work_after_move():
 def test_sourcing_functions_callable_directly():
     """迁出后可脱离 engine 类直接调用（新模块的对外契约）。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走", "tier": "normal"}])
-    assert "去海边走了走" in build_bysource(engine, _UID, _NOW)
-    assert _SOURCING.compute_share_urge(engine, _UID) > 0
+    assert "去海边走了走" in build_bysource(engine.deps, _UID, _NOW)
+    assert _SOURCING.compute_share_urge(engine.deps, _UID) > 0
 
 
 # ===== B7：取材优先级 —— 与最近对话不撞车（R23） =====

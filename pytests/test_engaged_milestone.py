@@ -330,7 +330,7 @@ def test_milestone_usable_when_fresh():
     """对照基线：新条目、无冷却、来源队列无 milestone → 正常作由头。"""
     milestone = {"id": f"engaged:{_iso(1)}", "ts": _iso(1), "desc": "河边石头台阶那件事"}
     engine = _make_sourcing_engine({_UID: _branch_with([milestone])})
-    chosen = build_bysource(engine, _UID, _NOW)
+    chosen = build_bysource(engine.deps, _UID, _NOW)
     assert "河边石头台阶那件事" in chosen
 
 
@@ -338,7 +338,7 @@ def test_milestone_ttl_blocks_stale():
     """① 保质期 30 天：过期旧事不再提取（宁可缺席，也不翻旧账）。"""
     milestone = {"id": f"engaged:{_iso(31)}", "ts": _iso(31), "desc": "三十一天前的旧事"}
     engine = _make_sourcing_engine({_UID: _branch_with([milestone])})
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
 
 def test_milestone_cooldown_blocks_recent():
@@ -350,7 +350,7 @@ def test_milestone_cooldown_blocks_recent():
         f"{_SOURCING._MILESTONE_USED_KEY_PREFIX}{_UID}",
         json.dumps({milestone["id"]: _iso(3)}),  # 3 天前消费过 → < 7 天
     )
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
 
 def test_milestone_cooldown_expired_allows():
@@ -362,7 +362,7 @@ def test_milestone_cooldown_expired_allows():
         f"{_SOURCING._MILESTONE_USED_KEY_PREFIX}{_UID}",
         json.dumps({milestone["id"]: _iso(8)}),  # 8 天前消费过 → 冷却已满
     )
-    assert "十几天前那件事" in build_bysource(engine, _UID, _NOW)
+    assert "十几天前那件事" in build_bysource(engine.deps, _UID, _NOW)
 
 
 def test_milestone_throttle_one_in_three():
@@ -372,11 +372,11 @@ def test_milestone_throttle_one_in_three():
     engine._store.set_kv_str(
         f"{_SOURCING._ORIGIN_KEY_PREFIX}{_UID}", "fragment,milestone,fragment"
     )
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
     # 队列里 milestone 滑出窗口（3 次内没有了）→ 重新可取
     engine._store.set_kv_str(f"{_SOURCING._ORIGIN_KEY_PREFIX}{_UID}", "fragment,mood,fragment")
-    assert "上次讲过的那件事" in build_bysource(engine, _UID, _NOW)
+    assert "上次讲过的那件事" in build_bysource(engine.deps, _UID, _NOW)
 
 
 def test_milestone_select_registers_cooldown_and_origin():
@@ -384,14 +384,14 @@ def test_milestone_select_registers_cooldown_and_origin():
     ts = _iso(1)
     milestone = {"id": f"engaged:{ts}", "ts": ts, "desc": "刚刚取用过的那件事"}
     engine = _make_sourcing_engine({_UID: _branch_with([milestone])})
-    assert "刚刚取用过的那件事" in build_bysource(engine, _UID, _NOW)
+    assert "刚刚取用过的那件事" in build_bysource(engine.deps, _UID, _NOW)
 
     consumed = json.loads(engine._store.get_kv_str(f"{_SOURCING._MILESTONE_USED_KEY_PREFIX}{_UID}"))
     assert consumed[milestone["id"]] == _NOW.isoformat(timespec="seconds")
     origins = engine._store.get_kv_str(f"{_SOURCING._ORIGIN_KEY_PREFIX}{_UID}")
     assert origins.split(",")[-1] == "milestone"
     # 同一轮之后立刻再取 → 冷却挡住（>0 天 <7 天）
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
 
 def test_origin_registered_for_fragment_path():
@@ -400,7 +400,7 @@ def test_origin_registered_for_fragment_path():
         {_UID: _branch_with([])},
         pending=[{"ts": _iso(0), "text": "今天去海边走了走", "highlight": False}],
     )
-    assert "今天去海边走了走" in build_bysource(engine, _UID, _NOW)
+    assert "今天去海边走了走" in build_bysource(engine.deps, _UID, _NOW)
     origins = engine._store.get_kv_str(f"{_SOURCING._ORIGIN_KEY_PREFIX}{_UID}")
     assert origins.split(",")[-1] == "fragment"
 
@@ -412,11 +412,11 @@ def test_milestone_isolated_per_user():
     engine = _make_sourcing_engine(
         {_UID: _branch_with([mine]), _OTHER: _branch_with([theirs])}
     )
-    chosen = build_bysource(engine, _UID, _NOW)
+    chosen = build_bysource(engine.deps, _UID, _NOW)
     assert "我说过的那件私事" in chosen
     assert "别人说过的那件私事" not in chosen
 
-    chosen_other = build_bysource(engine, _OTHER, _NOW)
+    chosen_other = build_bysource(engine.deps, _OTHER, _NOW)
     assert "别人说过的那件私事" in chosen_other
     assert "我说过的那件私事" not in chosen_other
 
@@ -424,14 +424,14 @@ def test_milestone_isolated_per_user():
 def test_milestone_skipped_when_stranger():
     """stage 门槛保留（Q10c）：无 stage 且 milestones 为空时是陌生人 → 不取回忆。"""
     engine = _make_sourcing_engine({_UID: _branch_with([])})
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
 
 def test_bad_ts_fail_closed():
     """ts 解析不出的条目一律跳过（fail-closed）：不拿捏不准的时间做减法。"""
     milestone = {"id": "engaged:? ", "ts": "不是时间", "desc": "时间戳坏掉的条目"}
     engine = _make_sourcing_engine({_UID: _branch_with([milestone])})
-    assert build_bysource(engine, _UID, _NOW) == ""
+    assert build_bysource(engine.deps, _UID, _NOW) == ""
 
 
 if __name__ == "__main__":
