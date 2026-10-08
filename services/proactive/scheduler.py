@@ -14,6 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..kvkeys import PROACTIVE_COUNT as _PROACTIVE_COUNT_KEY
 from ..learning.topic import note_pending_topic, reward_pending_topic
 from ..state.engine import parse_clock
 

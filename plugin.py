@@ -80,6 +80,7 @@ from .services.message import (
     message_text,
     outbound_text_len,
 )
+from .services.kvkeys import PROACTIVE_COUNT as _PROACTIVE_COUNT_KEY
 from .services.store import SOURCE_DIARY, NarrativeStore
 
 # status 中可用列表的展示上限（超出截断，避免刷屏）

@@ -30,6 +30,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..kvkeys import TOPIC_PENDING as _PENDING_KEY_TEMPLATE
+from ..kvkeys import TOPIC_WEIGHT as _WEIGHT_PREFIX
+
+# kv 键常量已收口至 kvkeys（深化 F：单一事实源）。_PENDING_KEY 保留 .format 形状：
+_PENDING_KEY = _PENDING_KEY_TEMPLATE + "{uid}"
+
 #: P10：用户接话权重（主要证据源）  # OBSERVE(P10)
 TOPIC_WEIGHT_USER_REPLY = 1.0
 
@@ -47,8 +53,7 @@ TOPIC_KEY_MAX_LEN = 12
 #: 已知由头前缀（新增来源时在此登记；消费端接线仍按 R16 观察池另行评估）
 _SOURCE_PREFIXES = ("最近一段生活：", "外面发生的一件事：")
 
-_WEIGHT_PREFIX = "topic:weight:"
-_PENDING_KEY = "topic:pending:{uid}"
+# （_WEIGHT_PREFIX / _PENDING_KEY 均由顶部 kvkeys import 派生，深化 F）
 
 
 def topic_key(text: str) -> str:

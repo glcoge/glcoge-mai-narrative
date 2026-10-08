@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Dict, List, Optional
 
+from ..kvkeys import PROMOTION_COOLDOWN as COOLDOWN_PREFIX
 from ..state.continuity import (
     is_after_cooldown,
     minor_gate_checks,
@@ -35,8 +36,7 @@ from ..state.continuity import (
 )
 from .proposal import collect_evidence
 
-#: 冷却键前缀（与 ``PromotionEngine._cooldown_key`` 同格式；跨重启存在 kv 里）
-COOLDOWN_PREFIX = "promotion:cooldown:"
+#: 冷却键前缀已收口至 kvkeys（深化 F；与 ``PromotionEngine._cooldown_key`` 同格式）
 
 #: 「距上次晋升超过这么多天」即判为可疑空转（默认 14 天 ≈ 两个冷却周期）
 STALE_DAYS = 14.0

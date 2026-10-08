@@ -25,13 +25,13 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import tomlkit
 
+from ..kvkeys import STYLE_KEY
 from ..state.continuity import SLOW_FIELD_AUDIENCE, slow_get
 
 #: ``config.toml`` 里的原始区块名（**不得**声明进 ``config.py``）
 LEARNED_SECTION = "learned"
 
-#: R1 预留槽：二期 LLM 风格提炼的投影（v1 恒空）  # RESERVED(R1)
-STYLE_KEY = "style"
+#: R1 预留槽：二期 LLM 风格提炼的投影（v1 恒空）  # RESERVED(R1)（键名见 kvkeys.STYLE_KEY）
 
 #: 受众标识：只有 ``general`` 维度的现值才允许落 ``config.toml``（批 4-C6 / E5 裁定）。
 GENERAL_AUDIENCE = "general"

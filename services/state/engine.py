@@ -23,6 +23,8 @@ from ..creation.life import (
     maybe_generate_life_fragment as _maybe_generate_life_fragment,
 )
 from ..creation.seeder import maybe_seed_world_event as _maybe_seed_world_event
+from ..kvkeys import BRANCH_PREFIX as _BRANCH_PREFIX
+from ..kvkeys import SELF_SCOPE as _SELF_SCOPE
 from ..proactive.sourcing import (
     build_bysource as _build_bysource,
     build_bysource_detail as _build_bysource_detail,
@@ -50,8 +52,7 @@ _MOOD_BY_ENERGY: List[Tuple[float, str]] = [
     (0.00, "疲惫"),
 ]
 
-#: 常驻状态片段，避免每次初始化重建
-_SELF_SCOPE = "self"
+#: 常驻状态片段 kv 键已收口至 kvkeys（深化 F；_SELF_SCOPE 为 import 别名）
 
 #: state 结构级版本号（R12）。**批 2 前本字段写进 state 却从未被任何代码读取**
 #: （F1）——只有 ``updated_ts`` 在写。批 2 起它真正生效：开库时版本不符 → WARN
@@ -404,12 +405,44 @@ class NarrativeEngine:
         与 ``/narrative reset`` 的区别：命令侧是全清 kv（含计数键），本方法只清
         **状态类**键，用于「state 换代」语义（R12）。返回清除的键数。
         """
-        removed = self._store.delete_keys_with_prefix("branch:")
+        removed = self._store.delete_keys_with_prefix(_BRANCH_PREFIX)
         if self._store.get_kv(_SELF_SCOPE) is not None:
             removed += 1
         # 清完立即重建默认 state（带当前版本号），使下次开库不会误判旧库（F2）
         self._store.set_kv(_SELF_SCOPE, default_self_state())
         return removed
+
+    def reset_for_new_persona(self) -> Dict[str, int]:
+        """换人设归零（深化 F / 闸门 A 地基件）：**登记表驱动**的全量人格态清除。
+
+        与 ``reset_state``（R12 换代：只清 self/branch，业务键保留）和
+        ``/narrative reset``（用户全清：毯式含 stream_map）的语义分界：
+
+        - 清：``kvkeys.PERSONA_RESET_PREFIXES`` 全部前缀（支线层 / 生活计数 /
+          播种 / 由头三表 / 里程碑冷却 / 话题 / 主动计数 / 提案 / 晋升冷却 /
+          ``[learned]`` 投影）——旧人格的一切业务痕迹；
+        - 清：全部事件队列（支线素材 = 涉私原文，换人设必须清；append-only
+          纪律只保护编年史）；
+        - 留：``kvkeys.KEEP_PREFIXES``（stream_map / group_stream_map——会话
+          基础设施与人格无关，清了主动消息就失联；chronicle:* 幂等标记）与
+          编年史正文；
+        - ``self`` 键经 ``reset_state`` 重建默认态（带当前 schema_version）。
+
+        Returns:
+            ``{"removed": 清除键数, "kept": 保留键数}`` 摘要（status 归零核对用）。
+        """
+        from ..kvkeys import KEEP_PREFIXES, PERSONA_RESET_PREFIXES
+
+        removed = 0
+        for prefix in PERSONA_RESET_PREFIXES:
+            removed += self._store.delete_keys_with_prefix(prefix)
+        kept = 0
+        for prefix in KEEP_PREFIXES:
+            kept += len(self._store.get_kv_with_prefix(prefix))
+        # 事件队列 = 素材层（涉私原文）；编年史 append-only 刻意保留
+        self._store.clear_all_events()
+        removed += self.reset_state()
+        return {"removed": removed, "kept": kept}
 
     # ─── 规则 tick ───────────────────────────────────────────────
 

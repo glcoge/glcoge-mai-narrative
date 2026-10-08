@@ -10,12 +10,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from .kvkeys import GROUP_STREAM_MAP as _GROUP_STREAM_MAP_KEY
+from .kvkeys import STREAM_MAP as _STREAM_MAP_KEY
 from .store import NarrativeStore
 
-# stream 映射在 kv 中的 key（单 JSON dict：uid -> stream_id）
-_STREAM_MAP_KEY = "stream_map"
-# 群会话映射在 kv 中的 key（单 JSON dict：gid -> session_id）
-_GROUP_STREAM_MAP_KEY = "group_stream_map"
+# stream 映射 kv 键已收口至 kvkeys（深化 F：_STREAM_MAP_KEY/_GROUP_STREAM_MAP_KEY 为 import 别名）
 
 
 class StreamRegistry:

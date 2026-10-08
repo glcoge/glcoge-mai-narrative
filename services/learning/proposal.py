@@ -30,6 +30,8 @@ import json
 from typing import Any, Dict, List, Optional
 
 from ..creation.creator import CreatorClient
+from ..kvkeys import PROPOSAL_EMPTY as _EMPTY_PREFIX
+from ..kvkeys import PROPOSAL_LAST_TS as _LAST_TS_KEY
 from ..state.continuity import (
     PERSPECTIVE_FIELDS,
     is_slow_field,
@@ -48,8 +50,6 @@ EVIDENCE_LIMIT = 120
 PENDING_DIGEST_LIMIT = 10
 
 #: kv 键
-_LAST_TS_KEY = "proposal:last_ts"
-_EMPTY_PREFIX = "proposal:empty:"
 
 #: 只服务的维度前缀（relationship 不进 LLM 提案）。
 _PROPOSAL_SCOPE = "perspective"

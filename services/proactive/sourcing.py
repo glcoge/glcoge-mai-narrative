@@ -29,8 +29,11 @@ from ..creation.event_entity import KIND_SEED, event_kind, event_key
 # 自我层（全局共享）：若所有用户共用一个键，先触发的用户会把素材用尽，
 # 后触发的用户取不到由头 → build_bysource 返回空 → 本轮主动开口被跳过。
 # 同一件事讲给不同朋友听是自然的，所以去复用只约束同一段关系。
-_BYSOURCE_USED_KEY_PREFIX = "bysource:used:"
-
+# kv 键常量已收口至 kvkeys（深化 F：单一事实源；本地名字保持不变，消费点零改动）
+from ..kvkeys import BYSOURCE_ORIGIN as _ORIGIN_KEY_PREFIX
+from ..kvkeys import BYSOURCE_SIGNED as _SIGN_COOLDOWN_KEY_PREFIX
+from ..kvkeys import BYSOURCE_USED as _BYSOURCE_USED_KEY_PREFIX
+from ..kvkeys import MILESTONE_CONSUMED as _MILESTONE_USED_KEY_PREFIX
 #: 由头与最近对话的文本重叠上限（OBSERVE(R23)）：超过则判定"撞车"，换一个候选。
 #: 中文无词边界，用**字符 bigram 的 Jaccard 相似度**——零依赖、离线可重算。
 #: 取值先拍一个保守值，真机跑一轮后按回放台数据调。
@@ -45,10 +48,7 @@ _OVERLAP_REJECT = 0.5
 _MILESTONE_COOLDOWN_DAYS = 7
 _MILESTONE_TTL_DAYS = 30
 _MILESTONE_THROTTLE_WINDOW = 3
-#: 已消费里程碑登记表（per-uid JSON ``{id: iso_ts}``）——条目级冷却，有界同上限。
-_MILESTONE_USED_KEY_PREFIX = "milestone:consumed:"
-#: 最近若干次由头的来源队列（per-uid ``"fragment,milestone,mood"``），供 3 选 1 节流。
-_ORIGIN_KEY_PREFIX = "bysource:origin:"
+#: 已消费里程碑登记表 / 来源队列 / 签发冷却键常量见上方 kvkeys import（深化 F）。
 
 # P4 / R44：跨用户签发冷却——同一事件 T 小时内只签给 1 人（治 2026-10-06 实测的
 # 「同片段同时段 19/35 群发」）。kv 表按 event_key 命名空间，容量随 pending LRU
@@ -56,7 +56,6 @@ _ORIGIN_KEY_PREFIX = "bysource:origin:"
 # ⚠️ 明文裁定（红线⑤，与登记表 R44 行同款原文）：**本项不构成生活线分叉/素材隔离**
 # ——冷却只限时间窗内的签发人数，素材内容不改、生活线仍单条。
 # OBSERVE(R44)：写入端在 build_bysource_detail 选中登记处，判定在 _sign_cooled。
-_SIGN_COOLDOWN_KEY_PREFIX = "bysource:signed:"
 #: 冷却时长缺省（小时）：仅当 config 缺 [proactive] 段（老测试夹具）时兜底；
 #: 生产值以 config.py ``[proactive].sign_cooldown_hours``（默认 6）为准，两处保持一致。
 _SIGN_COOLDOWN_DEFAULT_HOURS = 6.0

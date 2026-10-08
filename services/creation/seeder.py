@@ -28,6 +28,8 @@ import json
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..kvkeys import SEED_COUNT as _SEED_COUNT_KEY
+from ..kvkeys import SEED_LAST_TRY as _SEED_LAST_TRY_KEY
 from .event_entity import make_seed_event
 
 __all__ = [
@@ -47,9 +49,6 @@ SEEDER_BAN_RULE = (
     "若提供了 NPC 名册，事件中出现的人物只能从名册里选；"
     "名册为空时只写环境、天气、城市生活或你自己的生活边缘，不要虚构具名人物。"
 )
-
-_SEED_LAST_TRY_KEY = "seed:last_try"
-_SEED_COUNT_KEY = "seed:count:{today}"
 
 #: 拦截计数指标名（telemetry 通用通道；命名风格与 proactive_sent 一致）
 SEED_BLOCKED_METRIC = "seed_blocked"
@@ -214,7 +213,7 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
 
     # ④ 每日上限（被拦截的不占配额——拦截 ≠ 播种）
     today = current.strftime("%Y-%m-%d")
-    count_key = _SEED_COUNT_KEY.format(today=today)
+    count_key = f"{_SEED_COUNT_KEY}{today}"
     if store.get_kv_int(count_key) >= max(1, int(seeder_cfg.daily_max)):
         return
 
