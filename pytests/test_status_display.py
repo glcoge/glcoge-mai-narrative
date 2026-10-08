@@ -25,7 +25,8 @@ import _synth_loader
 _synth_loader.load("services")
 _PLUGIN = _synth_loader.load("plugin")
 
-format_available_tasks_line = _PLUGIN.format_available_tasks_line
+_COMMANDS = _synth_loader.load("services.commands")
+format_available_tasks_line = _COMMANDS.format_available_tasks_line
 
 
 # ===== 回归用例 =====

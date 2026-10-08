@@ -40,7 +40,8 @@ in_sleep_window = _ENGINE.in_sleep_window
 default_self_state = _ENGINE.default_self_state
 build_sleep_hint = _RENDER.build_sleep_hint
 build_context_block = _RENDER.build_context_block
-_sleep_status_line = _PLUGIN._sleep_status_line
+_COMMANDS = _synth_loader.load("services.commands")
+_sleep_status_line = _COMMANDS._sleep_status_line
 
 _LOGGER = _synth_loader.null_logger()
 
