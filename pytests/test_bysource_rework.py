@@ -18,10 +18,11 @@ from types import SimpleNamespace
 import _synth_loader
 from pytests._synth_loader import FakeStore, make_logger  # noqa: E402
 
-_ENGINE = _synth_loader.load("services.state.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
 _PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 _SOURCING = _synth_loader.load("services.proactive.sourcing")
+sourcing = _SOURCING
 
 NarrativeEngine = _ENGINE.NarrativeEngine
 ProactiveScheduler = _PROACTIVE.ProactiveScheduler
@@ -83,11 +84,11 @@ def test_same_fragment_not_reused():
     """同一片段用过一次后，不再作第二次由头（宁可跳过，不重复说同一件事）。"""
     engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
 
-    first = engine.build_bysource("10001", _NOW)
+    first = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "一段有画面的生活片段" in first, "首次应取该片段"
     assert engine._store.get_kv_str("bysource:used:10001"), "用后应登记 ts（按 uid 隔离）"
 
-    second = engine.build_bysource("10001", _NOW)
+    second = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert second == "", "已用片段不应二次作由头（应跳过本轮）"
 
 
@@ -99,8 +100,8 @@ def test_two_fragments_rotated():
             _frag("2026-09-22T11:00:00", "normal", "新片段"),
         ]
     )
-    first = engine.build_bysource("10001", _NOW)
-    second = engine.build_bysource("10001", _NOW)
+    first = sourcing.build_bysource(engine.deps,"10001", _NOW)
+    second = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert first != second, "连取两次应取到不同片段"
     assert third_is_empty(engine), "两条都用完后应无由头"
 
@@ -117,19 +118,19 @@ def test_used_marks_are_per_user():
     """
     engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
 
-    first = engine.build_bysource("10001", _NOW)
+    first = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "一段有画面的生活片段" in first
     assert engine._store.get_kv_str("bysource:used:10001"), "应登记到甲自己的键"
 
-    other = engine.build_bysource("10002", _NOW + datetime.timedelta(hours=7))
+    other = sourcing.build_bysource(engine.deps,"10002", _NOW + datetime.timedelta(hours=7))
     assert "一段有画面的生活片段" in other, "冷却窗外跨用户可共享素材"
     assert engine._store.get_kv_str("bysource:used:10002"), "乙登记到乙自己的键"
 
-    assert engine.build_bysource("10001", _NOW) == "", "同一用户内去复用应仍然生效"
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW) == "", "同一用户内去复用应仍然生效"
 
 
 def third_is_empty(engine) -> bool:
-    return engine.build_bysource("10001", _NOW) == ""
+    return sourcing.build_bysource(engine.deps,"10001", _NOW) == ""
 
 
 # ===== C 资格解耦（2026-09-30 回滚批 1）=====
@@ -138,26 +139,27 @@ def third_is_empty(engine) -> bool:
 def test_minor_fragment_usable_alone():
     """回滚批 1 的 minor 排除（Q1）：纯状态切片同样可作由头。"""
     engine = _make_engine([_frag("2026-09-22T10:00:00", "minor", "只是发了个呆")])
-    assert "只是发了个呆" in engine.build_bysource("10001", _NOW)
+    assert "只是发了个呆" in sourcing.build_bysource(engine.deps,"10001", _NOW)
 
 
 def test_major_fragment_usable():
     """major 档可用（写细了的片段才值得开口）。"""
     engine = _make_engine([_frag("2026-09-22T10:00:00", "major", "写细了的那一件事")])
-    bysource = engine.build_bysource("10001", _NOW)
+    bysource = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "写细了的那一件事" in bysource
 
 
 def test_old_entry_without_tier_still_usable():
     """老片段没有 tier 字段（升级前写入）→ 按可用处理，不因缺字段丢失。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "升级前的片段"}])
-    assert "升级前的片段" in engine.build_bysource("10001", _NOW)
+    assert "升级前的片段" in sourcing.build_bysource(engine.deps,"10001", _NOW)
 
 
 # ===== G 迟来承接（24h） =====
 
 
 def _make_scheduler():
+    _store = FakeStore()
     plugin = SimpleNamespace(
         config=SimpleNamespace(
             proactive=SimpleNamespace(
@@ -168,7 +170,9 @@ def _make_scheduler():
         ),
         ctx=SimpleNamespace(logger=make_logger()),
         # 批 3-C5：resolve_catch 接住时会给话题加权，需要 plugin._store
-        _store=FakeStore(),
+        _store=_store,
+        # 深化 C3b：scheduler 的 store 读经 engine.deps（与生产同构）
+        _engine=SimpleNamespace(deps=SimpleNamespace(store=_store)),
     )
     sched = ProactiveScheduler.__new__(ProactiveScheduler)
     sched._plugin = plugin
@@ -336,7 +340,7 @@ def test_detail_matches_bysource_output():
     """零行为 diff：detail 与旧接口同状态同选择、text 逐字节一致，且带 origin/event_id。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
 
-    detail = engine.build_bysource_detail("10001", _NOW)
+    detail = sourcing.build_bysource_detail(engine.deps,"10001", _NOW)
     assert detail is not None
     assert "一段有画面的生活片段" in detail["text"]
     assert detail["origin"] == "fragment"
@@ -344,14 +348,14 @@ def test_detail_matches_bysource_output():
 
     # 同一状态重放旧接口：选择一致（event_id 确定性 ⇒ used 登记同键 ⇒ 同跳过链）
     engine2 = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
-    assert engine2.build_bysource("10001", _NOW) == detail["text"]
+    assert sourcing.build_bysource(engine2.deps,"10001", _NOW) == detail["text"]
 
 
 def test_detail_none_when_no_candidates():
     """无可借素材：detail 返回 None、旧接口返回空串（跳过本轮，不干聊）。"""
     engine = _make_engine([])
-    assert engine.build_bysource_detail("10001", _NOW) is None
-    assert engine.build_bysource("10001", _NOW) == ""
+    assert sourcing.build_bysource_detail(engine.deps,"10001", _NOW) is None
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW) == ""
 
 
 def test_new_entry_registered_by_event_id():
@@ -363,7 +367,7 @@ def test_new_entry_registered_by_event_id():
         "kind": "fragment",
     }
     engine = _make_engine([entry])
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
 
     used = engine._store.get_kv_str("bysource:used:10001")
     assert "ev_20260922100000_abcd1234" in used, "应登记 event_id"
@@ -373,7 +377,7 @@ def test_new_entry_registered_by_event_id():
 def test_legacy_entry_still_registered_by_ts():
     """旧条目（无 event_id）签发后 used 登记的是 ts——存量零迁移。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}])
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert engine._store.get_kv_str("bysource:used:10001") == "2026-09-22T10:00:00"
 
 
@@ -390,10 +394,10 @@ def test_mixed_window_dedup():
             },
         ]
     )
-    first = engine.build_bysource("10001", _NOW)
-    second = engine.build_bysource("10001", _NOW)
+    first = sourcing.build_bysource(engine.deps,"10001", _NOW)
+    second = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert first != second, "两条都该被取到且不重复"
-    assert engine.build_bysource("10001", _NOW) == "", "都用完后应无由头"
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW) == "", "都用完后应无由头"
 
 
 # ===== 批 2（v0.3.0 / R40）：seed 取材接线 + R44 签发冷却 =====
@@ -413,7 +417,7 @@ def test_seed_entry_sourced_with_seed_prefix():
             }
         ]
     )
-    detail = engine.build_bysource_detail("10001", _NOW)
+    detail = sourcing.build_bysource_detail(engine.deps,"10001", _NOW)
     assert detail is not None
     assert "外面发生的一件事：巷口面馆的老板娘进了新米" == detail["text"]
     assert detail["origin"] == "seed", "origin=seed 供回执 scope 分析（批 0 裁定：可比 fragment vs seed 接住率）"
@@ -432,9 +436,9 @@ def test_seed_dedup_via_event_id():
             }
         ]
     )
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "ev_20261007100000_seed0002" in engine._store.get_kv_str("bysource:used:10001")
-    assert engine.build_bysource("10001", _NOW) == ""
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW) == ""
 
 
 def _make_cooldown_engine(*, fragment, sign_cooldown_hours=None):
@@ -453,9 +457,9 @@ def test_sign_cooldown_blocks_second_user_within_window():
     """R44：同一事件 T 小时内只签 1 人——用户甲签发后，乙在窗内取不到。"""
     fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
     engine = _make_cooldown_engine(fragment=fragment)
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
 
-    assert engine.build_bysource("10002", _NOW + datetime.timedelta(hours=1)) == "", (
+    assert sourcing.build_bysource(engine.deps,"10002", _NOW + datetime.timedelta(hours=1)) == "", (
         "签发冷却窗内，同一事件不得签给第二人"
     )
 
@@ -464,9 +468,9 @@ def test_sign_cooldown_expired_allows():
     """冷却窗过后，乙可取到该事件（冷却只限时间窗，不是隔离）。"""
     fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
     engine = _make_cooldown_engine(fragment=fragment)
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
 
-    assert "一段有画面的生活片段" in engine.build_bysource(
+    assert "一段有画面的生活片段" in sourcing.build_bysource(engine.deps,
         "10002", _NOW + datetime.timedelta(hours=7)
     ), "默认 6h 窗过后应放行"
 
@@ -475,19 +479,19 @@ def test_sign_cooldown_respects_config():
     """冷却时长走 [proactive].sign_cooldown_hours 配置（无数据不写死常量）。"""
     fragment = {"ts": "2026-09-22T10:00:00", "text": "一段有画面的生活片段"}
     engine = _make_cooldown_engine(fragment=fragment, sign_cooldown_hours=1)
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
 
-    assert engine.build_bysource("10002", _NOW + datetime.timedelta(minutes=30)) == ""
-    assert "一段有画面的生活片段" in engine.build_bysource("10002", _NOW + datetime.timedelta(hours=2))
+    assert sourcing.build_bysource(engine.deps,"10002", _NOW + datetime.timedelta(minutes=30)) == ""
+    assert "一段有画面的生活片段" in sourcing.build_bysource(engine.deps,"10002", _NOW + datetime.timedelta(hours=2))
 
 
 def test_sign_cooldown_skips_keyless_candidates():
     """无 event_key 的候选（无 ts 无 event_id）不参与冷却（与 used 去重同一防御语义）。"""
     fragment = {"text": "没有时间戳的老条目"}
     engine = _make_cooldown_engine(fragment=fragment)
-    assert engine.build_bysource("10001", _NOW)
+    assert sourcing.build_bysource(engine.deps,"10001", _NOW)
 
-    assert engine.build_bysource("10002", _NOW + datetime.timedelta(minutes=1)) != ""
+    assert sourcing.build_bysource(engine.deps,"10002", _NOW + datetime.timedelta(minutes=1)) != ""
 
 
 def test_r44_comment_ruling_present():

@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from .learning.pairs import message_id_of
 from .learning.suggestion import record_suggestion
+from .proactive.sourcing import record_urge_feedback
 from .message import extract_group_id, extract_user_id, is_private_chat, looks_like_command, message_text
 
 
@@ -87,7 +88,7 @@ async def handle_inbound_message(plugin, **kwargs: Any) -> Dict[str, Any]:
     if latency is not None:
         plugin._telemetry.record("proactive_replied", latency, user_id=user_id)
         # share_urge（v0.1.8）：被接住 → 正反馈（聊得起来，更想聊）
-        plugin._engine.record_urge_feedback(user_id, "caught")
+        record_urge_feedback(plugin._engine.deps, user_id, "caught")
         # engaged 计数窗（方案 §6.1 / Q9=c）：承接命中 = 开窗，本条计入 replies=1。
         # 达标（窗内 ≥3 条且 ≥30 字）时由 scheduler 直接落一条里程碑。
         plugin._proactive.note_engaged(user_id, plain, now, catch=True)
@@ -97,7 +98,7 @@ async def handle_inbound_message(plugin, **kwargs: Any) -> Dict[str, Any]:
         if plugin._telemetry.is_user_initiated(stream_id or user_id, now):
             # share_urge（v0.1.8）：用户主动发起（非回复主动消息）→ 被需要感
             # ❗ 必须留在 else 内：拆成并列 if 会让承接分支也触发本反馈（双抬分享欲）
-            plugin._engine.record_urge_feedback(user_id, "user_initiated")
+            record_urge_feedback(plugin._engine.deps, user_id, "user_initiated")
     # 互动配对（批 4-C2 / R31）：把本次入站登记为「待配对的用户反馈」，
     # 等本轮出站时与之配成（用户反馈 id → 已送达回应 id）。只建不消费。
     if plugin._pairs is not None:

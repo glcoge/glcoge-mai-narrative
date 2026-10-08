@@ -29,6 +29,8 @@ from types import SimpleNamespace
 import _synth_loader
 
 _ENGINE = _synth_loader.load("services.state.engine")
+chronicle = _synth_loader.load("services.creation.chronicle")
+life = _synth_loader.load("services.creation.life")
 # plugin.py 依赖 `from .services import ...`，必须先执行 services/__init__.py
 _SYNTH_SERVICES = _synth_loader.load("services")
 _PLUGIN = _synth_loader.load("plugin")
@@ -168,7 +170,7 @@ def _make_engine(
 def test_writes_target_day_when_past_trigger():
     """23:40 跑 tick、触发点 23:30 → 总结当天，写入 kind=daily。"""
     engine = _make_engine()
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert len(engine._store.chronicle) == 1
     entry = engine._store.chronicle[0]
     assert entry["kind"] == "daily"
@@ -178,7 +180,7 @@ def test_writes_target_day_when_past_trigger():
 def test_backfills_yesterday_after_midnight():
     """00:10 跑 tick → 补写昨天（旧写法这里会直接 return，功能永不执行）。"""
     engine = _make_engine()
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 16, 0, 10)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 16, 0, 10)))
     assert len(engine._store.chronicle) == 1
     assert engine._store.chronicle[0]["ts"].startswith("2026-09-15")
     assert ("self", "daily", "2026-09-15") in engine._store.done
@@ -191,7 +193,7 @@ def test_backfill_uses_yesterday_events_only():
         {"ts": "2026-09-16T00:05:00", "bysource": "今天的事"},
     ]
     engine = _make_engine(events=events)
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 16, 0, 10)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 16, 0, 10)))
     prompt = engine._creator.calls[0]
     assert "昨天的事" in prompt
     assert "今天的事" not in prompt
@@ -200,7 +202,7 @@ def test_backfill_uses_yesterday_events_only():
 def test_prompt_date_matches_target_day():
     """prompt 里的日期必须是被总结那天，不是运行时刻。"""
     engine = _make_engine()
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 16, 0, 10)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 16, 0, 10)))
     assert "2026-09-15" in engine._creator.calls[0]
     assert "2026-09-16" not in engine._creator.calls[0]
 
@@ -208,7 +210,7 @@ def test_prompt_date_matches_target_day():
 def test_skips_when_target_day_not_reached():
     """当天 20:00、触发点 23:30 → 目标日算作昨天；昨天没说过话就不写。"""
     engine = _make_engine(talk_date="2026-09-15")
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 20, 0)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 20, 0)))
     assert engine._store.chronicle == []
 
 
@@ -218,8 +220,8 @@ def test_skips_when_target_day_not_reached():
 def test_idempotent_per_day():
     """同一天只写一次（幂等走 store 标准键）。"""
     engine = _make_engine()
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 59)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 59)))
     assert len(engine._store.chronicle) == 1
     assert len(engine._creator.calls) == 1
 
@@ -227,7 +229,7 @@ def test_idempotent_per_day():
 def test_does_not_use_legacy_kv_key():
     """若代码回退到手写 kv 键，_FakeStore 会抛 AssertionError → 此用例变红。"""
     engine = _make_engine()
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert not any(k.startswith("chronicle:done:") for k in engine._store.kv_int)
 
 
@@ -236,25 +238,25 @@ def test_does_not_use_legacy_kv_key():
 
 def test_skips_when_no_talk_on_target_day():
     engine = _make_engine(talk_date="2026-09-14")
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert engine._store.chronicle == []
 
 
 def test_skips_when_chronicle_disabled():
     engine = _make_engine(chronicle_enabled=False)
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert engine._store.chronicle == []
 
 
 def test_skips_when_plugin_disabled():
     engine = _make_engine(plugin_enabled=False)
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert engine._store.chronicle == []
 
 
 def test_skips_when_narrative_disabled():
     engine = _make_engine(narrative_enabled=False)
-    asyncio.run(engine.maybe_daily_chronicle(datetime.datetime(2026, 9, 15, 23, 40)))
+    asyncio.run(chronicle.maybe_daily_chronicle(engine.deps,datetime.datetime(2026, 9, 15, 23, 40)))
     assert engine._store.chronicle == []
 
 
@@ -277,7 +279,7 @@ def _make_async(value):
 
 def test_life_fragment_writes_chronicle_when_enabled():
     engine = _make_life_engine(chronicle_enabled=True)
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 15, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 15, 12, 0)))
     kinds = [c["kind"] for c in engine._store.chronicle]
     assert "life" in kinds
 
@@ -285,7 +287,7 @@ def test_life_fragment_writes_chronicle_when_enabled():
 def test_life_fragment_skips_chronicle_when_disabled():
     """关闭时生活片段照常生成（pending_events 是主动消息由头），只是不写编年史。"""
     engine = _make_life_engine(chronicle_enabled=False)
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 15, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 15, 12, 0)))
     assert engine._store.chronicle == []
     assert engine._self_state["state"]["focus"]["pending_events"], "生活片段仍应生成"
 

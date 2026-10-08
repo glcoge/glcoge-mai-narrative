@@ -21,7 +21,8 @@ from types import SimpleNamespace
 import _synth_loader
 
 _synth_loader.load("services.state.engine")  # 触发 services/__init__.py
-_ENGINE_MOD = _synth_loader.load("services.state.engine")
+_ENGINE_MOD = _synth_loader.load("services.state.engine")
+sourcing = _synth_loader.load("services.proactive.sourcing")
 _SOURCING = _synth_loader.load("services.proactive.sourcing")
 _MESSAGE = _synth_loader.load("services.message")
 
@@ -103,9 +104,9 @@ def _make_engine(pending, events=None):
 def test_engine_methods_still_work_after_move():
     """engine.build_bysource / compute_share_urge / record_urge_feedback 行为不变。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走", "tier": "normal"}])
-    assert "去海边走了走" in engine.build_bysource(_UID, _NOW)
-    assert engine.compute_share_urge(_UID) > 0
-    engine.record_urge_feedback(_UID, "caught")
+    assert "去海边走了走" in sourcing.build_bysource(engine.deps,_UID, _NOW)
+    assert sourcing.compute_share_urge(engine.deps,_UID) > 0
+    sourcing.record_urge_feedback(engine.deps,_UID, "caught")
     assert engine._self_state["state"]["urge"] == 0.6
 
 
@@ -132,7 +133,7 @@ def test_bysource_skips_fragment_overlapping_recent_dialogue():
         [{"ts": "2026-09-22T10:00:00", "text": same, "tier": "normal"}],
         events=[{"bysource": same}],
     )
-    assert engine.build_bysource(_UID, _NOW) == "", "撞车片段应被跳过（本轮主动取消）"
+    assert sourcing.build_bysource(engine.deps,_UID, _NOW) == "", "撞车片段应被跳过（本轮主动取消）"
 
 
 def test_bysource_keeps_non_overlapping_fragment():
@@ -141,13 +142,13 @@ def test_bysource_keeps_non_overlapping_fragment():
         [{"ts": "2026-09-22T10:00:00", "text": "去海边走了走，风很大", "tier": "normal"}],
         events=[{"bysource": "今天写完了作业"}],
     )
-    assert "去海边走了走" in engine.build_bysource(_UID, _NOW)
+    assert "去海边走了走" in sourcing.build_bysource(engine.deps,_UID, _NOW)
 
 
 def test_minor_tier_now_usable_alone():
     """回滚批 1 的 minor 排除（Q1）：详略与资格解耦，无素材切片同样可作由头。"""
     engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "无素材切片", "tier": "minor"}])
-    assert "无素材切片" in engine.build_bysource(_UID, _NOW)
+    assert "无素材切片" in sourcing.build_bysource(engine.deps,_UID, _NOW)
 
 
 def test_full_window_sourcing_beyond_last_two():
@@ -167,7 +168,7 @@ def test_full_window_sourcing_beyond_last_two():
         _SOURCING._bysource_used_key(_UID),
         "2026-09-22T10:00:00,2026-09-22T11:00:00",
     )
-    chosen = engine.build_bysource(_UID, _NOW)
+    chosen = sourcing.build_bysource(engine.deps,_UID, _NOW)
     assert "最旧的片段" in chosen, "全窗口下第 3 旧的片段应可作由头"
 
 
@@ -178,7 +179,7 @@ def test_used_registry_width_follows_pending_max():
     key = _SOURCING._bysource_used_key(_UID)
     # 预填 6 条更旧的登记（2026-01-01）→ 选中后再登记 1 条，共 7 条，只应留最新 3 条
     engine._store.set_kv_str(key, ",".join(f"2026-01-01T00:{i:02d}:00" for i in range(6)))
-    assert "片段甲" in engine.build_bysource(_UID, _NOW)
+    assert "片段甲" in sourcing.build_bysource(engine.deps,_UID, _NOW)
     stored = engine._store.get_kv_str(key)
     assert len(stored.split(",")) == 3, "登记表宽度应跟随 fragment_pending_max=3"
     assert "2026-09-22T11:00:00" in stored, "最新选中者必须保留在登记表中"
@@ -201,7 +202,7 @@ def test_highlight_fragment_double_weight_slot():
     for hour in range(5):
         engine = _make_engine([dict(item) for item in pending])
         now = datetime.datetime(2026, 9, 22, hour, 0, 0)
-        if "高光片段" in engine.build_bysource(_UID, now):
+        if "高光片段" in sourcing.build_bysource(engine.deps,_UID, now):
             hits += 1
     assert hits == 2, f"高光应占 5 槽中的 2 槽（实测 {hits}/5）"
 

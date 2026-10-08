@@ -47,6 +47,8 @@ def _make_scheduler(*, telemetry_enabled=True, with_telemetry=True):
         config=config,
         ctx=SimpleNamespace(logger=make_logger()),
         _store=store,
+        # 深化 C3b：scheduler 的 store 读经 engine.deps（与生产同构）
+        _engine=SimpleNamespace(deps=SimpleNamespace(store=store)),
     )
     if with_telemetry:
         # 与生产同构：Telemetry 挂 plugin._telemetry（scheduler 经 plugin 取用）

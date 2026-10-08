@@ -33,6 +33,8 @@ from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
 
 _LIFE = load("services.creation.life")
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
+life = _LIFE
+sourcing = load("services.proactive.sourcing")
 _RENDER = load("services.render.planner_block")
 
 build_context_block = _RENDER.build_context_block
@@ -194,7 +196,7 @@ def test_highlight_writes_three_pieces(monkeypatch):
     """抽中 → pending.highlight=true + chronicle kind=life_highlight + 当日计数 +1。"""
     engine = _make_engine()
     _fixed_rng(monkeypatch, 0.0)  # 必中
-    asyncio.run(engine.maybe_generate_life_fragment(_NOW))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,_NOW))
 
     item = _pending(engine)[-1]
     assert item["highlight"] is True, "抽中片段落库应带 highlight=true"
@@ -207,7 +209,7 @@ def test_plain_fragment_writes_life_kind(monkeypatch):
     """未抽中 → highlight=false + kind=life + 高光计数不推进。"""
     engine = _make_engine()
     _fixed_rng(monkeypatch, 0.99)  # 必不中
-    asyncio.run(engine.maybe_generate_life_fragment(_NOW))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,_NOW))
 
     item = _pending(engine)[-1]
     assert item["highlight"] is False, "未抽中应带 highlight=false"
@@ -220,7 +222,7 @@ def test_highlight_count_not_advanced_when_switch_off(monkeypatch):
     """开关关闭 → 永不抽签，计数键始终为 0（防「关了还在计数」）。"""
     engine = _make_engine(detail_enabled=False)
     _block_rng(monkeypatch)
-    asyncio.run(engine.maybe_generate_life_fragment(_NOW))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,_NOW))
 
     assert _pending(engine)[-1]["highlight"] is False
     assert engine._store.get_kv_int(f"life_fragment:highlight:count:{_TODAY}") == 0
@@ -313,7 +315,7 @@ def test_bysource_keeps_full_fragment():
     engine = _make_engine()
     fragment = "甲" * 300
     _pending(engine).append({"ts": "2026-09-21T11:00:00", "text": fragment, "highlight": False})
-    bysource = engine.build_bysource(_UID, _NOW)
+    bysource = sourcing.build_bysource(engine.deps,_UID, _NOW)
     assert "甲" * 300 in bysource, "由头应带完整片段（旧上限 60 字会截断）"
     assert "甲" * 301 not in bysource
 

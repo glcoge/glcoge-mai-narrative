@@ -293,7 +293,13 @@ class ProposalRunner:
     # ─── 调度判定 ───────────────────────────────────────────────
 
     def _last_ts(self) -> str:
-        store = self._plugin._store
+        # 深化 C3b：经 engine 的公共 deps 取；_engine 为 None（未加载完）时
+        # 保持与旧 store-None 相同的空串语义
+        store = (
+            self._plugin._engine.deps.store
+            if self._plugin._engine is not None
+            else None
+        )
         if store is None:
             return ""
         return store.get_kv_str(_LAST_TS_KEY, "")
@@ -325,7 +331,11 @@ class ProposalRunner:
         ``failed`` / ``ok``。
         """
         promotion = self._plugin.config.promotion
-        store = self._plugin._store
+        store = (
+            self._plugin._engine.deps.store
+            if self._plugin._engine is not None
+            else None
+        )
         if not promotion.enabled or store is None:
             return self._record({"status": "disabled"})
         if not force and not self.is_due(now):

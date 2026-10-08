@@ -303,6 +303,8 @@ class _FakeEngine:
 
 def _plugin_stub(fx: Any, store: Any, engine: Any) -> Any:
     """最小 plugin 假件（config 默认值复用测试夹具，不另起第二份）。"""
+    # 深化 C3b：晋升链路经 engine.deps 取 store——假 engine 须挂 deps（与生产同构）
+    engine.deps = SimpleNamespace(store=store)
     return SimpleNamespace(
         _store=store,
         _engine=engine,

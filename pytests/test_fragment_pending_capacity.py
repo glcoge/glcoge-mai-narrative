@@ -26,6 +26,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
 
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
+life = load("services.creation.life")
 
 _BASE = datetime.datetime(2026, 9, 21, 8, 0, 0)
 
@@ -126,7 +127,7 @@ def _generate(engine, count, *, step_minutes=31):
     """按固定步长生成 count 段生活片段（每步跨过 interval 闸门）。"""
     for index in range(count):
         moment = _BASE + datetime.timedelta(minutes=step_minutes * index)
-        asyncio.run(engine.maybe_generate_life_fragment(moment))
+        asyncio.run(life.maybe_generate_life_fragment(engine.deps,moment))
 
 
 def _pending(engine):

@@ -21,6 +21,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
+life = _synth_loader.load("services.creation.life")
 from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _ENTITY = _synth_loader.load("services.creation.event_entity")
@@ -184,7 +185,7 @@ def test_life_write_end_produces_event_entity():
     """life.py 落库条目 = 事件实体：event_id + kind=fragment，text/ts 语义不变。"""
     engine = _make_life_engine()
     moment = datetime.datetime(2026, 10, 7, 15, 30, 0)
-    asyncio.run(engine.maybe_generate_life_fragment(moment))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,moment))
 
     pending = engine._self_state["state"]["focus"]["pending_events"]
     assert len(pending) == 1

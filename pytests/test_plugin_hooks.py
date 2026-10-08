@@ -201,7 +201,7 @@ def _inbound_payload(text: str, *, is_command: bool = False) -> dict:
     }
 
 
-def test_inbound_command_not_counted_as_engaged():
+def test_inbound_command_not_counted_as_engaged(monkeypatch):
     """命令/通知消息不流入 engaged 计数（第④步）。
 
     接线位置钉死：``note_engaged`` 在 ``is_command`` 提前 return **之后**才被调用，
@@ -212,7 +212,9 @@ def test_inbound_command_not_counted_as_engaged():
     plugin._engine = SimpleNamespace(
         record_interaction=lambda *a, **k: None,
         record_branch_feedback=lambda *a, **k: None,
-        record_urge_feedback=lambda *a, **k: None,
+        # 深化 C3a：壳删除后 inbound 直连 sourcing.record_urge_feedback(deps, ...)，
+        # 本测试主题是 engaged 计数，urge 反馈在 inbound 模块绑定上打桩
+        deps=SimpleNamespace(),
     )
     plugin._store = store
     plugin._pairs = None
@@ -220,6 +222,9 @@ def test_inbound_command_not_counted_as_engaged():
     plugin._proactive = SimpleNamespace(
         resolve_catch=lambda uid, now: None,
         note_engaged=lambda *a, **k: calls.append(a),
+    )
+    monkeypatch.setattr(
+        _PLUGIN.inbound, "record_urge_feedback", lambda deps, uid, event: None
     )
 
     asyncio.run(

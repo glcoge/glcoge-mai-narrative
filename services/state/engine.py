@@ -13,28 +13,15 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..creation.creator import CreatorClient
-from ..creation.chronicle import (
-    build_chronicle_prompt as _build_chronicle_prompt,
-    load_native_personality as _load_native_personality,
-    maybe_daily_chronicle as _maybe_daily_chronicle,
-)
-from ..creation.life import (
-    build_life_fragment_prompt as _build_life_fragment_prompt,
-    maybe_generate_life_fragment as _maybe_generate_life_fragment,
-)
+from ..creation.chronicle import maybe_daily_chronicle as _maybe_daily_chronicle
+from ..creation.life import maybe_generate_life_fragment as _maybe_generate_life_fragment
 from ..creation.seeder import maybe_seed_world_event as _maybe_seed_world_event
 from ..deps import Deps
 from ..kvkeys import BRANCH_PREFIX as _BRANCH_PREFIX
 from ..kvkeys import SELF_SCOPE as _SELF_SCOPE
-from ..proactive.sourcing import (
-    build_bysource as _build_bysource,
-    build_bysource_detail as _build_bysource_detail,
-    compute_share_urge as _compute_share_urge,
-    record_urge_feedback as _record_urge_feedback,
-)
 from ..render.audience import filter_entries, visible_events
 from ..store import NarrativeStore
-from .continuity import append_milestone, current_relationship_stage
+from .continuity import current_relationship_stage
 
 # 每日作息阶段（本地 24h 制）
 _ROUTINE_PHASES: List[Tuple[int, str]] = [
@@ -85,7 +72,6 @@ INJECT_TEXT_CAP = 1024
 # 由头去复用的 kv 键构造已随 build_bysource 一并移到
 # ``services/proactive/sourcing.py``（v0.2.0 批 1「类拆分推迟表」）。
 
-
 def parse_clock(value: str) -> Optional[time]:
     """解析 HH:MM 字符串为 time；失败返回 None。"""
     try:
@@ -94,7 +80,6 @@ def parse_clock(value: str) -> Optional[time]:
         return time(hour=int(hour_text), minute=int(minute_text))
     except (ValueError, AttributeError):
         return None
-
 
 def routine_phase(hour: int) -> str:
     """返回当前作息阶段标签。
@@ -107,14 +92,12 @@ def routine_phase(hour: int) -> str:
             return label
     return "深夜"
 
-
 def mood_by_energy(energy: float) -> str:
     """按精力阈值映射心情标签（确定性）。"""
     for threshold, label in _MOOD_BY_ENERGY:
         if energy >= threshold:
             return label
     return "平静"
-
 
 def minutes_until_clock(value: str, now: datetime) -> Optional[float]:
     """距**当天**某时刻还有多少分钟；已过或解析失败返回 None。
@@ -128,7 +111,6 @@ def minutes_until_clock(value: str, now: datetime) -> Optional[float]:
     delta = (datetime.combine(now.date(), clock) - now).total_seconds() / 60
     return delta if delta >= 0 else None
 
-
 def minutes_since_clock(value: str, now: datetime) -> Optional[float]:
     """距**当天**某时刻已过多少分钟；未到或解析失败返回 None。"""
     clock = parse_clock(value)
@@ -136,7 +118,6 @@ def minutes_since_clock(value: str, now: datetime) -> Optional[float]:
         return None
     delta = (now - datetime.combine(now.date(), clock)).total_seconds() / 60
     return delta if delta >= 0 else None
-
 
 def in_sleep_window(now: datetime, sleep_time: str, wake_time: str) -> bool:
     """睡眠窗口判定：支持跨午夜（如 23:30-07:00）。
@@ -153,7 +134,6 @@ def in_sleep_window(now: datetime, sleep_time: str, wake_time: str) -> bool:
         return sleep <= current < wake
     return current >= sleep or current < wake
 
-
 # 日照预期提示（配合 routine_phase：相位标签不带"此刻窗外什么样"的感官信息，
 # "下午"既可能是烈日当空也可能是天色将暗）。按小时升序排列，倒序匹配（同款纪律）。
 _DAYLIGHT_HINTS: List[Tuple[int, str]] = [
@@ -165,7 +145,6 @@ _DAYLIGHT_HINTS: List[Tuple[int, str]] = [
     (21, "夜已深，窗外全黑了"),
 ]
 
-
 def daylight_hint(hour: int) -> str:
     """返回当前小时对应的日照预期描述（确定性规则，零 LLM）。
 
@@ -176,7 +155,6 @@ def daylight_hint(hour: int) -> str:
         if hour >= start_hour:
             return hint
     return "天还没亮"
-
 
 def local_now(offset_hours: int = 8) -> datetime:
     """按配置时区返回"剧本本地时间"（naive、规整到秒）。
@@ -201,7 +179,6 @@ def local_now(offset_hours: int = 8) -> datetime:
         return wall
     utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     return (utc_naive + timedelta(hours=int(offset_hours))).replace(microsecond=0)
-
 
 def default_self_state() -> Dict[str, Any]:
     """自我层初始状态（锚定层 identity 不在状态内，来自 config）。
@@ -239,7 +216,6 @@ def default_self_state() -> Dict[str, Any]:
         "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }
 
-
 def default_branch_state() -> Dict[str, Any]:
     """支线层初始状态（关系锚 identity 由规则登记）。
 
@@ -273,7 +249,6 @@ def default_branch_state() -> Dict[str, Any]:
         "meta": {"version": STATE_SCHEMA_VERSION, "updated_ts": ""},
     }
 
-
 class NarrativeEngine:
     """世界引擎：加载状态 → 规则 tick → 事件入队 → 由头签发。"""
 
@@ -305,8 +280,8 @@ class NarrativeEngine:
     def _assemble_deps(self) -> Deps:
         """装配依赖快照（唯一装配实现；构造 / 懒组装 / 重绑定三处共用）。
 
-        可选子系统与旧桩缺字段统一走 getattr——与现行消费点
-        （``getattr(engine._plugin, "_telemetry", None)`` 等）宽容语义逐字一致；
+        可选子系统与旧桩缺字段统一走 getattr——与各消费点深化前的
+        getattr 宽容语义逐字一致；
         生产实例后建的子系统由 ``on_load`` 尾部 ``rebind_deps()`` 补全。
         """
         plugin = self._plugin
@@ -529,18 +504,18 @@ class NarrativeEngine:
         self._dequeue_expired_group_events(current)
         # 创作层：按间隔+上限闸门尝试生成生活片段（内部自控频率，失败不影响规则 tick）
         try:
-            await self.maybe_generate_life_fragment(current)
+            await _maybe_generate_life_fragment(self.deps, current)
         except Exception as exc:
             self.deps.logger.error("生活片段生成异常: %s", exc, exc_info=True)
         # 每日编年史压缩（2026-09-16 接线；此前是死代码，从未被调用）
         # 同样包 try/except：创作层异常不得影响规则 tick
         try:
-            await self.maybe_daily_chronicle(current)
+            await _maybe_daily_chronicle(self.deps, current)
         except Exception as exc:
             self.deps.logger.error("编年史压缩异常: %s", exc, exc_info=True)
         # 世界事件播种（批 2 / R40）：四闸自控频率（enabled 默认关），异常不影响规则 tick
         try:
-            await self.maybe_seed_world_event(current)
+            await _maybe_seed_world_event(self.deps, current)
         except Exception as exc:
             self.deps.logger.error("世界事件播种异常: %s", exc, exc_info=True)
 
@@ -801,14 +776,6 @@ class NarrativeEngine:
 
     # ─── 对话素材采集 ────────────────────────────────────────────
 
-    def append_milestone(self, user_id: str, desc: str, now: Optional[datetime] = None) -> bool:
-        """薄委托：落一条 engaged 里程碑（实现在 ``state/continuity.py``）。
-
-        保持与 ``build_bysource`` / ``compute_share_urge`` 相同的既有约定：
-        实现下沉子模块、engine 留一层委托，对外 API 稳定、测试绑定点不散。
-        """
-        return append_milestone(self.deps, user_id, desc, now or self._local_now())  # DEPRECATED(B)
-
     def record_interaction(self, user_id: str, text: str, now: Optional[datetime] = None) -> None:
         """用户互动落痕：更新自我层互动时点，素材入支线事件队列。"""
         current = now or self._local_now()
@@ -902,77 +869,13 @@ class NarrativeEngine:
 
     # ─── 分享欲 share_urge（v0.1.8 第一步：动机驱动主动时机） ────
 
-    def record_urge_feedback(self, user_id: str, event: str) -> None:
-        """分享欲事件反馈：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        _record_urge_feedback(self.deps, user_id, event)  # DEPRECATED(B)
-
-    def compute_share_urge(self, user_id: str) -> float:
-        """合成当前分享欲：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        return _compute_share_urge(self.deps, user_id)  # DEPRECATED(B)
-
     # ─── 由头签发（主动消息的内容之源） ──────────────────────────
-
-    def build_bysource(self, user_id: str, now: Optional[datetime] = None) -> str:
-        """签发主动开口由头：实现已迁至 ``proactive/sourcing.py``（见其文档字符串）。"""
-        return _build_bysource(self.deps, user_id, now)  # DEPRECATED(B)
-
-    def build_bysource_detail(
-        self, user_id: str, now: Optional[datetime] = None
-    ) -> Optional[Dict[str, str]]:
-        """签发由头并返回完整署名（批 0 / R41，兑现回执数据源）：实现见 sourcing。"""
-        return _build_bysource_detail(self.deps, user_id, now)  # DEPRECATED(B)
 
     # ─── 每日编年史压缩（唯一常规 LLM 节点） ─────────────────────
     # 实现已迁至 ``creation/chronicle.py``（v0.2.0 批 2-C7「类拆分推迟表」）。
-    # 保留薄委托方法：对外 API 不变（33+ 处测试直接绑 engine 实例上的这些名字）。
-
-    async def maybe_daily_chronicle(self, now: Optional[datetime] = None) -> None:
-        """当日有互动时，用轻量模型生成一条"今日小结"写入编年史（kind=daily）。
-
-        实现已迁至 ``creation/chronicle.py``（见其文档字符串：日期归属与幂等键）。
-        """
-        await _maybe_daily_chronicle(self.deps, now)  # DEPRECATED(B)
-
-    async def _load_native_personality(self) -> str:
-        """读取主程序原生 [personality].personality（实现已迁 creation/chronicle.py）。"""
-        return await _load_native_personality(self.deps)  # DEPRECATED(B)
 
     # ─── 创作层：生活片段生成器（v0.1.3 新增，唯一的日常 LLM 创作节点） ──
     # 实现已迁至 ``creation/life.py``（v0.2.0 批 2-C7「类拆分推迟表」）。
-    # 保留薄委托方法：对外 API 不变，且**入库前守卫**的调用点就在那个模块的出口。
-
-    async def maybe_generate_life_fragment(self, now: Optional[datetime] = None) -> None:
-        """创作层消费器：闸门下生成一段"生活片段"（实现已迁 creation/life.py）。"""
-        await _maybe_generate_life_fragment(self.deps, now)  # DEPRECATED(B)
-
-    async def maybe_seed_world_event(self, now: Optional[datetime] = None) -> None:
-        """世界事件播种 tick（批 2 / R40）：实现见 ``creation/seeder.py``（四闸自控频率）。"""
-        await _maybe_seed_world_event(self.deps, now)  # DEPRECATED(B)
-
-    def _build_life_fragment_prompt(
-        self,
-        now: datetime,
-        state: Dict[str, Any],
-        materials: Sequence[str],
-        persona: str = "",
-        highlight: bool = False,
-        wake: bool = False,
-    ) -> str:
-        """构造生活片段生成 prompt（实现已迁 creation/life.py）。"""
-        return _build_life_fragment_prompt(  # DEPRECATED(B)
-            self.deps, now, state, materials, persona=persona, highlight=highlight, wake=wake
-        )
-
-    def _build_chronicle_prompt(
-        self,
-        now: datetime,
-        state: Dict[str, Any],
-        materials: Sequence[str],
-        persona: str = "",
-    ) -> str:
-        """构造编年史压缩 prompt（实现已迁 creation/chronicle.py）。"""
-        return _build_chronicle_prompt(self.deps, now, state, materials, persona=persona)  # DEPRECATED(B)
-
 
 __all__ = [
     "NarrativeEngine",

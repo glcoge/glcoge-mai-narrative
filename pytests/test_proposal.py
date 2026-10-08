@@ -68,6 +68,7 @@ def _make(tmp: str, *, response="", fail=False, counters=None, **config_override
     counter = counters if counters is not None else _Counter()
     plugin = types.SimpleNamespace(
         _store=store,
+        _engine=types.SimpleNamespace(deps=types.SimpleNamespace(store=store)),
         _telemetry=counter,
         config=types.SimpleNamespace(
             promotion=_synth_loader.promotion_config(**config_overrides),

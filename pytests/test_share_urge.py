@@ -29,6 +29,7 @@ from typing import Any, Dict, List
 import _synth_loader
 
 _ENGINE = _synth_loader.load("services.state.engine")
+sourcing = _synth_loader.load("services.proactive.sourcing")
 _PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 
 NarrativeEngine = _ENGINE.NarrativeEngine
@@ -139,6 +140,7 @@ def _make_scheduler(
         (scheduler, fired_uids, urge_events)：fired 记录 _fire 调用；
         urge_events 记录 engine 收到的冷落等反馈事件。
     """
+    _store = _FakeStore()
     fired: List[str] = []
     urge_events: List[tuple] = []
     cfg = SimpleNamespace(
@@ -161,9 +163,9 @@ def _make_scheduler(
         ),
     )
     engine = SimpleNamespace(
-        # 与真实 compute_share_urge 的 gate 语义一致：总开关关闭 → 返回 1.0（到点必发）
-        compute_share_urge=lambda uid: (urge if urge_enabled else 1.0),
-        record_urge_feedback=lambda uid, event: urge_events.append((uid, event)),
+        # 深化 C3a：scheduler 直连 sourcing 模块函数，deps 实参由 spy 无视，
+        # 这里只须让属性链 _engine.deps 可求值
+        deps=SimpleNamespace(store=_store),
         # 睡眠闸门（v0.1.10）：本文件测分享欲，时间固定在 15:00，恒清醒
         is_asleep=lambda now=None: False,
     )
@@ -217,7 +219,7 @@ def test_caught_raises_self_and_branch():
     branch["state"]["urge_factor"] = 0.8
     engine.save_branch_state(_UID, branch)
 
-    engine.record_urge_feedback(_UID, "caught")
+    sourcing.record_urge_feedback(engine.deps,_UID, "caught")
 
     self_urge = float(engine.load_self_state()["state"]["urge"])
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
@@ -235,8 +237,8 @@ def test_ignored_lowers_with_branch_floor():
     branch["state"]["urge_factor"] = 0.5
     engine.save_branch_state(_UID, branch)
 
-    engine.record_urge_feedback(_UID, "ignored")
-    engine.record_urge_feedback(_UID, "ignored")  # 连续冷落两次 → branch 触底
+    sourcing.record_urge_feedback(engine.deps,_UID, "ignored")
+    sourcing.record_urge_feedback(engine.deps,_UID, "ignored")  # 连续冷落两次 → branch 触底
 
     self_urge = float(engine.load_self_state()["state"]["urge"])
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
@@ -258,7 +260,7 @@ def test_user_initiated_raises_both_layers():
     branch["state"]["urge_factor"] = 0.9
     engine.save_branch_state(_UID, branch)
 
-    engine.record_urge_feedback(_UID, "user_initiated")
+    sourcing.record_urge_feedback(engine.deps,_UID, "user_initiated")
 
     self_urge = float(engine.load_self_state()["state"]["urge"])
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
@@ -275,7 +277,7 @@ def _bottom_out_branch(engine: NarrativeEngine) -> float:
     branch["state"]["urge_factor"] = 1.0
     engine.save_branch_state(_UID, branch)
     for _ in range(5):
-        engine.record_urge_feedback(_UID, "ignored")
+        sourcing.record_urge_feedback(engine.deps,_UID, "ignored")
     return float(engine.load_branch_state(_UID)["state"]["urge_factor"])
 
 
@@ -301,7 +303,7 @@ def test_user_initiated_rescues_bottomed_branch():
     engine = _make_engine(urge_gain=0.1, urge_branch_floor=0.4)
     assert _bottom_out_branch(engine) == 0.4
 
-    engine.record_urge_feedback(_UID, "user_initiated")
+    sourcing.record_urge_feedback(engine.deps,_UID, "user_initiated")
 
     factor = float(engine.load_branch_state(_UID)["state"]["urge_factor"])
     assert factor == 0.45, f"触底后用户主动应抬到 0.45（实际 {factor}）"
@@ -343,7 +345,7 @@ def test_unknown_event_raises():
     """未知事件立即抛错（不兜底掩盖调用方笔误）。"""
     engine = _make_engine()
     try:
-        engine.record_urge_feedback(_UID, "whatever")
+        sourcing.record_urge_feedback(engine.deps,_UID, "whatever")
     except ValueError as exc:
         assert "whatever" in str(exc)
     else:
@@ -362,7 +364,7 @@ def test_feedback_gate_switches_off():
         state["state"]["urge"] = 0.5
         engine.save_self_state(state)
 
-        engine.record_urge_feedback(_UID, "ignored")
+        sourcing.record_urge_feedback(engine.deps,_UID, "ignored")
 
         assert float(engine.load_self_state()["state"]["urge"]) == 0.5, (
             f"开关关闭时反馈不应生效（{kwargs}）"
@@ -382,7 +384,7 @@ def test_compute_multiply_formula():
     branch["state"]["urge_factor"] = 0.8
     engine.save_branch_state(_UID, branch)
 
-    urge = engine.compute_share_urge(_UID)
+    urge = sourcing.compute_share_urge(engine.deps,_UID)
     assert urge == 0.4, f"0.5 × 0.8 × 1.0 应为 0.4（实际 {urge}）"
 
 
@@ -395,7 +397,7 @@ def test_compute_low_energy_drag():
     engine.save_self_state(state)
     engine.load_branch_state(_UID)  # branch 缺省中性 1.0
 
-    urge = engine.compute_share_urge(_UID)
+    urge = sourcing.compute_share_urge(engine.deps,_UID)
     assert urge == 0.32, f"0.8 × 1.0 × 0.4 应为 0.32（实际 {urge}）"
 
 
@@ -407,7 +409,7 @@ def test_compute_gate_returns_full():
         {"urge_enabled": False},
     ):
         engine = _make_engine(**kwargs)
-        assert engine.compute_share_urge(_UID) == 1.0, f"gate 关闭应返回 1.0（{kwargs}）"
+        assert sourcing.compute_share_urge(engine.deps,_UID) == 1.0, f"gate 关闭应返回 1.0（{kwargs}）"
 
 
 # ===== scheduler 层：冷落结算与采样接线 =====
@@ -429,9 +431,20 @@ def test_settle_expired_counts_ignored():
     assert len(scheduler._sent_records[_UID]) == 1, "窗口内记录应保留"
 
 
-def test_check_once_settles_ignored_feedback():
+def _spy_sourcing(monkeypatch, scheduler, sink, *, urge, urge_enabled):
+    """把 scheduler 模块的 sourcing 绑定换成 spy（深化 C3a：壳删除后调用点直连
+    sourcing 模块函数，隔离缝由 engine 门面移到调用方模块的 sourcing 名字）。"""
+    spy = SimpleNamespace(
+        record_urge_feedback=lambda deps, uid, event: sink.append((uid, event)),
+        compute_share_urge=lambda deps, uid: (urge if urge_enabled else 1.0),
+    )
+    monkeypatch.setattr(sys.modules[type(scheduler).__module__], "sourcing", spy)
+
+
+def test_check_once_settles_ignored_feedback(monkeypatch):
     """调度循环：超窗已送达条目 → 引擎收到 ignored 反馈（出队即罚，不重复）。"""
     scheduler, _, urge_events = _make_scheduler()
+    _spy_sourcing(monkeypatch, scheduler, urge_events, urge=1.0, urge_enabled=True)
     scheduler.record_sent(_UID, f"stream-{_UID}", _NOW - datetime.timedelta(hours=20), "甲")
     scheduler.mark_delivered(f"stream-{_UID}")
 
@@ -443,7 +456,7 @@ def test_check_once_settles_ignored_feedback():
     )
 
 
-def test_check_once_undelivered_is_not_punished():
+def test_check_once_undelivered_is_not_punished(monkeypatch):
     """未送达的超窗条目 → 记 undelivered，**不罚冷落**（用户没看到，不该罚）。"""
     scheduler, _, urge_events = _make_scheduler()
     scheduler.record_sent(_UID, f"stream-{_UID}", _NOW - datetime.timedelta(hours=20), "甲")
@@ -457,9 +470,10 @@ def test_check_once_undelivered_is_not_punished():
     )
 
 
-def test_check_once_full_urge_fires():
+def test_check_once_full_urge_fires(monkeypatch):
     """分享欲恒满（1.0）：到点必开口（旧行为不回退）。"""
-    scheduler, fired, _ = _make_scheduler(urge=1.0)
+    scheduler, fired, urge_events = _make_scheduler(urge=1.0)
+    _spy_sourcing(monkeypatch, scheduler, urge_events, urge=1.0, urge_enabled=True)
     scheduler._next_fire[_UID] = _NOW - datetime.timedelta(minutes=1)  # 已到点
 
     asyncio.run(scheduler._check_once())
@@ -467,9 +481,10 @@ def test_check_once_full_urge_fires():
     assert fired == [_UID], f"到点且分享欲满 → 应触发主动开口（实际 {fired}）"
 
 
-def test_check_once_zero_urge_reschedules():
+def test_check_once_zero_urge_reschedules(monkeypatch):
     """分享欲为零：不开口，且 30-60 分钟后重试（不重置完整随机间隔）。"""
-    scheduler, fired, _ = _make_scheduler(urge=0.0)
+    scheduler, fired, urge_events = _make_scheduler(urge=0.0)
+    _spy_sourcing(monkeypatch, scheduler, urge_events, urge=0.0, urge_enabled=True)
     scheduler._next_fire[_UID] = _NOW - datetime.timedelta(minutes=1)
 
     asyncio.run(scheduler._check_once())
@@ -480,9 +495,10 @@ def test_check_once_zero_urge_reschedules():
     assert 30 <= delay <= 60, f"重试间隔应落在 30-60 分钟（实际 {delay:.0f}）"
 
 
-def test_check_once_urge_disabled_keeps_old_behavior():
+def test_check_once_urge_disabled_keeps_old_behavior(monkeypatch):
     """总开关关闭：compute 返回 1.0 → 到点必发（与改造前行为一致）。"""
-    scheduler, fired, _ = _make_scheduler(urge=0.0, urge_enabled=False)
+    scheduler, fired, urge_events = _make_scheduler(urge=0.0, urge_enabled=False)
+    _spy_sourcing(monkeypatch, scheduler, urge_events, urge=1.0, urge_enabled=False)
     scheduler._next_fire[_UID] = _NOW - datetime.timedelta(minutes=1)
 
     asyncio.run(scheduler._check_once())

@@ -213,6 +213,7 @@ def _promotion_stack(tmp_path, *, telemetry_enabled: bool = True, **overrides):
     """真实 store + **真实 Telemetry** 的晋升链路（假件只留状态引擎与 LLM）。"""
     store = NarrativeStore(Path(tmp_path))
     engine = _StackEngine()
+    engine.deps = SimpleNamespace(store=store)
     plugin = SimpleNamespace(
         _store=store,
         _engine=engine,

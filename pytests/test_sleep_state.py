@@ -32,6 +32,9 @@ import _synth_loader
 
 _synth_loader.load("services")  # plugin.py 依赖 services/__init__ 的再导出
 _ENGINE = _synth_loader.load("services.state.engine")
+chronicle = _synth_loader.load("services.creation.chronicle")
+life = _synth_loader.load("services.creation.life")
+sourcing = _synth_loader.load("services.proactive.sourcing")
 _RENDER = _synth_loader.load("services.render.planner_block")
 _PLUGIN = _synth_loader.load("plugin")
 
@@ -337,7 +340,7 @@ def test_no_fragment_while_asleep():
     """睡着不生产生活片段——「深夜还醒着」的根因修复。"""
     creator = _FakeCreator()
     engine = _make_engine(creator=creator, self_state=_state(sleep_state="asleep"))
-    _run(engine.maybe_generate_life_fragment(_at(2, 0)))
+    _run(life.maybe_generate_life_fragment(engine.deps,_at(2, 0)))
     assert creator.prompts == [], "睡着时不得调用创作模型"
 
 
@@ -351,7 +354,7 @@ def test_wake_fragment_bypasses_interval_and_daily_cap():
         store=store, creator=creator, daily_max=16, interval=60,
         self_state=_state(sleep_state="awake", wake_fragment_pending=True),
     )
-    _run(engine.maybe_generate_life_fragment(_at(7, 0)))
+    _run(life.maybe_generate_life_fragment(engine.deps,_at(7, 0)))
 
     assert len(creator.prompts) == 1, "起床片段必须生成（豁免间隔与日上限）"
     assert "刚睡醒" in creator.prompts[0]
@@ -373,7 +376,7 @@ def test_wake_fragment_disabled_by_switch():
         store=store, creator=creator, interval=60, wake_fragment_enabled=False,
         self_state=_state(sleep_state="awake", wake_fragment_pending=True),
     )
-    _run(engine.maybe_generate_life_fragment(_at(7, 0)))
+    _run(life.maybe_generate_life_fragment(engine.deps,_at(7, 0)))
     assert creator.prompts == []
     state = engine.load_self_state()
     assert "wake_fragment_pending" not in state["state"]["routine"]
@@ -388,7 +391,7 @@ def test_normal_fragment_still_respects_interval():
         store=store, creator=creator, interval=60,
         self_state=_state(sleep_state="awake"),
     )
-    _run(engine.maybe_generate_life_fragment(_at(10, 0)))
+    _run(life.maybe_generate_life_fragment(engine.deps,_at(10, 0)))
     assert creator.prompts == []
 
 
@@ -399,7 +402,7 @@ def test_pre_sleep_hint_in_prompt():
         creator=creator, sleep_pre_sleep_hint_minutes=25,
         self_state=_state(sleep_state="awake"),
     )
-    _run(engine.maybe_generate_life_fragment(_at(23, 10)))
+    _run(life.maybe_generate_life_fragment(engine.deps,_at(23, 10)))
     assert creator.prompts and "最后一段" in creator.prompts[0]
 
 
@@ -413,11 +416,11 @@ def test_chronicle_waits_until_asleep():
         creator=creator, self_state=_state(sleep_state="awake"), store=_FakeStore()
     )
     engine._store.kv["self"]["state"]["last_talk_date"] = "2026-09-21"
-    _run(engine.maybe_daily_chronicle(_at(23, 30)))
+    _run(chronicle.maybe_daily_chronicle(engine.deps,_at(23, 30)))
     assert creator.prompts == [], "还没入睡就写了小结"
 
     engine._store.kv["self"]["state"]["routine"]["sleep_state"] = "asleep"
-    _run(engine.maybe_daily_chronicle(_at(23, 30)))
+    _run(chronicle.maybe_daily_chronicle(engine.deps,_at(23, 30)))
     assert len(creator.prompts) == 1
 
 
@@ -429,7 +432,7 @@ def test_chronicle_clock_fallback_when_sleep_disabled():
         self_state=_state(sleep_state="awake"), store=_FakeStore(),
     )
     engine._store.kv["self"]["state"]["last_talk_date"] = "2026-09-21"
-    _run(engine.maybe_daily_chronicle(_at(23, 30)))
+    _run(chronicle.maybe_daily_chronicle(engine.deps,_at(23, 30)))
     assert len(creator.prompts) == 1
 
 
@@ -441,7 +444,7 @@ def test_bysource_no_late_night_line_when_asleep():
     engine = _make_engine(
         self_state=_state(phase="深夜", sleep_state="asleep"), store=_FakeStore()
     )
-    text = engine.build_bysource("10001", _at(2, 0))
+    text = sourcing.build_bysource(engine.deps,"10001", _at(2, 0))
     assert "不想睡" not in text
 
 

@@ -78,6 +78,7 @@ class _Counter:
 def _make(tmp: str, **overrides):
     store = NarrativeStore(Path(tmp))
     engine = _FakeEngine()
+    engine.deps = types.SimpleNamespace(store=store)
     counter = _Counter()
     plugin = types.SimpleNamespace(
         _store=store,

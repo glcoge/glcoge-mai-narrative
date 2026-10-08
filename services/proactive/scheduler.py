@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..kvkeys import PROACTIVE_COUNT as _PROACTIVE_COUNT_KEY
 from ..learning.topic import note_pending_topic, reward_pending_topic
+from ..proactive import sourcing
+from ..state.continuity import append_milestone
 from ..state.engine import parse_clock
 
 # 承接窗口 = 冷落窗口（2026-09-22 定案，取代原先 30min / 24h 双口径）**16 小时**。
@@ -297,14 +299,14 @@ class ProactiveScheduler:
             # 上限或不在窗口，冷落反馈照样生效。
             ignored, undelivered = self.settle_expired(user_id, now)
             for _ in range(ignored):
-                self._plugin._engine.record_urge_feedback(user_id, "ignored")
+                sourcing.record_urge_feedback(self._plugin._engine.deps, user_id, "ignored")
             for _ in range(undelivered):
                 self._plugin._telemetry.record(
                     "proactive_undelivered", 1, user_id=user_id, scope="proactive"
                 )
 
             today = now.strftime("%Y-%m-%d")
-            day_count = self._plugin._store.get_kv_int(f"proactive:count:{user_id}:{today}")
+            day_count = self._plugin._engine.deps.store.get_kv_int(f"proactive:count:{user_id}:{today}")
             if day_count >= max(0, int(cfg.proactive.daily_max)):
                 self._next_fire.pop(user_id, None)
                 continue
@@ -337,7 +339,7 @@ class ProactiveScheduler:
 
             # share_urge 采样（v0.1.8 第一步）：计时器到点只是"最小间隔闸门"，
             # 真正开口还要看此刻想不想说（动机驱动时机）。未过 → 短延迟重试。
-            urge = self._plugin._engine.compute_share_urge(user_id)
+            urge = sourcing.compute_share_urge(self._plugin._engine.deps, user_id)
             if random.random() >= urge:
                 low, high = _URGE_RETRY_RANGE
                 self._next_fire[user_id] = now + datetime.timedelta(minutes=random.randint(low, high))
@@ -358,7 +360,7 @@ class ProactiveScheduler:
         plugin = self._plugin
         # 批 0（R41）：改用 detail 版取事件实体署名（event_id/origin 落回执）——
         # 取材与选择逻辑同一实现，text 与旧接口逐字节一致（零行为 diff）。
-        bysource_detail = plugin._engine.build_bysource_detail(user_id, now)
+        bysource_detail = sourcing.build_bysource_detail(plugin._engine.deps, user_id, now)
         if not bysource_detail:
             plugin.ctx.logger.info(
                 "主动消息跳过: uid=%s stream=%s 无可借由的生活素材（不干聊）", user_id, stream_id
@@ -542,7 +544,7 @@ class ProactiveScheduler:
             rec.consumed = True
             # 话题归因（批 3-C5 / R16）：接住 → 本轮话题记主证据权重（P10=1.0），
             # 生活片段自身主题只有 0.4（降权），长期看用户爱聊的会占主导
-            reward_pending_topic(self._plugin._store, user_id)
+            reward_pending_topic(self._plugin._engine.deps.store, user_id)
             # 兑现回执（批 0 / R41 / 执行路线 §批 0-4）：**只记指标，不做一致性约束**
             # ——由头被岔开 = 特性（总览 §5.1），不写回状态、不罚不发。
             # scope=origin 供供给质量分析（批 2 后可比 fragment vs seed 接住率）。
@@ -602,7 +604,7 @@ class ProactiveScheduler:
             return False
         desc = "\n".join(window.texts)
         self._engaged_windows.pop(user_id, None)
-        return bool(self._plugin._engine.append_milestone(user_id, desc, now))
+        return bool(append_milestone(self._plugin._engine.deps, user_id, desc, now))
 
     def _prune_engaged(self, user_id: str, now: datetime.datetime) -> None:
         """丢弃超时未达标的 engaged 窗（与冷落结算共用同一 tick 路径回收）。

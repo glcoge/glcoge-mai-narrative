@@ -53,7 +53,7 @@ async def inject_life_context(plugin, **kwargs: Any) -> Dict[str, Any]:
     state = plugin._engine.load_self_state()
     branch = plugin._engine.load_branch_state(user_id) if user_id else None
     # 受众过滤（ADR-0004 第 2 层）：涉私素材只讲给本人，diary 产物对所有人短路
-    recent = visible_chronicle(plugin._store, "plugin", user_id, 3)
+    recent = visible_chronicle(plugin._store, "self", user_id, 3)
     round_kind, bysource = plugin._proactive.consume_pending(session_id)
     # 世界书触发扫描输入（批 1 / R43）：最近几轮对话文本，零 LLM token；
     # loader 未建（enabled=false）时跳过提取，省一次 items 遍历。

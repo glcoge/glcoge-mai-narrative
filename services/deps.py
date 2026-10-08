@@ -1,7 +1,7 @@
 """引擎依赖束（深化 B / grilling Q1a）：模块函数吃 ``deps`` 而非 ``engine``。
 
 字段 = services 实际用到的全部子系统句柄（2026-10-08 全量侦察定案，11 个）——
-让 services 不再伸手 engine 私有字段（``engine._plugin`` / ``engine._store``），
+让 services 不再伸手 engine 私有字段（私有字段引用），
 也让「一个模块需要什么」在签名上一眼可读。
 
 装配纪律（三处，全部显式）：

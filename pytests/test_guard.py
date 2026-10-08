@@ -23,7 +23,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+life = load("services.creation.life")
 
 _GUARD = load("services.state.continuity")
 
@@ -438,7 +439,7 @@ def test_persist_guard_drops_hitting_fragment():
     engine, logger = _make_life_engine(
         "今天我有点言行不一。", guard_fragments=["言行不一"]
     )
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 21, 12, 0)))
 
     assert engine._self_state["state"]["focus"]["pending_events"] == []
     assert engine._store.chronicle == []
@@ -451,7 +452,7 @@ def test_persist_guard_keeps_clean_fragment():
     import datetime
 
     engine, logger = _make_life_engine("今天在厨房煮了粥。", guard_fragments=["言行不一"])
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 21, 12, 0)))
 
     pending = engine._self_state["state"]["focus"]["pending_events"]
     assert len(pending) == 1
@@ -466,7 +467,7 @@ def test_persist_guard_zero_keywords_keeps_everything():
     import datetime
 
     engine, logger = _make_life_engine("今天在厨房煮了粥。")
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 21, 12, 0)))
 
     assert len(engine._self_state["state"]["focus"]["pending_events"]) == 1
     assert len(engine._store.chronicle) == 1
@@ -478,7 +479,7 @@ def test_persist_guard_does_not_advance_last_ts_on_drop():
     import datetime
 
     engine, _ = _make_life_engine("今天我有点言行不一。", guard_fragments=["言行不一"])
-    asyncio.run(engine.maybe_generate_life_fragment(datetime.datetime(2026, 9, 21, 12, 0)))
+    asyncio.run(life.maybe_generate_life_fragment(engine.deps,datetime.datetime(2026, 9, 21, 12, 0)))
 
     assert engine._store.get_kv_str("life_fragment:last_ts") == ""
     assert engine._store.get_kv_int("life_fragment:count:2026-09-21") == 0

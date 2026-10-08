@@ -761,7 +761,9 @@ class PromotionEngine:
 
     @property
     def _store(self) -> Any:
-        return self._plugin._store
+        # 深化 C3b：经 engine 的公共 deps 取（gated 伸手清零）；
+        # 调用时机在 on_load 完成后（watchdog），_engine 恒非 None。
+        return self._plugin._engine.deps.store
 
     @staticmethod
     def _iso(now: datetime.datetime) -> str:

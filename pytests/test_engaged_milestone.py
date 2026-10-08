@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import _synth_loader
 
 _ENGINE_MOD = _synth_loader.load("services.state.engine")
+continuity = _synth_loader.load("services.state.continuity")
 _SCHEDULER = _synth_loader.load("services.proactive.scheduler")
 _SOURCING = _synth_loader.load("services.proactive.sourcing")
 _CONTINUITY = _synth_loader.load("services.state.continuity")
@@ -270,7 +271,7 @@ def test_milestone_keep_bounded_20():
     """每用户有界 20 条：超出丢最旧。"""
     engine = _make_engine()
     for index in range(21):
-        engine.append_milestone(_UID, f"第 {index} 次聊起来的内容", _NOW + datetime.timedelta(minutes=index))
+        continuity.append_milestone(engine.deps,_UID, f"第 {index} 次聊起来的内容", _NOW + datetime.timedelta(minutes=index))
     milestones = _milestones(engine)
     assert len(milestones) == 20
     assert "第 0 次" not in milestones[0]["desc"], "最旧的应被挤出"
@@ -281,7 +282,7 @@ def test_first_milestone_raises_stage():
     """副作用（§6.4）：第一条里程碑让 stage 由「陌生人」→「相识」。"""
     engine = _make_engine()
     assert current_relationship_stage({"milestones": _milestones(engine)}) == "陌生人"
-    engine.append_milestone(_UID, "第一次真的聊起来", _NOW)
+    continuity.append_milestone(engine.deps,_UID, "第一次真的聊起来", _NOW)
     assert current_relationship_stage({"milestones": _milestones(engine)}) == "相识"
 
 
