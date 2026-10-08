@@ -20,6 +20,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _SCHEDULER = _synth_loader.load("services.proactive.scheduler")
 _SNAPSHOT = _synth_loader.load("services.state.snapshot")
@@ -31,55 +32,20 @@ _NOW = datetime.datetime(2026, 10, 7, 12, 0, 0)
 _UID = "10001"
 
 
-class _Logger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
 
 
-class _FakeStore(_synth_loader.KvStoreMixin):
-    """kv + 指标采样捕获（append_metric）；承接结算的话题加权走 kv。"""
-
-    def __init__(self):
-        self.kv_str: dict = {}
-        self.metrics: list = []
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def get_kv_int(self, key):
-        return int(self.kv_str.get(key, 0) or 0)
-
-    def set_kv_int(self, key, value):
-        self.kv_str[key] = str(int(value))
-
-    def append_metric(self, name, value, user_id="", scope=""):
-        self.metrics.append(
-            {"name": name, "value": value, "user_id": user_id, "scope": scope}
-        )
 
 
 def _make_scheduler(*, telemetry_enabled=True, with_telemetry=True):
     """scheduler + telemetry + 捕获 store 的完整装配。"""
-    store = _FakeStore()
+    store = FakeStore()
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         telemetry=SimpleNamespace(enabled=telemetry_enabled),
     )
     plugin = SimpleNamespace(
         config=config,
-        ctx=SimpleNamespace(logger=_Logger()),
+        ctx=SimpleNamespace(logger=make_logger()),
         _store=store,
     )
     if with_telemetry:

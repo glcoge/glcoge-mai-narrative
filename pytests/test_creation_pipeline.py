@@ -23,6 +23,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 import _synth_loader
 from pytests._synth_loader import load  # noqa: E402
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _PIPELINE = load("services.creation.pipeline")
 
@@ -34,45 +35,8 @@ commit_created_event = _PIPELINE.commit_created_event
 _NOW = datetime.datetime(2026, 10, 8, 12, 0, 0)
 
 
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-
-    def info(self, *a, **k):
-        pass
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
 
 
-class _FakeStore:
-    """闸门/落账基元所需的最小 store（kv + chronicle）。"""
-
-    def __init__(self):
-        self.kv_str: dict = {}
-        self.kv_int: dict = {}
-        self.chronicle: list = []
-
-    def get_kv_str(self, key, default=""):
-        return self.kv_str.get(key, default)
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def get_kv_int(self, key, default=0):
-        return self.kv_int.get(key, default)
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def append_chronicle(self, scope, kind, text, ts=None):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
 
 
 def _make_engine(*, chronicle_enabled=True, pending_max=12):
@@ -82,7 +46,7 @@ def _make_engine(*, chronicle_enabled=True, pending_max=12):
             fragment_pending_max=pending_max,
         )
     )
-    store = _FakeStore()
+    store = FakeStore()
     saved: list = []
     engine = SimpleNamespace(
         _plugin=SimpleNamespace(config=config),
@@ -97,34 +61,34 @@ def _make_engine(*, chronicle_enabled=True, pending_max=12):
 
 def test_interval_gate_no_record_passes():
     """无间隔记录 → 放行（首次生成不受闸）。"""
-    store = _FakeStore()
+    store = FakeStore()
     assert interval_gate(store, "life_fragment:last_ts", _NOW, minutes=120) is True
 
 
 def test_interval_gate_blocks_within_window():
     """窗内 → 拦截。"""
-    store = _FakeStore()
+    store = FakeStore()
     store.set_kv_str("k", (_NOW - datetime.timedelta(minutes=30)).isoformat(timespec="seconds"))
     assert interval_gate(store, "k", _NOW, minutes=120) is False
 
 
 def test_interval_gate_boundary_exact_minutes_passes():
     """恰好等于 minutes → 放行（现行语义：total_seconds() < minutes*60 才拦）。"""
-    store = _FakeStore()
+    store = FakeStore()
     store.set_kv_str("k", (_NOW - datetime.timedelta(minutes=120)).isoformat(timespec="seconds"))
     assert interval_gate(store, "k", _NOW, minutes=120) is True
 
 
 def test_interval_gate_malformed_ts_passes():
     """坏时间戳 → 放行（life/seeder 同语义：解析不出视为无闸）。"""
-    store = _FakeStore()
+    store = FakeStore()
     store.set_kv_str("k", "不是时间")
     assert interval_gate(store, "k", _NOW, minutes=120) is True
 
 
 def test_daily_cap_gate():
     """日上限：未达放行、恰达拦截、cap=0 防御为 1（与 seeder 现行 max(1,·) 同）。"""
-    store = _FakeStore()
+    store = FakeStore()
     assert daily_cap_gate(store, "k", cap=2) is True
     store.set_kv_int("k", 1)
     assert daily_cap_gate(store, "k", cap=2) is True
@@ -139,7 +103,7 @@ def test_daily_cap_gate():
 
 def test_log_guard_reject_with_detail():
     """life 形状：label + detail + 原文（>60 字截断加省略号）。"""
-    logger = _Logger()
+    logger = make_logger()
     log_guard_reject(
         logger,
         label="生活片段命中锚定守卫（world_rules/values/禁用片段）",
@@ -156,7 +120,7 @@ def test_log_guard_reject_with_detail():
 
 def test_log_guard_reject_without_detail_no_ellipsis():
     """seeder 形状：无 detail 段；短原文不截断不加省略号。"""
-    logger = _Logger()
+    logger = make_logger()
     log_guard_reject(
         logger,
         label="播种事件命中参与者拦截（命中=10001）",

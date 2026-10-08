@@ -214,6 +214,208 @@ class KvStoreMixin:
         return {item_key: item for item_key, item in self.kv.items() if item_key.startswith(prefix)}
 
 
+# ─── 共享替身层（深化 D / 体检候选 D：测试面共享 seam） ─────────────
+# 此前 21 个文件各自定义 Store 替身（四种形状）、17 个 Logger 变体、25 个
+# make_* 装配变体——「interface 即测试面」被逐文件重造。收敛目标 = 1：
+# FakeStore 是全接口**超集**替身（one adapter serving all），不做参数化变体。
+# 渐进收敛纪律（A+D 执行方案 §2.2）：断言与用例数不增不减；指针型测试不碰；
+# 真实 NarrativeStore 的测试（test_streams 等）不换本替身。
+
+
+class FakeStore:
+    """全接口 store 替身：**单表多视图**（与真实 NarrativeStore 同构——str/int/JSON
+    只是同一 kv 表上的序列化差异，不是三个存储面）。
+
+    方法集 = 全部消费方（creation/proactive/learning/render/telemetry/hook）的
+    并集；行为一律**内存直存**，不做任何过滤/截断（那是被测代码的职责）。
+    ``kv`` / ``kv_str`` 属性是同一张表的两个别名（断言便利）；``chronicle`` /
+    ``events`` / ``metrics`` 列表供断言直接读取。
+
+    ⚠️ 不继承 :class:`KvStoreMixin`（那是多文件混入的旧契约，内部有独立 dict）；
+    本类覆写同名方法保持调用兼容。
+    """
+
+    def __init__(self) -> None:
+        self._data: dict = {}
+        self.events: list = []
+        self.chronicle: list = []
+        self.metrics: list = []
+        self._chronicle_done: dict = {}
+
+    # ── 单表视图 ──
+    @property
+    def kv(self) -> dict:
+        return self._data
+
+    @property
+    def kv_str(self) -> dict:
+        return self._data
+
+    def get_kv(self, key):
+        return self._data.get(key)
+
+    def set_kv(self, key, value):
+        self._data[key] = value
+
+    def get_kv_with_prefix(self, prefix):
+        return {k: v for k, v in self._data.items() if k.startswith(prefix)}
+
+    # ── str / int 视图 ──
+    def get_kv_str(self, key, default=""):
+        value = self._data.get(key)
+        return default if value is None else str(value)
+
+    def set_kv_str(self, key, value):
+        self._data[key] = str(value)
+
+    def get_kv_int(self, key, default=0):
+        try:
+            return int(self._data.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def set_kv_int(self, key, value):
+        self._data[key] = int(value)
+
+    def delete_keys_with_prefix(self, prefix):
+        hits = [k for k in self._data if k.startswith(prefix)]
+        for k in hits:
+            del self._data[k]
+        return len(hits)
+
+    # ── 事件队列（支线素材 / 群观察；只存不删，语义由被测代码驱动） ──
+    def push_event(self, event):
+        self.events.append(event)
+
+    def append_event(self, scope, kind, text, ts=None, **kwargs):
+        self.events.append({"scope": scope, "kind": kind, "text": text, "ts": ts, **kwargs})
+
+    def list_events(self, scope, limit=20):
+        return [event for event in self.events if event.get("scope") == scope][:limit]
+
+    def clear_all_events(self):
+        self.events.clear()
+
+    # ── 编年史（append-only + 当日幂等标记） ──
+    def append_chronicle(self, scope, kind, text, ts=None):
+        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
+
+    def recent_chronicle(self, scope, limit=3):
+        return [row for row in self.chronicle if row.get("scope") == scope][:limit]
+
+    def is_chronicle_done(self, scope, kind, date):
+        return bool(self._chronicle_done.get(f"chronicle:{scope}:{kind}:{date}"))
+
+    def mark_chronicle_done(self, scope, kind, date):
+        self._chronicle_done[f"chronicle:{scope}:{kind}:{date}"] = 1
+
+    # ── 指标采样（Telemetry 落盘口） ──
+    def append_metric(self, name, value, user_id="", scope="", ts=None):
+        self.metrics.append(
+            {"name": name, "value": value, "user_id": user_id, "scope": scope, "ts": ts}
+        )
+
+
+class FakeLogger:
+    """结构化静默 logger：info/warning/error 分列表收集（供断言），debug 静默。"""
+
+    def __init__(self) -> None:
+        self.infos: list = []
+        self.warnings: list = []
+        self.errors: list = []
+
+    def _record(self, sink):
+        def _log(message, *args):
+            sink.append(str(message % args if args else message))
+        return _log
+
+    def info(self, message, *args):
+        self._record(self.infos)(message, *args)
+
+    def warning(self, message, *args):
+        self._record(self.warnings)(message, *args)
+
+    def error(self, message, *args):
+        self._record(self.errors)(message, *args)
+
+    def debug(self, *args, **kwargs):
+        pass
+
+
+def make_logger(capture: "list | None" = None) -> types.SimpleNamespace:
+    """静默 logger；``capture`` 传列表则额外把 info/warning 文本汇入该列表。"""
+    logger = FakeLogger()
+    if capture is not None:
+        original_info, original_warning = logger.info, logger.warning
+
+        def info(message, *args):
+            original_info(message, *args)
+            capture.append(str(message % args if args else message))
+
+        def warning(message, *args):
+            original_warning(message, *args)
+            capture.append(str(message % args if args else message))
+
+        logger.info = info
+        logger.warning = warning
+    return logger
+
+
+def make_engine(*, config=None, state=None, store=None, creator=None, telemetry=None):
+    """真 NarrativeEngine + 共享替身的标准装配（各文件 ``__new__``+手挂的单一化）。
+
+    - ``config`` 缺省给最小可用段（plugin/narrative/llm/identity/anchor）；
+    - ``state`` 缺省给标准自我层形状；传入则原样使用（load/save 直连该 dict）；
+    - ``store`` 缺省新建 :class:`FakeStore`；``creator`` 缺省 ``None``（创作链
+      测试自行注入 FakeCreator）。
+    Returns:
+        ``(engine, store)``——store 一并返回供断言。
+    """
+    if config is None:
+        config = types.SimpleNamespace(
+            plugin=types.SimpleNamespace(enabled=True),
+            narrative=types.SimpleNamespace(
+                enabled=True,
+                mode_user_ids=["10001"],
+                fragment_pending_max=12,
+                life_fragment_daily_max=16,
+                life_fragment_interval_minutes=30,
+                life_fragment_detail_enabled=False,
+                highlight_probability=0.0,
+                chronicle_enabled=True,
+                sleep_time="",
+                wake_time="",
+                wake_fragment_enabled=False,
+                sleep_pre_sleep_hint_minutes=25,
+            ),
+            llm=types.SimpleNamespace(show_prompt=False, temperature=0.7),
+            identity=types.SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
+            anchor=types.SimpleNamespace(guard_keywords=[]),
+        )
+    engine_mod = load("services.state.engine")
+    resolved_store = store if store is not None else FakeStore()
+    engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
+    engine._plugin = types.SimpleNamespace(
+        config=config,
+        ctx=types.SimpleNamespace(logger=make_logger()),
+        _store=resolved_store,
+        **({"_telemetry": telemetry} if telemetry is not None else {}),
+    )
+    engine._store = resolved_store
+    if creator is not None:
+        engine._creator = creator
+    engine._self_state = state if state is not None else {
+        "state": {
+            "mood": {"label": "平静", "energy": 0.6},
+            "routine": {"phase": "白天", "sleep_state": "awake"},
+            "focus": {"pending_events": []},
+        }
+    }
+    engine.load_self_state = lambda: engine._self_state
+    engine.save_self_state = lambda value: None
+    return engine, resolved_store
+
+
 def run_standalone(globals_dict: dict) -> int:
     """独立运行入口：执行当前测试模块全部 test_ 函数并打印结果。
 

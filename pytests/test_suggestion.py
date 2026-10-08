@@ -28,7 +28,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 import _synth_loader
-from pytests._synth_loader import load  # noqa: E402
+from pytests._synth_loader import FakeStore, load  # noqa: E402
 
 _SUGGESTION = load("services.learning.suggestion")
 _LIFE = load("services.creation.life")
@@ -81,31 +81,9 @@ def _make_engine(*, pending=None, enabled=True):
     engine.load_self_state = lambda: engine._self_state
     engine.save_self_state = lambda state: None
     engine._local_now = lambda: _NOW
-    engine._store = _FakeStore()
+    engine._store = FakeStore()
     return engine
 
-
-class _FakeStore(_synth_loader.KvStoreMixin):
-    """record_interaction/load_branch_state 等真方法所需的最小 store
-    （事件写 no-op、kv 内存，JSON kv 走 KvStoreMixin 契约）。"""
-
-    def __init__(self):
-        self.kv_str: dict = {}
-
-    def append_event(self, scope, kind, text, ts=None, **kwargs):
-        pass
-
-    def push_event(self, event):
-        pass
-
-    def list_events(self, scope, limit=20):
-        return []
-
-    def get_kv_str(self, key, default=""):
-        return self.kv_str.get(key, default)
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
 
 
 class _Logger:

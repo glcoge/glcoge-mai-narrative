@@ -23,6 +23,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 import _synth_loader
 from pytests._synth_loader import load  # noqa: E402
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _KVKEYS = load("services.kvkeys")
 _ENGINE = load("services.state.engine")
@@ -123,79 +124,14 @@ def test_keep_group_infrastructure():
 # ===== reset_for_new_persona 全链 =====
 
 
-class _Logger:
-    def __init__(self):
-        self.infos: list = []
-
-    def info(self, *a, **k):
-        self.infos.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
 
 
-class _FakeStore:
-    """全接口假 store：真实 kv 字典 + 事件队列 + 编年史（归零链所需全貌）。"""
-
-    def __init__(self):
-        self.kv: dict = {}
-        self.events: list = []
-        self.chronicle: list = []
-
-    def get_kv(self, key):
-        return self.kv.get(key)
-
-    def set_kv(self, key, value):
-        self.kv[key] = value
-
-    def get_kv_int(self, key, default=0):
-        try:
-            return int(self.kv.get(key, default))
-        except (TypeError, ValueError):
-            return default
-
-    def set_kv_int(self, key, value):
-        self.kv[key] = int(value)
-
-    def get_kv_str(self, key, default=""):
-        value = self.kv.get(key)
-        return default if value is None else str(value)
-
-    def set_kv_str(self, key, value):
-        self.kv[key] = str(value)
-
-    def get_kv_with_prefix(self, prefix):
-        return {k: v for k, v in self.kv.items() if k.startswith(prefix)}
-
-    def delete_keys_with_prefix(self, prefix):
-        hits = [k for k in self.kv if k.startswith(prefix)]
-        for k in hits:
-            del self.kv[k]
-        return len(hits)
-
-    def push_event(self, event):
-        self.events.append(event)
-
-    def clear_all_events(self):
-        self.events.clear()
-
-    def append_chronicle(self, scope, kind, text, ts=None):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
-
-    def recent_chronicle(self, scope, limit=5):
-        return self.chronicle[:limit]
 
 
 def _make_engine():
     engine_mod = _ENGINE
     engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
-    store = _FakeStore()
+    store = FakeStore()
     engine._plugin = None  # 归零链不触 plugin
     engine._store = store
     engine._local_now = lambda: __import__("datetime").datetime(2026, 10, 8, 12, 0, 0)
@@ -256,11 +192,12 @@ def test_reset_for_new_persona_clears_and_keeps():
         "promotion:cooldown:perspective.world_view",
         "style",
     ):
-        assert gone not in store.kv, f"换人设归零应清掉 {gone!r}"
+        assert gone not in store.kv_str, f"换人设归零应清掉 {gone!r}"
 
-    # 保留侧：会话基础设施 + 编年史幂等标记 + 编年史正文
-    for kept in ("stream_map", "group_stream_map", "chronicle:self:life:2026-10-08"):
+    # 保留侧（按读写面区分：会话映射走 JSON kv 面，chronicle 标记走 str 面）
+    for kept in ("stream_map", "group_stream_map"):
         assert kept in store.kv, f"换人设归零应保留 {kept!r}"
+    assert "chronicle:self:life:2026-10-08" in store.kv_str
     assert store.chronicle and store.chronicle[0]["text"] == "旧生活的片段"
     # 事件队列（涉私素材）必须清空
     assert store.events == []
@@ -281,11 +218,14 @@ def test_reset_for_new_persona_idempotent():
     engine, store = _make_engine()
     _seed_all_key_families(store)
     reset_for_new_persona(engine)
-    before = dict(store.kv)
+    before_mixin, before_str = dict(store.kv), dict(store.kv_str)
     summary2 = reset_for_new_persona(engine)
-    # 除 self 重建（同值默认态）外，kv 无任何变化
+    # 除 self 重建（同值默认态）外，两个 kv 面均无任何变化
+    assert {k: v for k, v in store.kv_str.items() if k != "self"} == {
+        k: v for k, v in before_str.items() if k != "self"
+    }
     assert {k: v for k, v in store.kv.items() if k != "self"} == {
-        k: v for k, v in before.items() if k != "self"
+        k: v for k, v in before_mixin.items() if k != "self"
     }
     assert summary2["removed"] == 1  # 仅 self 计数（reset_state 原语义）
     assert "stream_map" in store.kv

@@ -16,6 +16,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
+from pytests._synth_loader import FakeStore, make_logger  # noqa: E402
 
 _ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
@@ -28,55 +29,6 @@ ProactiveScheduler = _PROACTIVE.ProactiveScheduler
 _NOW = datetime.datetime(2026, 9, 22, 12, 0, 0)
 
 
-class _Logger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
-
-
-class _FakeStore(_synth_loader.KvStoreMixin):
-    """最小 store：kv + 事件 + 编年史接口。"""
-
-    def __init__(self):
-        self.kv_str: dict = {}
-        self.kv_int: dict = {}
-        self.events: list = []
-        self.chronicle: list = []
-
-    def list_events(self, scope, limit=20):
-        return self.events[:limit]
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def get_kv_int(self, key):
-        return int(self.kv_int.get(key, 0))
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def append_chronicle(self, scope, kind, text, ts=None):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
-
-    def is_chronicle_done(self, scope, kind, date):
-        return False
-
-    def mark_chronicle_done(self, scope, kind, date):
-        pass
-
-    def recent_chronicle(self, scope, limit=3):
-        return self.chronicle[:limit]
 
 
 def _make_engine(pending):
@@ -98,9 +50,9 @@ def _make_engine(pending):
     engine = NarrativeEngine.__new__(NarrativeEngine)
     # plugin._store 与 engine._store 在生产里是**同一个实例**（scheduler 走前者、
     # engine 走后者）；批 3-C5 话题归因从 plugin 侧取 store，假对象必须同样共享
-    store = _FakeStore()
+    store = FakeStore()
     engine._plugin = SimpleNamespace(
-        config=config, ctx=SimpleNamespace(logger=_Logger()), _store=store
+        config=config, ctx=SimpleNamespace(logger=make_logger()), _store=store
     )
     engine._store = store
     engine._self_state = {
@@ -214,9 +166,9 @@ def _make_scheduler():
                 user_window_rules=[],
             )
         ),
-        ctx=SimpleNamespace(logger=_Logger()),
+        ctx=SimpleNamespace(logger=make_logger()),
         # 批 3-C5：resolve_catch 接住时会给话题加权，需要 plugin._store
-        _store=_FakeStore(),
+        _store=FakeStore(),
     )
     sched = ProactiveScheduler.__new__(ProactiveScheduler)
     sched._plugin = plugin

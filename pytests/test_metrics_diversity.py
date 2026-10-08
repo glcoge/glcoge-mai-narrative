@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import _synth_loader
+from pytests._synth_loader import FakeStore  # noqa: E402
 
 _synth_loader.load("services.state.engine")
 _SNAPSHOT = _synth_loader.load("services.state.snapshot")
@@ -52,20 +53,6 @@ class _Logger:
         pass
 
 
-class _FakeStore:
-    def __init__(self):
-        self.metrics: list = []
-        self.kv_int: dict = {}
-
-    def append_metric(self, name, value, user_id="", scope="", ts=None):
-        self.metrics.append((name, value, scope))
-
-    def get_kv_int(self, key, default=0):
-        return int(self.kv_int.get(key, 0))
-
-    def recent_chronicle(self, scope, limit=5):
-        return []
-
 
 def _make_telemetry():
     plugin = SimpleNamespace(
@@ -73,7 +60,7 @@ def _make_telemetry():
                                telemetry=SimpleNamespace(enabled=True)),
         ctx=SimpleNamespace(logger=_Logger()),
     )
-    store = _FakeStore()
+    store = FakeStore()
     plugin._store = store
     return Telemetry(plugin), store
 
@@ -126,7 +113,7 @@ def test_note_fragment_records_both_tracks():
     """一次产出必须同时落 A、B 两轨（否则两侧不同尺度，无法对照）。"""
     telemetry, store = _make_telemetry()
     telemetry.note_fragment(_state(), "去海边走了走，风很大")
-    names = [name for name, _v, _s in store.metrics]
+    names = [row["name"] for row in store.metrics]
     assert "state_diversity" in names, "缺 A 轨（状态组合熵）"
     assert "output_diversity" in names, "缺 B 轨（产出 n-gram 多样性）"
 
@@ -147,7 +134,7 @@ def test_counter_kinds_all_writable():
     for kind in ("proposals", "promotions", "refutations", "rollbacks"):
         telemetry, store = _make_telemetry()
         telemetry.record_counter(kind)
-        assert store.metrics == [(kind, 1, "promotion")]
+        assert [(row["name"], row["value"], row["scope"]) for row in store.metrics] == [(kind, 1, "promotion")]
 
 
 def test_counter_unknown_kind_rejected():
@@ -173,7 +160,7 @@ class _FakeSend:
 
 def _make_plugin_for_status():
     plugin = MaiNarrativePlugin.__new__(MaiNarrativePlugin)
-    store = _FakeStore()
+    store = FakeStore()
     engine = SimpleNamespace(
         load_self_state=lambda: {
             "state": {

@@ -21,6 +21,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _ENTITY = _synth_loader.load("services.creation.event_entity")
 _AUDIENCE = _synth_loader.load("services.render.audience")
@@ -128,48 +129,8 @@ def test_new_entry_visible_as_general():
 # ===== 写入端集成（life.py 落库即事件实体） =====
 
 
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-
-    def info(self, *a, **k):
-        pass
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
 
 
-class _FakeStore(_synth_loader.KvStoreMixin):
-    """生活片段落库链路所需的最小 store。"""
-
-    def __init__(self):
-        self.chronicle: list = []
-        self.kv_int: dict = {}
-        self.kv_str: dict = {}
-
-    def get_kv_int(self, key):
-        return self.kv_int.get(key, 0)
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def list_events(self, scope, limit=20):
-        return []
-
-    def append_chronicle(self, scope, kind, text, ts):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
 
 
 class _FakeCreator:
@@ -202,9 +163,9 @@ def _make_life_engine():
     )
     engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
     engine._plugin = SimpleNamespace(
-        config=config, ctx=SimpleNamespace(logger=_Logger()), _telemetry=None
+        config=config, ctx=SimpleNamespace(logger=FakeLogger()), _telemetry=None
     )
-    engine._store = _FakeStore()
+    engine._store = FakeStore()
     engine._creator = _FakeCreator()
     engine._self_state = {
         "state": {

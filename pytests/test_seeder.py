@@ -27,6 +27,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 import _synth_loader
 from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _SEEDER = load("services.creation.seeder")
 _LOADER = load("services.lorebook.loader")
@@ -65,44 +66,8 @@ _BOOK_NO_CAST = (
 )
 
 
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-        self.infos: list = []
-
-    def info(self, *a, **k):
-        self.infos.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
 
 
-class _FakeStore(KvStoreMixin):
-    def __init__(self):
-        self.chronicle: list = []
-        self.kv_str: dict = {}
-        self.kv_int: dict = {}
-
-    def get_kv_int(self, key):
-        return self.kv_int.get(key, 0)
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def append_chronicle(self, scope, kind, text, ts):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
 
 
 class _FakeCreator:
@@ -148,8 +113,8 @@ def _make_engine(
         anchor=SimpleNamespace(guard_keywords=[]),
         seeder=seeder,
     )
-    logger = _Logger()
-    store = _FakeStore()
+    logger = FakeLogger()
+    store = FakeStore()
     plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _store=store)
     plugin._lorebook = _make_loader(lorebook_text)
     if known_uids:

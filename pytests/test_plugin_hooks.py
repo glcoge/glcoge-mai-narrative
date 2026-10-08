@@ -21,6 +21,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
+from pytests._synth_loader import FakeStore  # noqa: E402
 
 _COMPONENT_INFO_ATTR = "__maibot_component_info__"
 
@@ -34,23 +35,12 @@ outbound_text_len = _MESSAGE.outbound_text_len
 MaiNarrativePlugin = _PLUGIN.MaiNarrativePlugin
 
 
-class _FakeStore:
-    """捕获 append_metric 调用的假 store（真实 Telemetry 的写入目标）。"""
-
-    def __init__(self) -> None:
-        self.metric_rows: list = []
-
-    def append_metric(self, name, value, user_id="", scope="", ts=None) -> None:
-        self.metric_rows.append(
-            SimpleNamespace(name=name, value=value, user_id=user_id, scope=scope)
-        )
-
 
 def _make_plugin(*, narrative_enabled: bool = True, telemetry_enabled: bool = True) -> tuple:
     """构造绕过 __init__ 的插件实例 + 真实 Telemetry（假 store 承接采样）。
 
     C5 之后 hook 只调用 Telemetry.note_inbound/note_outbound，故 hook 回归测试
-    走真实 Telemetry，采样断言落在 store.metric_rows。
+    走真实 Telemetry，采样断言落在 store.metrics。
     """
     plugin = MaiNarrativePlugin.__new__(MaiNarrativePlugin)
     # config 是 SDK 的只读 property（读 _plugin_config_instance），测试直接注入内层实例
@@ -64,7 +54,7 @@ def _make_plugin(*, narrative_enabled: bool = True, telemetry_enabled: bool = Tr
         plugin=SimpleNamespace(enabled=True),
         telemetry=SimpleNamespace(enabled=telemetry_enabled),
     )
-    store = _FakeStore()
+    store = FakeStore()
     logger = _stdlib_logging.getLogger("narrative-hook-test")
     # Telemetry 只依赖 plugin.config / plugin._store / plugin.ctx.logger，用替身组装
     telemetry = _PLUGIN.Telemetry(
@@ -116,10 +106,10 @@ def test_rounds_paired_with_user_id():
 
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    rounds = [r for r in store.metric_rows if r.scope == "rounds"]
+    rounds = [r for r in store.metrics if r["scope"] == "rounds"]
     assert len(rounds) == 1, f"应配对 1 轮，实际 {len(rounds)}"
-    assert rounds[0].value == 1
-    assert rounds[0].user_id == "u1", f"rounds 应带 user_id=u1，实际 {rounds[0].user_id!r}"
+    assert rounds[0]["value"] == 1
+    assert rounds[0]["user_id"] == "u1", f"rounds 应带 user_id=u1，实际 {rounds[0]["user_id"]!r}"
     # 配对后待办应被消费
     assert "s1" not in telemetry._pending_round
     # 出站时刻应更新 _last_bot_sent（指标 1 判定的依据）
@@ -131,9 +121,9 @@ def test_bot_msg_len_from_text_components():
     plugin, _telemetry, store = _make_plugin()
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    bot = [r for r in store.metric_rows if r.scope == "bot_msg_len"]
+    bot = [r for r in store.metrics if r["scope"] == "bot_msg_len"]
     assert len(bot) == 1, f"应记录 1 条 bot_msg_len，实际 {len(bot)}"
-    assert bot[0].value == 2.0, f"文本'对呀'长度应为 2，实际 {bot[0].value}"
+    assert bot[0]["value"] == 2.0, f"文本'对呀'长度应为 2，实际 {bot[0]["value"]}"
 
 
 def test_round_window_expiry():
@@ -144,7 +134,7 @@ def test_round_window_expiry():
 
     asyncio.run(plugin.handle_post_send(**_payload()))
 
-    assert not [r for r in store.metric_rows if r.scope == "rounds"]
+    assert not [r for r in store.metrics if r["scope"] == "rounds"]
     assert "s1" not in telemetry._pending_round  # 超窗的待办同样被消费丢弃
 
 
