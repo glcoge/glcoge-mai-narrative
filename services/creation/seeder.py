@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..kvkeys import SEED_COUNT as _SEED_COUNT_KEY
 from ..kvkeys import SEED_LAST_TRY as _SEED_LAST_TRY_KEY
 from .event_entity import make_seed_event
+from .pipeline import commit_created_event, interval_gate, log_guard_reject
 
 __all__ = [
     "SEEDER_BAN_RULE",
@@ -179,14 +180,6 @@ def _parse_seed_output(raw: str) -> Tuple[Dict[str, str], str, bool]:
     return {"importance": _DEFAULT_IMPORTANCE, "urgency": _DEFAULT_URGENCY}, text, True
 
 
-def _parse_iso(value: str) -> Optional[datetime.datetime]:
-    """ISO 串 → datetime（解析不出返回 None，调用端 fail-closed）。"""
-    try:
-        return datetime.datetime.fromisoformat(str(value or ""))
-    except (TypeError, ValueError):
-        return None
-
-
 async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] = None) -> None:
     """播种 tick：四闸 → 生成 → 拦截 → 落账（异常由 engine tick 的 try/except 兜住）。"""
     cfg = engine._plugin.config
@@ -199,12 +192,11 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
     current = now or engine._local_now()
     store = engine._store
 
-    # ② interval 闸：距上次尝试未满间隔 → 本 tick 直接返回
-    last_try = _parse_iso(store.get_kv_str(_SEED_LAST_TRY_KEY))
-    interval_minutes = max(1, int(seeder_cfg.interval_minutes))
-    if last_try is not None and (current - last_try).total_seconds() < interval_minutes * 60:
+    # ② interval 闸：距上次尝试未满间隔 → 本 tick 直接返回（基元语义与原内联一致）
+    if not interval_gate(store, _SEED_LAST_TRY_KEY, current, minutes=max(1, int(seeder_cfg.interval_minutes))):
         return
     # 推进 last_try：本 interval 只尝试一次（概率失败/生成失败/被拦截都不重试）
+    # ⚠️ 与 life 的「成功后推进」是**真语义差异**（深化 A 差异表），编排保留本地。
     store.set_kv_str(_SEED_LAST_TRY_KEY, current.isoformat(timespec="seconds"))
 
     # ③ 概率闸：低概率起步（HDSI 量级：期望每天 1~2 条，见 config 注释）
@@ -238,37 +230,29 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
         telemetry = getattr(engine._plugin, "_telemetry", None)
         if telemetry is not None:
             telemetry.record(SEED_BLOCKED_METRIC, 1, scope="seeder")
-        engine._plugin.ctx.logger.warning(
-            "播种事件命中参与者拦截（命中=%s）→ 已丢弃，不入库；原文: %s",
-            hit,
-            event_text[:60],
+        # 统一格式助手（深化 A）：ellipsis=False 保 seeder 现行裸截断文案。
+        log_guard_reject(
+            engine._plugin.ctx.logger,
+            label=f"播种事件命中参与者拦截（命中={hit}）",
+            text=event_text,
+            ellipsis=False,
         )
         return
 
     # 落账双写：事件实体（kind=seed，与 fragment 同池同容量 LRU）+ 编年史 life_seed
-    inner = state["state"]
-    focus = inner.setdefault("focus", {})
-    pending = list(focus.get("pending_events", []))
-    pending.append(
-        make_seed_event(
+    # ——尾段收口至 pipeline.commit_created_event（深化 A）。
+    commit_created_event(
+        engine,
+        state,
+        entry=make_seed_event(
             ts=current.isoformat(timespec="seconds"),
             text=event_text,
             importance=meta["importance"],
             urgency=meta["urgency"],
-        )
+        ),
+        chronicle_kind="life_seed",
+        now=current,
     )
-    focus["pending_events"] = pending[-max(1, int(cfg.narrative.fragment_pending_max)):]
-    engine.save_self_state(state)
-
-    if cfg.narrative.chronicle_enabled:
-        from ..state.engine import _SELF_SCOPE  # 延迟导入：避开 engine ↔ seeder 循环
-
-        engine._store.append_chronicle(
-            _SELF_SCOPE,
-            "life_seed",
-            event_text,
-            current.isoformat(timespec="seconds"),
-        )
 
     store.set_kv_int(count_key, store.get_kv_int(count_key) + 1)
     engine._plugin.ctx.logger.info(

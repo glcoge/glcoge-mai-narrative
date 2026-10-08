@@ -20,11 +20,15 @@ import random
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..kvkeys import LIFE_FRAGMENT_COUNT as _LIFE_COUNT_KEY
+from ..kvkeys import LIFE_FRAGMENT_HIGHLIGHT_COUNT as _LIFE_HIGHLIGHT_COUNT_KEY
+from ..kvkeys import LIFE_FRAGMENT_LAST_TS as _LIFE_LAST_TS_KEY
 from ..render.audience import visible_events
 from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
 from ..learning.suggestion import tendency_prompt_block
 from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 from .event_entity import make_fragment_event
+from .pipeline import commit_created_event, daily_cap_gate, interval_gate, log_guard_reject
 
 #: 通信事实标记（批 4-C9 / R25 / ADR-0003 §8；E8 裁定 (b)：**只做合约句**，
 #: 注入真实发送清单需接宿主账本，留收尾里程碑）。
@@ -78,7 +82,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     today = current.strftime("%Y-%m-%d")
     state = engine.load_self_state()
     routine = state["state"].setdefault("routine", {})
-    day_count = engine._store.get_kv_int(f"life_fragment:count:{today}")
+    day_count = engine._store.get_kv_int(f"{_LIFE_COUNT_KEY}{today}")
 
     # 睡眠闸门（v0.1.10）：睡着不生产生活片段。
     # 这是「日记里每天都有深夜还醒着」的根因修复——此前创作层只有间隔与日上限两道
@@ -94,18 +98,15 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
 
     if not wake_fragment:
         # 每日次数上限
-        if day_count >= int(cfg.narrative.life_fragment_daily_max):
+        if not daily_cap_gate(engine._store, f"{_LIFE_COUNT_KEY}{today}", cap=int(cfg.narrative.life_fragment_daily_max)):
             return
 
-        # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）
-        last_ts = engine._store.get_kv_str("life_fragment:last_ts")
-        if last_ts:
-            try:
-                last_dt = datetime.fromisoformat(last_ts)
-                if (current - last_dt).total_seconds() < int(cfg.narrative.life_fragment_interval_minutes) * 60:
-                    return
-            except (TypeError, ValueError):
-                pass
+        # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）。
+        # 基元语义与原内联实现一致（坏时间戳放行、严格 < 比较）——深化 A。
+        if not interval_gate(
+            engine._store, _LIFE_LAST_TS_KEY, current, minutes=int(cfg.narrative.life_fragment_interval_minutes)
+        ):
+            return
 
     # 收集素材：全部模式用户的支线事件（最近一条对话素材 → 生活的原料）
     materials: List[str] = []
@@ -142,11 +143,12 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
         # world_rules 切出来的短碎片（如「尾巴」「角」），只看命中片段无法分辨
         # 「真违规」与「误伤」（真机 2026-09-27 16:02 就丢过一条只因出现「尾巴」）。
         # 没有原文就只能事后猜，这正是误伤率长期无法收敛的原因。
-        engine._plugin.ctx.logger.warning(
-            "生活片段命中锚定守卫（world_rules/values/禁用片段）→ 已丢弃，不入库；"
-            "命中片段: %s；原文: %s",
-            guard_violations(text, guard_set)[:5],
-            (text[:60] + "…") if len(text) > 60 else text,
+        # 统一格式助手（深化 A）：label/detail 传参保文案逐字节不变。
+        log_guard_reject(
+            engine._plugin.ctx.logger,
+            label="生活片段命中锚定守卫（world_rules/values/禁用片段）",
+            detail=f"命中片段: {guard_violations(text, guard_set)[:5]}",
+            text=text,
         )
         return
 
@@ -156,49 +158,36 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     if telemetry is not None:
         telemetry.note_fragment(state, text)
 
-    # 双写：pending_events（有界）+ 编年史（append-only）
-    inner = state["state"]
-    focus = inner.setdefault("focus", {})
-    pending = list(focus.get("pending_events", []))
+    # 双写：pending_events（有界）+ 编年史（append-only）——落账尾段收口至
+    # pipeline.commit_created_event（深化 A；LRU/save/chronicle 条件写单一实现，
+    # 「生活片段照常生成、仅写入步骤受 chronicle_enabled 约束」语义在基元内保留）。
     # highlight 随片段落库（Q14）：true 则 chronicle kind=life_highlight（进晋升证据池），
     # 且由头端给 2 倍权重（占槽实现，见 sourcing.build_bysource）。
     # 批 0（R41）：条目升级为事件实体（event_id + kind=fragment）——构造单一入口
     # 在 creation/event_entity.py；text/ts/highlight 原语义不变，读取端零迁移。
-    pending.append(
-        make_fragment_event(
+    commit_created_event(
+        engine,
+        state,
+        entry=make_fragment_event(
             ts=current.isoformat(timespec="seconds"),
             text=text,
             highlight=highlight,
-        )
+        ),
+        chronicle_kind="life_highlight" if highlight else "life",
+        now=current,
     )
-    # 容量取自配置（方案 §7 / P20）：max(1,·) 防 0——pending[-0:] 是「全量」不是
-    # 「空」，容量语义下 0 无意义（config 侧已 ge=1，此处兜住测试夹具绕过校验的情况）。
-    focus["pending_events"] = pending[-max(1, int(cfg.narrative.fragment_pending_max)):]
-    engine.save_self_state(state)
-    # 生活片段照常生成（pending_events 是主动消息的由头来源，不能断），
-    # 仅"写入编年史"这一步受 chronicle_enabled 约束（2026-09-16：
-    # 此前该开关管不到 life，名不副实）
-    if cfg.narrative.chronicle_enabled:
-        from ..state.engine import _SELF_SCOPE
-
-        engine._store.append_chronicle(
-            _SELF_SCOPE,
-            "life_highlight" if highlight else "life",
-            text,
-            current.isoformat(timespec="seconds"),
-        )
 
     # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
     # 起床补一段豁免日上限（它是状态转换的必然产物，不是可选的创作），
     # 但仍推进 last_ts——否则醒来后第一段正常片段会紧接着挤进来。
-    engine._store.set_kv_str("life_fragment:last_ts", current.isoformat(timespec="seconds"))
+    engine._store.set_kv_str(_LIFE_LAST_TS_KEY, current.isoformat(timespec="seconds"))
     if not wake_fragment:
-        engine._store.set_kv_int(f"life_fragment:count:{today}", day_count + 1)
+        engine._store.set_kv_int(f"{_LIFE_COUNT_KEY}{today}", day_count + 1)
     # 高光计数（P19）：只在本段成功落库后推进（守卫丢弃在上方已 return，不占配额）
     if highlight:
         engine._store.set_kv_int(
-            f"life_fragment:highlight:count:{today}",
-            engine._store.get_kv_int(f"life_fragment:highlight:count:{today}") + 1,
+            f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}",
+            engine._store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") + 1,
         )
     # 话题归因（批 3-C5 / R16，ADR-0003 §7）：片段自身主题**降权**累积，
     # 防「她写猫 → 素材全猫 → 对人人讲猫」的自主信息茧房
@@ -227,7 +216,7 @@ def _draw_highlight(engine: Any, today: str, *, wake: bool) -> bool:
     cfg = engine._plugin.config
     if wake or not cfg.narrative.life_fragment_detail_enabled:
         return False
-    if engine._store.get_kv_int(f"life_fragment:highlight:count:{today}") >= _HIGHLIGHT_DAILY_MAX:
+    if engine._store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") >= _HIGHLIGHT_DAILY_MAX:
         return False
     return _rng.random() < float(cfg.narrative.highlight_probability)
 
