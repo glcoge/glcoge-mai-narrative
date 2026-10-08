@@ -23,6 +23,7 @@ from ..creation.life import (
     maybe_generate_life_fragment as _maybe_generate_life_fragment,
 )
 from ..creation.seeder import maybe_seed_world_event as _maybe_seed_world_event
+from ..deps import Deps
 from ..kvkeys import BRANCH_PREFIX as _BRANCH_PREFIX
 from ..kvkeys import SELF_SCOPE as _SELF_SCOPE
 from ..proactive.sourcing import (
@@ -276,12 +277,67 @@ def default_branch_state() -> Dict[str, Any]:
 class NarrativeEngine:
     """世界引擎：加载状态 → 规则 tick → 事件入队 → 由头签发。"""
 
+    #: 依赖束（深化 B）。**类级默认 None**：单测常用 ``__new__`` 绕过 ``__init__``，
+    #: ``deps`` 属性据此判定走懒组装兼容通道（同 ``_style_inject_count`` 类级默认的理由）。
+    _deps: Optional[Deps] = None
+
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
         self._store: NarrativeStore = plugin._store
         self._creator = CreatorClient(plugin)
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._deps = self._assemble_deps()
+
+    # ─── 依赖束（深化 B / grilling Q1a）───────────────────────────────
+
+    @property
+    def deps(self) -> Deps:
+        """当前依赖快照：真实实例读装配结果，``__new__`` 旧桩现场懒组装。
+
+        懒组装**不缓存**（每次现场取）：旧桩常以可变 ``_plugin`` 驱动用例，
+        缓存会让「换 config 再调一次」的既有用例看到陈旧快照。
+        """
+        if self._deps is not None:
+            return self._deps
+        return self._assemble_deps()
+
+    def _assemble_deps(self) -> Deps:
+        """装配依赖快照（唯一装配实现；构造 / 懒组装 / 重绑定三处共用）。
+
+        可选子系统与旧桩缺字段统一走 getattr——与现行消费点
+        （``getattr(engine._plugin, "_telemetry", None)`` 等）宽容语义逐字一致；
+        生产实例后建的子系统由 ``on_load`` 尾部 ``rebind_deps()`` 补全。
+        """
+        plugin = self._plugin
+        config = plugin.config
+        ctx_config = getattr(plugin.ctx, "config", None)
+
+        def _local_now() -> datetime:
+            # 读快照 config 的时区偏移（配置换新经 rebind_deps 重建本闭包）
+            return local_now(config.narrative.timezone_offset_hours)
+
+        return Deps(
+            config=config,
+            store=self._store,
+            logger=plugin.ctx.logger,
+            local_now=_local_now,
+            state=self,
+            creator=getattr(self, "_creator", None),
+            telemetry=getattr(plugin, "_telemetry", None),
+            lorebook=getattr(plugin, "_lorebook", None),
+            streams=getattr(plugin, "_streams", None),
+            group_streams=getattr(plugin, "_group_streams", None),
+            native_config_get=ctx_config.get if ctx_config is not None else None,
+        )
+
+    def rebind_deps(self) -> None:
+        """按当前 plugin 状态重装依赖快照（``on_load`` 尾部 + 配置热重载调用点）。
+
+        engine 持有的子系统（CreatorClient 等）在 B 各批转换时于此级联刷新；
+        plugin 持有的（scheduler / promotion）由 ``on_config_update`` 各自级联。
+        """
+        self._deps = self._assemble_deps()
 
     # ─── 生命周期 ────────────────────────────────────────────────
 

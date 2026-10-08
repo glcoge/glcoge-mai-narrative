@@ -259,6 +259,9 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # REPLY_EXTENSION 全名（批 4 / R39）：宿主 plugin_options 的键 = f"{plugin_id}.{name}"
         # （component_registry:116），id 以 _manifest.json 为准（版本号同源读取先例）
         self.reply_extension_full_name = f"{self._manifest_id()}.{_REPLY_EXTENSION_NAME}"
+        # 依赖束完成装配（深化 B）：engine 构造时 streams / lorebook 等尚未建，
+        # 此处补全快照——必须在 _reconcile_all 之前（tick 一启动就会读 deps）
+        self._engine.rebind_deps()
         await self._reconcile_all()
         # R14：启动期锚定一致性比对（默认关，见 [anchor].consistency_check）。
         # 放在 _reconcile_all 之后、watchdog 之前——即便它慢/失败，后台任务已就绪。
@@ -452,6 +455,11 @@ class MaiNarrativePlugin(MaiBotPlugin):
             "mai-narrative 配置更新: scope=%s version=%s（任务按新配置重排）",
             scope, version,
         )
+        # 依赖束重绑定（深化 B）：宿主在本回调**之前**已装入新配置实例
+        # （runner _handle_config_updated 先 set_plugin_config 后回调），
+        # engine 必须换新快照，否则 tick / reconcile 永远读旧配置
+        if self._engine is not None:
+            self._engine.rebind_deps()
         # 窗口规则改完立刻生效（调度器每 30s 重读），非法条目必须当场点名
         self._warn_window_rule_problems()
         await self._reconcile_all()
