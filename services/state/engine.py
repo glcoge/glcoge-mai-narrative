@@ -931,11 +931,11 @@ class NarrativeEngine:
 
         实现已迁至 ``creation/chronicle.py``（见其文档字符串：日期归属与幂等键）。
         """
-        await _maybe_daily_chronicle(self, now)
+        await _maybe_daily_chronicle(self.deps, now)  # DEPRECATED(B)
 
     async def _load_native_personality(self) -> str:
         """读取主程序原生 [personality].personality（实现已迁 creation/chronicle.py）。"""
-        return await _load_native_personality(self)
+        return await _load_native_personality(self.deps)  # DEPRECATED(B)
 
     # ─── 创作层：生活片段生成器（v0.1.3 新增，唯一的日常 LLM 创作节点） ──
     # 实现已迁至 ``creation/life.py``（v0.2.0 批 2-C7「类拆分推迟表」）。
@@ -943,11 +943,11 @@ class NarrativeEngine:
 
     async def maybe_generate_life_fragment(self, now: Optional[datetime] = None) -> None:
         """创作层消费器：闸门下生成一段"生活片段"（实现已迁 creation/life.py）。"""
-        await _maybe_generate_life_fragment(self, now)
+        await _maybe_generate_life_fragment(self.deps, now)  # DEPRECATED(B)
 
     async def maybe_seed_world_event(self, now: Optional[datetime] = None) -> None:
         """世界事件播种 tick（批 2 / R40）：实现见 ``creation/seeder.py``（四闸自控频率）。"""
-        await _maybe_seed_world_event(self, now)
+        await _maybe_seed_world_event(self.deps, now)  # DEPRECATED(B)
 
     def _build_life_fragment_prompt(
         self,
@@ -959,8 +959,8 @@ class NarrativeEngine:
         wake: bool = False,
     ) -> str:
         """构造生活片段生成 prompt（实现已迁 creation/life.py）。"""
-        return _build_life_fragment_prompt(
-            self, now, state, materials, persona=persona, highlight=highlight, wake=wake
+        return _build_life_fragment_prompt(  # DEPRECATED(B)
+            self.deps, now, state, materials, persona=persona, highlight=highlight, wake=wake
         )
 
     def _build_chronicle_prompt(
@@ -971,7 +971,7 @@ class NarrativeEngine:
         persona: str = "",
     ) -> str:
         """构造编年史压缩 prompt（实现已迁 creation/chronicle.py）。"""
-        return _build_chronicle_prompt(self, now, state, materials, persona=persona)
+        return _build_chronicle_prompt(self.deps, now, state, materials, persona=persona)  # DEPRECATED(B)
 
 
 __all__ = [

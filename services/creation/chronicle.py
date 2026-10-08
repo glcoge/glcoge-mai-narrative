@@ -3,13 +3,13 @@
 从 ``state/engine.py`` 拆出（v0.2.0 批 2-C7，执行路线「类拆分推迟表」）：
 ``maybe_daily_chronicle`` / ``_build_chronicle_prompt`` / ``_load_native_personality``。
 
-依赖方向：本模块接受 ``engine`` 实例（不持有状态），engine 侧保留一层薄委托方法，
+依赖方向：本模块接受 ``deps`` 依赖束（深化 B）（不持有状态），engine 侧保留一层薄委托方法（B1 起传 ``self.deps``），
 对外 API 不变（``engine.maybe_daily_chronicle`` 等照旧）——与 ``proactive/sourcing.py``
 同一约定（改可见性会连带 33+ 处测试绑定点，纯移动不该动它们）。
 
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
-import engine。``_SELF_SCOPE`` / ``parse_clock`` 采用函数内延迟导入。
-``render.audience`` 不 import engine，可以顶层 import。
+import ``state.engine``。``_SELF_SCOPE`` / ``parse_clock`` 采用函数内延迟导入。
+``render.audience`` 不 import ``state.engine``，可以顶层 import。
 """
 
 from __future__ import annotations
@@ -21,16 +21,16 @@ from ..render.audience import visible_events
 from .life import COMM_FACT_RULE
 
 
-async def load_native_personality(engine: Any) -> str:
+async def load_native_personality(deps: Any) -> str:
     """读取主程序原生 [personality].personality（人设唯一来源，失败降级为空串）。"""
     try:
-        return str(await engine._plugin.ctx.config.get("personality.personality", "") or "").strip()
+        return str(await deps.native_config_get("personality.personality", "") or "").strip()
     except Exception as exc:
-        engine._plugin.ctx.logger.debug("读取原生 personality 失败: %s", exc)
+        deps.logger.debug("读取原生 personality 失败: %s", exc)
         return ""
 
 
-async def maybe_daily_chronicle(engine: Any, now: Optional[datetime] = None) -> None:
+async def maybe_daily_chronicle(deps: Any, now: Optional[datetime] = None) -> None:
     """当日有互动时，用轻量模型生成一条"今日小结"写入编年史（kind=daily）。
 
     日期归属（2026-09-16 接线时修正）：目标日期 = **触发点所属的那一天**。
@@ -40,7 +40,7 @@ async def maybe_daily_chronicle(engine: Any, now: Optional[datetime] = None) -> 
     """
     from ..state.engine import _SELF_SCOPE, parse_clock
 
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return
     if not cfg.narrative.chronicle_enabled:
@@ -49,13 +49,13 @@ async def maybe_daily_chronicle(engine: Any, now: Optional[datetime] = None) -> 
     if trigger is None:
         return
 
-    current = now or engine._local_now()
-    state = engine.load_self_state()
+    current = now or deps.local_now()
+    state = deps.state.load_self_state()
 
     # 睡眠态启用时，等**真正入睡**才写：一天到入睡才算结束。
     # 旧行为是「过了 daily_chronicle_time 就写」，但入睡可能因仍在聊被推迟
     # （最多 sleep_delay_max_minutes），那样小结会漏掉入睡前的最后一段对话。
-    if engine._sleep_configured() and str(
+    if deps.state._sleep_configured() and str(
         state["state"].get("routine", {}).get("sleep_state", "awake")
     ) != "asleep":
         return
@@ -67,7 +67,7 @@ async def maybe_daily_chronicle(engine: Any, now: Optional[datetime] = None) -> 
 
     # 幂等统一走 store 的标准键。旧代码手写的 ``chronicle:done:{today}``
     # 与 is_chronicle_done 用的 ``chronicle:{scope}:{kind}:{date}`` 是两套并存。
-    if engine._store.is_chronicle_done(_SELF_SCOPE, "daily", date_text):
+    if deps.store.is_chronicle_done(_SELF_SCOPE, "daily", date_text):
         return
 
     if state["state"].get("last_talk_date") != date_text:
@@ -77,35 +77,35 @@ async def maybe_daily_chronicle(engine: Any, now: Optional[datetime] = None) -> 
     for user_id in (cfg.narrative.mode_user_ids or []):
         # 受众过滤（ADR-0004）：此处 scope 已是 branch:{user_id}，当前等价于原行为；
         # 走过滤入口是为跨用户取材（C4）预留——届时涉私原文不会进创作 prompt。
-        for item in visible_events(engine._store, f"branch:{user_id}", user_id, 50):
+        for item in visible_events(deps.store, f"branch:{user_id}", user_id, 50):
             if str(item.get("ts", "")).startswith(date_text):
                 materials.append(str(item.get("bysource", "")))
 
-    persona = await load_native_personality(engine)
+    persona = await load_native_personality(deps)
     # prompt 里的日期取自入参 now，故传目标日期而非当前时刻
     target_dt = datetime.combine(target_date, trigger)
-    prompt = build_chronicle_prompt(engine, target_dt, state, materials, persona=persona)
+    prompt = build_chronicle_prompt(deps, target_dt, state, materials, persona=persona)
     if cfg.llm.show_prompt:
-        engine._plugin.ctx.logger.info("编年史 prompt: %s", prompt[:300])
+        deps.logger.info("编年史 prompt: %s", prompt[:300])
 
-    text = await engine._creator.generate(prompt)
+    text = await deps.creator.generate(prompt)
     if text:
-        engine._store.append_chronicle(
+        deps.store.append_chronicle(
             _SELF_SCOPE, "daily", text, target_dt.isoformat(timespec="seconds")
         )
-        engine._plugin.ctx.logger.info("编年史今日小结已写入: %s", date_text)
-    engine._store.mark_chronicle_done(_SELF_SCOPE, "daily", date_text)
+        deps.logger.info("编年史今日小结已写入: %s", date_text)
+    deps.store.mark_chronicle_done(_SELF_SCOPE, "daily", date_text)
 
 
 def build_chronicle_prompt(
-    engine: Any,
+    deps: Any,
     now: datetime,
     state: Dict[str, Any],
     materials: Sequence[str],
     persona: str = "",
 ) -> str:
     """构造编年史压缩 prompt（40~90 字的一日小结，第一人称）。"""
-    cfg = engine._plugin.config
+    cfg = deps.config
     identity = cfg.identity
     inner = state["state"]
     personality = (

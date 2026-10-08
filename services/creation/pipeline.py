@@ -83,7 +83,7 @@ def log_guard_reject(
 
 
 def commit_created_event(
-    engine: Any,
+    deps: Any,
     state: Dict[str, Any],
     *,
     entry: Dict[str, Any],
@@ -99,18 +99,18 @@ def commit_created_event(
     - 编年史受 ``chronicle_enabled`` 约束（2026-09-16：创作照常、仅写入步骤
       受开关管——pending_events 是由头来源，不能断）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     inner = state["state"]
     focus = inner.setdefault("focus", {})
     pending = list(focus.get("pending_events", []))
     pending.append(entry)
     focus["pending_events"] = pending[-max(1, int(cfg.narrative.fragment_pending_max)):]
-    engine.save_self_state(state)
+    deps.state.save_self_state(state)
 
     if cfg.narrative.chronicle_enabled:
         from ..state.engine import _SELF_SCOPE  # 延迟导入：避开 engine ↔ pipeline 循环
 
-        engine._store.append_chronicle(
+        deps.store.append_chronicle(
             _SELF_SCOPE,
             chronicle_kind,
             str(entry.get("text", "") or ""),

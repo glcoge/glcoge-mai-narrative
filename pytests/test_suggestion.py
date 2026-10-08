@@ -214,7 +214,7 @@ def test_ab_conflict_both_stored_one_event_prompt_shows_both():
     assert len(suggestions) == 2, "两条冲突倾向都留痕（bot 自主决策的输入）"
 
     prompt = build_life_fragment_prompt(
-        engine,
+        engine.deps,
         _NOW,
         engine._self_state,
         materials=[],
@@ -228,7 +228,7 @@ def test_ab_conflict_both_stored_one_event_prompt_shows_both():
 
 def _prompt_with(pending):
     engine = _make_engine(pending=pending)
-    return build_life_fragment_prompt(engine, _NOW, engine._self_state, materials=[])
+    return build_life_fragment_prompt(engine.deps, _NOW, engine._self_state, materials=[])
 
 
 def test_tendency_block_absent_without_suggestions():
@@ -289,7 +289,7 @@ def test_suggestion_text_stays_out_of_materials_section():
     ]
     engine = _make_engine(pending=[entry])
     prompt = build_life_fragment_prompt(
-        engine, _NOW, engine._self_state, materials=["一段与建议无关的素材"]
+        engine.deps, _NOW, engine._self_state, materials=["一段与建议无关的素材"]
     )
     material_line = next(
         line for line in prompt.splitlines() if line.startswith("- 一段与建议无关的素材")

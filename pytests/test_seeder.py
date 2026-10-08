@@ -161,7 +161,7 @@ def test_disabled_noop(monkeypatch):
     engine = _make_engine(seeder=_synth_loader.seeder_config(enabled=False))
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert engine._creator.prompts == []
     assert engine._store.get_kv_str("seed:last_try") == ""
 
@@ -177,7 +177,7 @@ def test_interval_gate_blocks_recent_try(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert engine._creator.prompts == []
 
 
@@ -192,7 +192,7 @@ def test_interval_elapsed_advances_last_try(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert engine._store.get_kv_str("seed:last_try") == _NOW.isoformat(timespec="seconds")
 
 
@@ -204,7 +204,7 @@ def test_probability_gate_fails(monkeypatch):
     )
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert engine._creator.prompts == []
     assert engine._store.get_kv_str("seed:last_try") == _NOW.isoformat(timespec="seconds")
 
@@ -217,7 +217,7 @@ def test_daily_max_blocks(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert engine._creator.prompts == []
 
 
@@ -231,7 +231,7 @@ def test_success_double_write(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
 
     pending = _pending(engine)
     assert len(pending) == 1
@@ -255,7 +255,7 @@ def test_prompt_carries_ban_rule_and_context(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
 
     prompt = engine._creator.prompts[0]
     assert "不得涉及任何真实用户" in prompt, "禁令段是模板常量，缺失即红线破防"
@@ -277,7 +277,7 @@ def test_participant_uid_blocked(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
 
     assert _pending(engine) == [], "命中参与者 → 不入库"
     assert engine._store.chronicle == []
@@ -298,7 +298,7 @@ def test_blocked_name_hit(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert _pending(engine) == []
 
 
@@ -314,7 +314,7 @@ def test_gid_blocked(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert _pending(engine) == []
 
 
@@ -331,7 +331,7 @@ def test_streams_uid_blocked(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert _pending(engine) == []
 
 
@@ -342,7 +342,7 @@ def test_parse_failure_downgrades(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
 
     entry = _pending(engine)[0]
     assert entry["kind"] == "seed"
@@ -359,7 +359,7 @@ def test_empty_cast_still_generates(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
 
     prompt = engine._creator.prompts[0]
     assert "面馆老板娘" not in prompt
@@ -374,7 +374,7 @@ def test_generation_empty_text_noop(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert _pending(engine) == []
     assert engine._store.get_kv_int("seed:count:2026-10-07") == 0
 
@@ -392,7 +392,7 @@ def test_blocked_does_not_consume_quota(monkeypatch):
 
     import asyncio
 
-    asyncio.run(maybe_seed_world_event(engine, _NOW))
+    asyncio.run(maybe_seed_world_event(engine.deps, _NOW))
     assert _pending(engine) == []
     assert engine._store.get_kv_int("seed:count:2026-10-07") == 0, "拦截不消耗配额"
 

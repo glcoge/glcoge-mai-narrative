@@ -26,6 +26,7 @@ from pytests._synth_loader import load  # noqa: E402
 from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _PIPELINE = load("services.creation.pipeline")
+_Deps = load("services.deps").Deps
 
 interval_gate = _PIPELINE.interval_gate
 daily_cap_gate = _PIPELINE.daily_cap_gate
@@ -39,7 +40,8 @@ _NOW = datetime.datetime(2026, 10, 8, 12, 0, 0)
 
 
 
-def _make_engine(*, chronicle_enabled=True, pending_max=12):
+def _make_deps(*, chronicle_enabled=True, pending_max=12):
+    """直接建 Deps（commit_created_event 吃 deps 不吃 engine；最小依赖面）。"""
     config = SimpleNamespace(
         narrative=SimpleNamespace(
             chronicle_enabled=chronicle_enabled,
@@ -48,12 +50,14 @@ def _make_engine(*, chronicle_enabled=True, pending_max=12):
     )
     store = FakeStore()
     saved: list = []
-    engine = SimpleNamespace(
-        _plugin=SimpleNamespace(config=config),
-        _store=store,
-        save_self_state=lambda state: saved.append(state),
+    deps = _Deps(
+        config=config,
+        store=store,
+        logger=make_logger(),
+        local_now=lambda: _NOW,
+        state=SimpleNamespace(save_self_state=lambda state: saved.append(state)),
     )
-    return engine, store, saved
+    return deps, store, saved
 
 
 # ===== 闸门基元 =====
@@ -136,12 +140,12 @@ def test_log_guard_reject_without_detail_no_ellipsis():
 
 def test_commit_appends_and_saves():
     """entry 进 pending_events + save 被调 + chronicle 写入（kind/ts 正确）。"""
-    engine, store, saved = _make_engine()
+    deps, store, saved = _make_deps()
     state = {"state": {"focus": {"pending_events": []}}}
     entry = {"ts": _NOW.isoformat(timespec="seconds"), "text": "一段新生活", "highlight": False}
 
     commit_created_event(
-        engine, state, entry=entry, chronicle_kind="life", now=_NOW
+        deps, state, entry=entry, chronicle_kind="life", now=_NOW
     )
 
     assert state["state"]["focus"]["pending_events"] == [entry]
@@ -153,14 +157,14 @@ def test_commit_appends_and_saves():
 
 def test_commit_lru_truncates():
     """容量 2 塞 3 条 → 最早一条被挤出（与既有 test_fragment_pending_capacity 同语义）。"""
-    engine, store, saved = _make_engine(pending_max=2)
+    deps, store, saved = _make_deps(pending_max=2)
     state = {"state": {"focus": {"pending_events": [{"ts": "t1", "text": "最旧"}]}}}
 
     commit_created_event(
-        engine, state, entry={"ts": "t2", "text": "次新"}, chronicle_kind="life", now=_NOW
+        deps, state, entry={"ts": "t2", "text": "次新"}, chronicle_kind="life", now=_NOW
     )
     commit_created_event(
-        engine, state, entry={"ts": "t3", "text": "最新"}, chronicle_kind="life", now=_NOW
+        deps, state, entry={"ts": "t3", "text": "最新"}, chronicle_kind="life", now=_NOW
     )
 
     pending = state["state"]["focus"]["pending_events"]
@@ -169,11 +173,11 @@ def test_commit_lru_truncates():
 
 def test_commit_chronicle_disabled_skips_write():
     """chronicle_enabled=False → 只进 pending，不写编年史（pending 不断供，2026-09-16 语义）。"""
-    engine, store, saved = _make_engine(chronicle_enabled=False)
+    deps, store, saved = _make_deps(chronicle_enabled=False)
     state = {"state": {"focus": {"pending_events": []}}}
 
     commit_created_event(
-        engine, state, entry={"ts": "t", "text": "片段"}, chronicle_kind="life_seed", now=_NOW
+        deps, state, entry={"ts": "t", "text": "片段"}, chronicle_kind="life_seed", now=_NOW
     )
 
     assert state["state"]["focus"]["pending_events"]

@@ -160,14 +160,14 @@ def test_switch_off_never_draws(monkeypatch):
     """总开关关闭 → 直接 False，且**不碰 RNG**（唯一降级开关，Q8）。"""
     engine = _make_engine(detail_enabled=False)
     _block_rng(monkeypatch)
-    assert _LIFE._draw_highlight(engine, _TODAY, wake=False) is False
+    assert _LIFE._draw_highlight(engine.deps, _TODAY, wake=False) is False
 
 
 def test_wake_fragment_exempt_from_draw(monkeypatch):
     """起床片段豁免抽签：它是状态转换的必然产物，不碰 RNG（Q5）。"""
     engine = _make_engine(detail_enabled=True)
     _block_rng(monkeypatch)
-    assert _LIFE._draw_highlight(engine, _TODAY, wake=True) is False
+    assert _LIFE._draw_highlight(engine.deps, _TODAY, wake=True) is False
 
 
 def test_daily_max_caps_draw(monkeypatch):
@@ -175,16 +175,16 @@ def test_daily_max_caps_draw(monkeypatch):
     engine = _make_engine()
     engine._store.set_kv_int(f"life_fragment:highlight:count:{_TODAY}", _LIFE._HIGHLIGHT_DAILY_MAX)
     _block_rng(monkeypatch)
-    assert _LIFE._draw_highlight(engine, _TODAY, wake=False) is False
+    assert _LIFE._draw_highlight(engine.deps, _TODAY, wake=False) is False
 
 
 def test_probability_boundary(monkeypatch):
     """概率边界：RNG < p 抽中，≥ p 落空（p=0.12）。"""
     engine = _make_engine(probability=0.12)
     _fixed_rng(monkeypatch, 0.11)
-    assert _LIFE._draw_highlight(engine, _TODAY, wake=False) is True
+    assert _LIFE._draw_highlight(engine.deps, _TODAY, wake=False) is True
     _fixed_rng(monkeypatch, 0.13)
-    assert _LIFE._draw_highlight(engine, _TODAY, wake=False) is False
+    assert _LIFE._draw_highlight(engine.deps, _TODAY, wake=False) is False
 
 
 # ===== 落库三件套（Q14） =====
@@ -231,7 +231,7 @@ def test_highlight_count_not_advanced_when_switch_off(monkeypatch):
 
 def _prompt(engine, *, highlight, materials=()):
     return build_life_fragment_prompt(
-        engine, _NOW, engine._self_state, list(materials), persona="一只小麒麟",
+        engine.deps, _NOW, engine._self_state, list(materials), persona="一只小麒麟",
         highlight=highlight,
     )
 

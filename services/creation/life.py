@@ -3,12 +3,12 @@
 从 ``state/engine.py`` 拆出（v0.2.0 批 2-C7，执行路线「类拆分推迟表」）：
 ``maybe_generate_life_fragment`` / ``_draw_highlight`` / ``_build_life_fragment_prompt``。
 
-依赖方向：本模块接受 ``engine`` 实例（不持有状态），engine 侧保留一层薄委托方法，
+依赖方向：本模块接受 ``deps`` 依赖束（深化 B）（不持有状态），engine 侧保留一层薄委托方法（B1 起传 ``self.deps``），
 对外 API 不变——与 ``proactive/sourcing.py`` 同一约定。
 
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
-import engine。``_SELF_SCOPE`` / 档位常量 / ``minutes_until_clock`` 采用函数内延迟导入。
-``render.audience`` 不 import engine，可以顶层 import。
+import ``state.engine``。``_SELF_SCOPE`` / 档位常量 / ``minutes_until_clock`` 采用函数内延迟导入。
+``render.audience`` 不 import ``state.engine``，可以顶层 import。
 
 🔒 **守卫出口**：产出落库前要过双向守卫的第一道（入库前，ADR-0002 §9）。
 本模块是「创作产出」的唯一定义地，故该闸门挂在这里，不散到别处。
@@ -61,7 +61,7 @@ _HIGHLIGHT_DAILY_MAX = 2
 _rng = random.Random()
 
 
-async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = None) -> None:
+async def maybe_generate_life_fragment(deps: Any, now: Optional[datetime] = None) -> None:
     """创作层消费器：间隔 + 每日上限闸门下，用轻量模型生成一段"生活片段"。
 
     目的：让 bot 的"生活"不只是数字变化，而是有一段段可被对话引用的生活故事
@@ -72,17 +72,17 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     只读事件队列，不消费（三个原因：编年史 23:30 也要读同一批素材；
     事件有每日上限本来就有界；3 天前的由 _dequeue_expired_branch_events 清理）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return
     if int(cfg.narrative.life_fragment_daily_max) <= 0:
         return
 
-    current = now or engine._local_now()
+    current = now or deps.local_now()
     today = current.strftime("%Y-%m-%d")
-    state = engine.load_self_state()
+    state = deps.state.load_self_state()
     routine = state["state"].setdefault("routine", {})
-    day_count = engine._store.get_kv_int(f"{_LIFE_COUNT_KEY}{today}")
+    day_count = deps.store.get_kv_int(f"{_LIFE_COUNT_KEY}{today}")
 
     # 睡眠闸门（v0.1.10）：睡着不生产生活片段。
     # 这是「日记里每天都有深夜还醒着」的根因修复——此前创作层只有间隔与日上限两道
@@ -98,36 +98,36 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
 
     if not wake_fragment:
         # 每日次数上限
-        if not daily_cap_gate(engine._store, f"{_LIFE_COUNT_KEY}{today}", cap=int(cfg.narrative.life_fragment_daily_max)):
+        if not daily_cap_gate(deps.store, f"{_LIFE_COUNT_KEY}{today}", cap=int(cfg.narrative.life_fragment_daily_max)):
             return
 
         # 间隔闸门：距上次生成不足 interval 则跳过（不调 LLM、零成本）。
         # 基元语义与原内联实现一致（坏时间戳放行、严格 < 比较）——深化 A。
         if not interval_gate(
-            engine._store, _LIFE_LAST_TS_KEY, current, minutes=int(cfg.narrative.life_fragment_interval_minutes)
+            deps.store, _LIFE_LAST_TS_KEY, current, minutes=int(cfg.narrative.life_fragment_interval_minutes)
         ):
             return
 
     # 收集素材：全部模式用户的支线事件（最近一条对话素材 → 生活的原料）
     materials: List[str] = []
     for user_id in (cfg.narrative.mode_user_ids or []):
-        for item in visible_events(engine._store, f"branch:{user_id}", user_id, 20):
+        for item in visible_events(deps.store, f"branch:{user_id}", user_id, 20):
             source_text = str(item.get("bysource", "") or "").strip()
             if source_text:
                 materials.append(source_text)
 
     # 高光签（Q5/Q8 / P19）：事前抽签注入详略方差，取代原 tier 三信号
-    highlight = _draw_highlight(engine, today, wake=wake_fragment)
+    highlight = _draw_highlight(deps, today, wake=wake_fragment)
     from .chronicle import load_native_personality
 
-    persona = await load_native_personality(engine)
+    persona = await load_native_personality(deps)
     prompt = build_life_fragment_prompt(
-        engine, current, state, materials, persona=persona, highlight=highlight, wake=wake_fragment
+        deps, current, state, materials, persona=persona, highlight=highlight, wake=wake_fragment
     )
     if cfg.llm.show_prompt:
-        engine._plugin.ctx.logger.info("生活片段 prompt: %s", prompt[:300])
+        deps.logger.info("生活片段 prompt: %s", prompt[:300])
 
-    text = await engine._creator.generate(prompt)
+    text = await deps.creator.generate(prompt)
     if not text:
         return
 
@@ -145,7 +145,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
         # 没有原文就只能事后猜，这正是误伤率长期无法收敛的原因。
         # 统一格式助手（深化 A）：label/detail 传参保文案逐字节不变。
         log_guard_reject(
-            engine._plugin.ctx.logger,
+            deps.logger,
             label="生活片段命中锚定守卫（world_rules/values/禁用片段）",
             detail=f"命中片段: {guard_violations(text, guard_set)[:5]}",
             text=text,
@@ -154,7 +154,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
 
     # 指标 4 双轨埋点（R24 A 轨 / R7 B 轨）：只在产出这一刻采样，
     # 保证"注入侧组合熵"与"产出侧文本多样性"同尺度可比。
-    telemetry = getattr(engine._plugin, "_telemetry", None)
+    telemetry = deps.telemetry
     if telemetry is not None:
         telemetry.note_fragment(state, text)
 
@@ -166,7 +166,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     # 批 0（R41）：条目升级为事件实体（event_id + kind=fragment）——构造单一入口
     # 在 creation/event_entity.py；text/ts/highlight 原语义不变，读取端零迁移。
     commit_created_event(
-        engine,
+        deps,
         state,
         entry=make_fragment_event(
             ts=current.isoformat(timespec="seconds"),
@@ -180,19 +180,19 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     # 闸门推进 + 计数（last_ts 直接存 ISO 字符串，不再用 dict 包装）
     # 起床补一段豁免日上限（它是状态转换的必然产物，不是可选的创作），
     # 但仍推进 last_ts——否则醒来后第一段正常片段会紧接着挤进来。
-    engine._store.set_kv_str(_LIFE_LAST_TS_KEY, current.isoformat(timespec="seconds"))
+    deps.store.set_kv_str(_LIFE_LAST_TS_KEY, current.isoformat(timespec="seconds"))
     if not wake_fragment:
-        engine._store.set_kv_int(f"{_LIFE_COUNT_KEY}{today}", day_count + 1)
+        deps.store.set_kv_int(f"{_LIFE_COUNT_KEY}{today}", day_count + 1)
     # 高光计数（P19）：只在本段成功落库后推进（守卫丢弃在上方已 return，不占配额）
     if highlight:
-        engine._store.set_kv_int(
+        deps.store.set_kv_int(
             f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}",
-            engine._store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") + 1,
+            deps.store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") + 1,
         )
     # 话题归因（批 3-C5 / R16，ADR-0003 §7）：片段自身主题**降权**累积，
     # 防「她写猫 → 素材全猫 → 对人人讲猫」的自主信息茧房
-    reward_topic(engine._store, text, TOPIC_WEIGHT_SELF_FRAGMENT)
-    engine._plugin.ctx.logger.info(
+    reward_topic(deps.store, text, TOPIC_WEIGHT_SELF_FRAGMENT)
+    deps.logger.info(
         "生活片段已生成（今日 %s/%s%s%s）: %s",
         day_count if wake_fragment else day_count + 1,
         cfg.narrative.life_fragment_daily_max,
@@ -202,7 +202,7 @@ async def maybe_generate_life_fragment(engine: Any, now: Optional[datetime] = No
     )
 
 
-def _draw_highlight(engine: Any, today: str, *, wake: bool) -> bool:
+def _draw_highlight(deps: Any, today: str, *, wake: bool) -> bool:
     """高光签（Q5/Q8 / P19）：事前抽签注入详略方差，取代原 tier 三信号。
 
     三档判定改为**二元抽签**——不再试图从外部环境推测「这段值不值得写细」，
@@ -213,16 +213,16 @@ def _draw_highlight(engine: Any, today: str, *, wake: bool) -> bool:
     - 总开关关闭 → 永不抽签（唯一降级开关，Q8）；
     - 当日已抽中数 ≥ ``_HIGHLIGHT_DAILY_MAX`` → 不再抽签（防「一天全是高光」）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     if wake or not cfg.narrative.life_fragment_detail_enabled:
         return False
-    if engine._store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") >= _HIGHLIGHT_DAILY_MAX:
+    if deps.store.get_kv_int(f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}") >= _HIGHLIGHT_DAILY_MAX:
         return False
     return _rng.random() < float(cfg.narrative.highlight_probability)
 
 
 def build_life_fragment_prompt(
-    engine: Any,
+    deps: Any,
     now: datetime,
     state: Dict[str, Any],
     materials: Sequence[str],
@@ -238,7 +238,7 @@ def build_life_fragment_prompt(
     """
     from ..state.engine import minutes_until_clock
 
-    cfg = engine._plugin.config
+    cfg = deps.config
     identity = cfg.identity
     inner = state["state"]
     personality = (

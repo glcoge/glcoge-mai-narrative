@@ -64,26 +64,25 @@ _VALID_URGENCY = ("immediate", "short", "long")
 _rng = random.Random()
 
 
-def _seeder_config(engine: Any) -> Any:
+def _seeder_config(deps: Any) -> Any:
     """取 [seeder] 段（缺段 = 关闭：老测试夹具兼容，build_guard_keywords 同款先例）。"""
-    return getattr(engine._plugin.config, "seeder", None)
+    return getattr(deps.config, "seeder", None)
 
 
-def _blocklist(engine: Any) -> List[str]:
+def _blocklist(deps: Any) -> List[str]:
     """参与者拦截词表（红线①第二层数据源）：模式用户 + 已知 uid/gid + 手工网名。"""
-    plugin = engine._plugin
     names: List[str] = []
-    seeder_cfg = _seeder_config(engine)
+    seeder_cfg = _seeder_config(deps)
     if seeder_cfg is not None:
         names += [str(item) for item in (getattr(seeder_cfg, "blocked_names", []) or [])]
-    narrative = getattr(plugin.config, "narrative", None)
+    narrative = getattr(deps.config, "narrative", None)
     if narrative is not None:
         names += [str(item) for item in (getattr(narrative, "mode_user_ids", []) or [])]
-    streams = getattr(plugin, "_streams", None)
+    streams = deps.streams
     known_uids = getattr(streams, "known_uids", None)
     if callable(known_uids):
         names += [str(item) for item in known_uids()]
-    group_streams = getattr(plugin, "_group_streams", None)
+    group_streams = deps.group_streams
     known_gids = getattr(group_streams, "known_gids", None)
     if callable(known_gids):
         names += [str(item) for item in known_gids()]
@@ -98,17 +97,17 @@ def _participant_hit(text: str, blocklist: List[str]) -> Optional[str]:
     return None
 
 
-def build_seed_prompt(engine: Any, state: Dict[str, Any], now: datetime.datetime) -> str:
+def build_seed_prompt(deps: Any, state: Dict[str, Any], now: datetime.datetime) -> str:
     """播种 prompt：世界基调 + NPC 抽样 + 她此刻的状态 + 禁令段 + 输出格式。
 
     纯函数便于测试；``_rng.sample`` 供单测钉住 NPC 抽样。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     inner = state["state"]
 
     world_lines: List[str] = []
     cast_lines: List[str] = []
-    lorebook = getattr(engine._plugin, "_lorebook", None)
+    lorebook = deps.lorebook
     if lorebook is not None:
         world_lines = [
             entry.content
@@ -180,17 +179,17 @@ def _parse_seed_output(raw: str) -> Tuple[Dict[str, str], str, bool]:
     return {"importance": _DEFAULT_IMPORTANCE, "urgency": _DEFAULT_URGENCY}, text, True
 
 
-async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] = None) -> None:
+async def maybe_seed_world_event(deps: Any, now: Optional[datetime.datetime] = None) -> None:
     """播种 tick：四闸 → 生成 → 拦截 → 落账（异常由 engine tick 的 try/except 兜住）。"""
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return
-    seeder_cfg = _seeder_config(engine)
+    seeder_cfg = _seeder_config(deps)
     if seeder_cfg is None or not seeder_cfg.enabled:
         return
 
-    current = now or engine._local_now()
-    store = engine._store
+    current = now or deps.local_now()
+    store = deps.store
 
     # ② interval 闸：距上次尝试未满间隔 → 本 tick 直接返回（基元语义与原内联一致）
     if not interval_gate(store, _SEED_LAST_TRY_KEY, current, minutes=max(1, int(seeder_cfg.interval_minutes))):
@@ -210,29 +209,29 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
         return
 
     # 生成（LLM 一次调用）
-    state = engine.load_self_state()
-    prompt = build_seed_prompt(engine, state, current)
-    raw = await engine._creator.generate(prompt)
+    state = deps.state.load_self_state()
+    prompt = build_seed_prompt(deps, state, current)
+    raw = await deps.creator.generate(prompt)
     if not str(raw or "").strip():
         return
     meta, event_text, degraded = _parse_seed_output(raw)
     if not event_text:
         return
     if degraded:
-        engine._plugin.ctx.logger.warning(
+        deps.logger.warning(
             "播种事件输出非约定 JSON → 降级为纯文本（默认 low/short）；原文: %s",
             event_text[:60],
         )
 
     # 🔴 红线①第二层：落库前词面拦截（命中丢弃整条，不入库不占配额）
-    hit = _participant_hit(event_text, _blocklist(engine))
+    hit = _participant_hit(event_text, _blocklist(deps))
     if hit is not None:
-        telemetry = getattr(engine._plugin, "_telemetry", None)
+        telemetry = deps.telemetry
         if telemetry is not None:
             telemetry.record(SEED_BLOCKED_METRIC, 1, scope="seeder")
         # 统一格式助手（深化 A）：ellipsis=False 保 seeder 现行裸截断文案。
         log_guard_reject(
-            engine._plugin.ctx.logger,
+            deps.logger,
             label=f"播种事件命中参与者拦截（命中={hit}）",
             text=event_text,
             ellipsis=False,
@@ -242,7 +241,7 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
     # 落账双写：事件实体（kind=seed，与 fragment 同池同容量 LRU）+ 编年史 life_seed
     # ——尾段收口至 pipeline.commit_created_event（深化 A）。
     commit_created_event(
-        engine,
+        deps,
         state,
         entry=make_seed_event(
             ts=current.isoformat(timespec="seconds"),
@@ -255,7 +254,7 @@ async def maybe_seed_world_event(engine: Any, now: Optional[datetime.datetime] =
     )
 
     store.set_kv_int(count_key, store.get_kv_int(count_key) + 1)
-    engine._plugin.ctx.logger.info(
+    deps.logger.info(
         "世界事件已播种: importance=%s urgency=%s text=%s",
         meta["importance"],
         meta["urgency"],

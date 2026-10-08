@@ -27,18 +27,21 @@ _CHRON = _synth_loader.load("services.creation.chronicle")
 COMM_FACT_RULE = _LIFE.COMM_FACT_RULE
 build_life_fragment_prompt = _LIFE.build_life_fragment_prompt
 build_chronicle_prompt = _CHRON.build_chronicle_prompt
+_Deps = _synth_loader.load("services.deps").Deps
 
 _NOW = datetime.datetime(2026, 9, 26, 21, 30, 0)
 
 
 def _engine():
-    return types.SimpleNamespace(
-        _plugin=types.SimpleNamespace(
-            config=types.SimpleNamespace(
-                identity=types.SimpleNamespace(world="普通现代都市", values=["诚实"]),
-                narrative=_synth_loader.sleep_config(sleep_time="", wake_time=""),
-            )
-        )
+    """最小 Deps（prompt 构造器只读 config，深化 B 起吃 deps）。"""
+    return _Deps(
+        config=types.SimpleNamespace(
+            identity=types.SimpleNamespace(world="普通现代都市", values=["诚实"]),
+            narrative=_synth_loader.sleep_config(sleep_time="", wake_time=""),
+        ),
+        store=types.SimpleNamespace(),
+        logger=_synth_loader.make_logger(),
+        local_now=lambda: _NOW,
     )
 
 
