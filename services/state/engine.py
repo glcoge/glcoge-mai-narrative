@@ -319,7 +319,7 @@ class NarrativeEngine:
 
         return Deps(
             config=config,
-            store=self._store,
+            store=getattr(self, "_store", None),
             logger=plugin.ctx.logger,
             local_now=_local_now,
             state=self,
@@ -347,8 +347,8 @@ class NarrativeEngine:
             return
         self._running = True
         self._task = asyncio.create_task(self._tick_loop(), name="narrative-engine-tick")
-        interval = max(30, int(self._plugin.config.narrative.clock_tick_minutes) * 60)
-        self._plugin.ctx.logger.info(
+        interval = max(30, int(self.deps.config.narrative.clock_tick_minutes) * 60)
+        self.deps.logger.info(
             "narrative 世界时钟已启动（tick 间隔 %s 分钟）", interval // 60
         )
 
@@ -368,7 +368,7 @@ class NarrativeEngine:
 
         只做 start/stop 判定，不打印无动作日志（避免每 15s 刷屏）。
         """
-        cfg = self._plugin.config
+        cfg = self.deps.config
         want = bool(cfg.plugin.enabled and cfg.narrative.enabled)
         if want and not self._running:
             self.start()
@@ -382,15 +382,15 @@ class NarrativeEngine:
                 try:
                     await self.tick()
                 except Exception as exc:
-                    self._plugin.ctx.logger.error("世界时钟 tick 异常: %s", exc, exc_info=True)
-                interval = max(30, int(self._plugin.config.narrative.clock_tick_minutes) * 60)
+                    self.deps.logger.error("世界时钟 tick 异常: %s", exc, exc_info=True)
+                interval = max(30, int(self.deps.config.narrative.clock_tick_minutes) * 60)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
 
     def _local_now(self) -> datetime:
         """按插件配置时区取本地时间（全引擎统一入口）。"""
-        return local_now(self._plugin.config.narrative.timezone_offset_hours)
+        return self.deps.local_now()
 
     # ─── 状态访问 ────────────────────────────────────────────────
 
@@ -406,7 +406,7 @@ class NarrativeEngine:
 
     def _warn_legacy_reset(self, scope_label: str, found_version: Any) -> None:
         """旧版本 state 被重置时的 WARN（静默重置会让人困惑，必须留痕）。"""
-        self._plugin.ctx.logger.warning(
+        self.deps.logger.warning(
             "narrative %s state 结构版本为 %s（当前 %s）→ 原地重置（ADR-0002 §7："
             "不为死格式陪葬）；编年史不受影响，仍完整保留",
             scope_label,
@@ -505,11 +505,11 @@ class NarrativeEngine:
     async def tick(self, now: Optional[datetime] = None) -> None:
         """确定性生活推进：精力衰减、心情映射、作息流转、事件出队。"""
         current = now or self._local_now()
-        cfg = self._plugin.config
+        cfg = self.deps.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             # 正常情况下 reconcile 会直接停掉 tick 循环，这里是防御分支；
             # 每 tick 打 INFO 会刷屏（v0.1.4 降 debug）
-            self._plugin.ctx.logger.debug("narrative tick@%s 跳过（剧本开关未开）", current.strftime("%H:%M"))
+            self.deps.logger.debug("narrative tick@%s 跳过（剧本开关未开）", current.strftime("%H:%M"))
             return
 
         state = self.load_self_state()
@@ -517,7 +517,7 @@ class NarrativeEngine:
         self.save_self_state(state)
         inner = state["state"]
         # 心跳日志降 debug（每 30min 一条，部署后无排查价值，v0.1.4）
-        self._plugin.ctx.logger.debug(
+        self.deps.logger.debug(
             "narrative tick@%s: phase=%s mood=%s energy=%.2f",
             current.strftime("%Y-%m-%d %H:%M"),
             inner["routine"]["phase"],
@@ -531,18 +531,18 @@ class NarrativeEngine:
         try:
             await self.maybe_generate_life_fragment(current)
         except Exception as exc:
-            self._plugin.ctx.logger.error("生活片段生成异常: %s", exc, exc_info=True)
+            self.deps.logger.error("生活片段生成异常: %s", exc, exc_info=True)
         # 每日编年史压缩（2026-09-16 接线；此前是死代码，从未被调用）
         # 同样包 try/except：创作层异常不得影响规则 tick
         try:
             await self.maybe_daily_chronicle(current)
         except Exception as exc:
-            self._plugin.ctx.logger.error("编年史压缩异常: %s", exc, exc_info=True)
+            self.deps.logger.error("编年史压缩异常: %s", exc, exc_info=True)
         # 世界事件播种（批 2 / R40）：四闸自控频率（enabled 默认关），异常不影响规则 tick
         try:
             await self.maybe_seed_world_event(current)
         except Exception as exc:
-            self._plugin.ctx.logger.error("世界事件播种异常: %s", exc, exc_info=True)
+            self.deps.logger.error("世界事件播种异常: %s", exc, exc_info=True)
 
     def _apply_state_rules(self, state: Dict[str, Any], now: datetime) -> None:
         """纯规则：作息与睡眠流转、精力衰减/回升、心情映射、日程到点。"""
@@ -561,7 +561,7 @@ class NarrativeEngine:
         #    衰减"但无回归项，每 tick 无条件 -0.06，无互动日必然贴地 0.05 卡死；
         # ② 近期互动（2h 内）提振；
         # ③ 深夜睡眠恢复——老版深夜反而 -0.08（睡觉掉精力），方向反了。
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         energy += (float(cfg.energy_baseline) - energy) * float(cfg.energy_baseline_pull)
         last_interaction = inner.get("last_interaction_ts", "")
         if last_interaction and self._hours_since(last_interaction, now) <= 2:
@@ -588,7 +588,7 @@ class NarrativeEngine:
         # share_urge self 层回归（v0.1.8 第一步）：每 tick 向基线双向回归
         # （同 energy 基线回归模式）。事件驱动的升降在 record_urge_feedback，
         # 此处只管"时间回归"——被冷落的低谷随时间自然回温。
-        pro = self._plugin.config.proactive
+        pro = self.deps.config.proactive
         if pro.urge_enabled:
             urge_base = float(pro.urge_base)
             urge = float(inner.get("urge", urge_base))
@@ -654,12 +654,12 @@ class NarrativeEngine:
 
     def _sleep_configured(self) -> bool:
         """睡眠态是否已配置（sleep_time 与 wake_time 均可解析）。留空即关闭整个睡眠态。"""
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         return parse_clock(cfg.sleep_time) is not None and parse_clock(cfg.wake_time) is not None
 
     def _sleep_window_active(self, now: datetime) -> bool:
         """当前时刻是否落在配置的睡眠窗口内（跨午夜安全；未配置恒 False）。"""
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         return in_sleep_window(now, cfg.sleep_time, cfg.wake_time)
 
     def is_asleep(self, now: Optional[datetime] = None) -> bool:
@@ -676,7 +676,7 @@ class NarrativeEngine:
         routine = state["state"].get("routine", {})
         if str(routine.get("sleep_state", "awake")) != "asleep":
             return False
-        minutes = int(self._plugin.config.narrative.woken_awake_minutes)
+        minutes = int(self.deps.config.narrative.woken_awake_minutes)
         if minutes <= 0:
             return False
         elapsed = self._minutes_since(str(routine.get("last_woken_ts", "") or ""), now)
@@ -684,7 +684,7 @@ class NarrativeEngine:
 
     def _is_still_talking(self, state: Dict[str, Any], now: datetime) -> bool:
         """最近一次互动是否落在「仍在聊」窗口内（决定要不要推迟入睡）。"""
-        recent = int(self._plugin.config.narrative.sleep_delay_recent_minutes)
+        recent = int(self.deps.config.narrative.sleep_delay_recent_minutes)
         if recent <= 0:
             return False
         elapsed = self._minutes_since(str(state["state"].get("last_interaction_ts", "") or ""), now)
@@ -692,7 +692,7 @@ class NarrativeEngine:
 
     def _delay_budget_left(self, delayed_since: str, now: datetime) -> bool:
         """推迟入睡是否还有余量。首次推迟（无起始时刻）必有余量。"""
-        max_minutes = int(self._plugin.config.narrative.sleep_delay_max_minutes)
+        max_minutes = int(self.deps.config.narrative.sleep_delay_max_minutes)
         if max_minutes <= 0:
             return False
         if not delayed_since:
@@ -710,7 +710,7 @@ class NarrativeEngine:
         ③ 瞬时例外（深夜被吵醒）**不改**状态位——那是 ``_apply_woken_penalty`` 的事，
            被吵醒只记时刻、计数、扣精力，bot 仍然算睡着。
         """
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         routine = state["state"].setdefault("routine", {})
         current_state = str(routine.get("sleep_state", "awake"))
 
@@ -722,7 +722,7 @@ class NarrativeEngine:
                 routine["woken_count"] = 0
                 # 起床补一段：由创作层消费（豁免间隔闸门与日上限）
                 routine["wake_fragment_pending"] = True
-                self._plugin.ctx.logger.info("narrative 睡眠: 醒来（%s）", now.strftime("%H:%M"))
+                self.deps.logger.info("narrative 睡眠: 醒来（%s）", now.strftime("%H:%M"))
             routine["sleep_delayed_ts"] = ""
             return
 
@@ -731,7 +731,7 @@ class NarrativeEngine:
             if self._is_still_talking(state, now) and self._delay_budget_left(delayed_since, now):
                 if not delayed_since:
                     routine["sleep_delayed_ts"] = now.isoformat(timespec="seconds")
-                    self._plugin.ctx.logger.info(
+                    self.deps.logger.info(
                         "narrative 睡眠: 到点但仍在聊，推迟入睡（上限 %s 分钟）",
                         int(cfg.sleep_delay_max_minutes),
                     )
@@ -739,7 +739,7 @@ class NarrativeEngine:
             routine["sleep_state"] = "asleep"
             routine["asleep_since"] = now.isoformat(timespec="seconds")
             routine["sleep_delayed_ts"] = ""
-            self._plugin.ctx.logger.info("narrative 睡眠: 入睡（%s）", now.strftime("%H:%M"))
+            self.deps.logger.info("narrative 睡眠: 入睡（%s）", now.strftime("%H:%M"))
 
     def _apply_woken_penalty(self, state: Dict[str, Any], now: datetime) -> None:
         """睡眠中收到消息 → 记「被吵醒」时刻 + 计数 + 扣精力（一夜多次有地板）。
@@ -747,7 +747,7 @@ class NarrativeEngine:
         瞬时语义：**不**改 sleep_state。bot 仍然算睡着，只是这一轮有点迷糊、
         精力掉一截，``woken_awake_minutes`` 后自动回落。
         """
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         routine = state["state"].setdefault("routine", {})
         if str(routine.get("sleep_state", "awake")) != "asleep":
             return
@@ -761,7 +761,7 @@ class NarrativeEngine:
         before = float(mood.get("energy", 0.55))
         mood["energy"] = round(max(floor, before - penalty), 3)
         mood["last_shift_ts"] = now.isoformat(timespec="seconds")
-        self._plugin.ctx.logger.info(
+        self.deps.logger.info(
             "narrative 睡眠: 深夜被吵醒（今晚第 %s 次，精力 %.2f → %.2f）",
             routine["woken_count"], before, mood["energy"],
         )
@@ -777,7 +777,7 @@ class NarrativeEngine:
     def _dequeue_expired_branch_events(self, now: datetime) -> None:
         """清理 3 天前的支线事件（事件队列有界）。"""
         cutoff = (now - timedelta(days=3)).isoformat(timespec="seconds")
-        for user_id in self._plugin.config.narrative.mode_user_ids or []:
+        for user_id in self.deps.config.narrative.mode_user_ids or []:
             self._store.clear_events_before(f"branch:{user_id}", cutoff)
 
     def _dequeue_expired_group_events(self, now: datetime) -> None:
@@ -791,7 +791,7 @@ class NarrativeEngine:
         群从 ``observe_group_ids`` 摘掉后，它已积累的历史事件就再也没人扫到，
         变成永久孤儿数据。
         """
-        cfg = self._plugin.config.narrative
+        cfg = self.deps.config.narrative
         days = int(getattr(cfg, "group_event_retention_days", 60) or 0)
         if days <= 0:
             return
@@ -807,13 +807,13 @@ class NarrativeEngine:
         保持与 ``build_bysource`` / ``compute_share_urge`` 相同的既有约定：
         实现下沉子模块、engine 留一层委托，对外 API 稳定、测试绑定点不散。
         """
-        return append_milestone(self, user_id, desc, now or self._local_now())
+        return append_milestone(self.deps, user_id, desc, now or self._local_now())  # DEPRECATED(B)
 
     def record_interaction(self, user_id: str, text: str, now: Optional[datetime] = None) -> None:
         """用户互动落痕：更新自我层互动时点，素材入支线事件队列。"""
         current = now or self._local_now()
         today = current.strftime("%Y-%m-%d")
-        cfg = self._plugin.config
+        cfg = self.deps.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             return
 
@@ -890,7 +890,7 @@ class NarrativeEngine:
         计数**不进注入块、不进 /narrative status**——它是内部证据，不是呈现值。
         """
         # 与紧邻的 record_interaction 保持一致：任一开关关闭即不再推进。
-        cfg = self._plugin.config
+        cfg = self.deps.config
         if not cfg.plugin.enabled or not cfg.narrative.enabled:
             return
         branch = self.load_branch_state(user_id)

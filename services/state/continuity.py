@@ -120,7 +120,7 @@ def assert_writable(path: str) -> str:
     return normalized
 
 
-def append_milestone(engine: Any, user_id: str, desc: str, now: Any) -> bool:
+def append_milestone(deps: Any, user_id: str, desc: str, now: Any) -> bool:
     """落一条「聊起来了」的事实条目到该用户 ``relationship.milestones``（方案 §6.2 / Q10a / Q16 / Q17）。
 
     写入者＝engaged 承接成功（``ProactiveScheduler.note_engaged`` 达标时调用）：
@@ -144,12 +144,12 @@ def append_milestone(engine: Any, user_id: str, desc: str, now: Any) -> bool:
     本模块零上层依赖（不得 import engine），故 ``engine`` 按鸭子类型使用。
     返回是否真的落了一条。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     if not (cfg.plugin.enabled and cfg.narrative.enabled):
         return False
     if not bool(cfg.proactive.milestone_enabled):
         return False
-    branch = engine.load_branch_state(user_id)
+    branch = deps.state.load_branch_state(user_id)
     relationship = branch.setdefault("relationship", {})
     milestones = list(relationship.get("milestones") or [])
     ts = now.isoformat(timespec="seconds") if hasattr(now, "isoformat") else str(now)
@@ -161,8 +161,8 @@ def append_milestone(engine: Any, user_id: str, desc: str, now: Any) -> bool:
     #    字面量 "relationship.milestones" 键（2026-09-30 实现期实际踩过，由测试抓出）。
     assert_writable("relationship.milestones")
     relationship["milestones"] = kept
-    engine.save_branch_state(user_id, branch)
-    engine._plugin.ctx.logger.info(
+    deps.state.save_branch_state(user_id, branch)
+    deps.logger.info(
         "engaged 里程碑落库: uid=%s 条数=%d desc=%s", user_id, len(kept), text[:30]
     )
     return True

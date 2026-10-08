@@ -102,6 +102,7 @@ def test_legacy_self_state_is_reset_with_warning():
             warning=lambda *a, **k: warnings.append(a[0] if a else ""),
             error=lambda *a, **k: None,
         )
+        engine.rebind_deps()  # Deps 冻结了构造期 logger，热换后须重绑定（深化 B）
 
         state = engine.load_self_state()
         assert state["meta"]["version"] == STATE_SCHEMA_VERSION
@@ -165,6 +166,7 @@ def test_reset_keeps_schema_version():
             warning=lambda *a, **k: warnings.append(a[0] if a else ""),
             error=lambda *a, **k: None,
         )
+        engine2.rebind_deps()  # Deps 冻结了构造期 logger，热换后须重绑定（深化 B）
         state = engine2.load_self_state()
         assert state["meta"]["version"] == STATE_SCHEMA_VERSION
         assert not warnings, "reset 只清运行态，不应让下次开库误判旧库"

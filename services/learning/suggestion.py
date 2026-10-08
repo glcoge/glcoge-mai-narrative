@@ -88,21 +88,21 @@ def find_suggestion_target(
     return None
 
 
-def record_suggestion(engine: Any, uid: str, text: str, now: Any = None) -> bool:
+def record_suggestion(deps: Any, uid: str, text: str, now: Any = None) -> bool:
     """路由 + 写入：命中则把建议挂到事件实体的 ``suggestions`` 字段。
 
     Returns:
         是否写入（未启用/未命中/重复建议均 False——调用端不当错误处理）。
     """
-    cfg = engine._plugin.config
+    cfg = deps.config
     suggestion_cfg = getattr(cfg, "suggestion", None)
     if suggestion_cfg is None or not suggestion_cfg.enabled:
         return False
     if not cfg.plugin.enabled or not cfg.narrative.enabled:
         return False
 
-    current = now or engine._local_now()
-    state = engine.load_self_state()
+    current = now or deps.local_now()
+    state = deps.state.load_self_state()
     pending = list(state["state"].get("focus", {}).get("pending_events", []))
     target = find_suggestion_target(text, pending)
     if target is None:
@@ -122,7 +122,7 @@ def record_suggestion(engine: Any, uid: str, text: str, now: Any = None) -> bool
         }
     )
     target["suggestions"] = suggestions[-_SUGGESTIONS_KEEP:]
-    engine.save_self_state(state)
+    deps.state.save_self_state(state)
     return True
 
 

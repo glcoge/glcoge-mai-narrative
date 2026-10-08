@@ -140,7 +140,7 @@ def test_route_rejects_empty_or_command_like():
 def test_record_appends_suggestion_field():
     """路由命中 → 写入 suggestions 字段（uid/text/ts），返回 True。"""
     engine = _make_engine(pending=[dict(_EVENT)])
-    assert record_suggestion(engine, _UID_A, _SUGGEST_TEXT, _NOW) is True
+    assert record_suggestion(engine.deps, _UID_A, _SUGGEST_TEXT, _NOW) is True
 
     entry = engine._self_state["state"]["focus"]["pending_events"][0]
     assert len(entry["suggestions"]) == 1
@@ -154,7 +154,7 @@ def test_record_does_not_touch_event_body_or_count():
     """红线③：事件本体（text/kind/event_id/ts/highlight）不动、事件条数不增。"""
     engine = _make_engine(pending=[dict(_EVENT)])
     before = dict(_EVENT)
-    record_suggestion(engine, _UID_A, _SUGGEST_TEXT, _NOW)
+    record_suggestion(engine.deps, _UID_A, _SUGGEST_TEXT, _NOW)
 
     pending = engine._self_state["state"]["focus"]["pending_events"]
     assert len(pending) == 1, "不新开事件"
@@ -166,8 +166,8 @@ def test_record_does_not_touch_event_body_or_count():
 def test_record_dedupes_same_uid_same_text():
     """同 uid 同文本重复建议不重复写（防刷屏）。"""
     engine = _make_engine(pending=[dict(_EVENT)])
-    record_suggestion(engine, _UID_A, _SUGGEST_TEXT, _NOW)
-    record_suggestion(engine, _UID_A, _SUGGEST_TEXT, _NOW)
+    record_suggestion(engine.deps, _UID_A, _SUGGEST_TEXT, _NOW)
+    record_suggestion(engine.deps, _UID_A, _SUGGEST_TEXT, _NOW)
 
     entry = engine._self_state["state"]["focus"]["pending_events"][0]
     assert len(entry["suggestions"]) == 1
@@ -177,7 +177,7 @@ def test_record_caps_at_three():
     """单事件建议容量 3（保留最新，防长尾堆积）。"""
     engine = _make_engine(pending=[dict(_EVENT)])
     for index in range(5):
-        record_suggestion(engine, f"uid{index}", f"快去买烤面筋啊{index}", _NOW)
+        record_suggestion(engine.deps, f"uid{index}", f"快去买烤面筋啊{index}", _NOW)
 
     entry = engine._self_state["state"]["focus"]["pending_events"][0]
     assert len(entry["suggestions"]) == 3
@@ -187,7 +187,7 @@ def test_record_caps_at_three():
 def test_record_disabled_returns_false():
     """[suggestion].enabled=false（默认）→ 不路由不写入（零行为）。"""
     engine = _make_engine(pending=[dict(_EVENT)], enabled=False)
-    assert record_suggestion(engine, _UID_A, _SUGGEST_TEXT, _NOW) is False
+    assert record_suggestion(engine.deps, _UID_A, _SUGGEST_TEXT, _NOW) is False
     entry = engine._self_state["state"]["focus"]["pending_events"][0]
     assert "suggestions" not in entry
 
@@ -195,7 +195,7 @@ def test_record_disabled_returns_false():
 def test_record_unmatched_returns_false():
     """未挂靠任何事件的文本 → False（不写、不建）。"""
     engine = _make_engine(pending=[dict(_EVENT)])
-    assert record_suggestion(engine, _UID_A, "去早点睡吧", _NOW) is False
+    assert record_suggestion(engine.deps, _UID_A, "去早点睡吧", _NOW) is False
     assert "suggestions" not in engine._self_state["state"]["focus"]["pending_events"][0]
 
 
@@ -205,8 +205,8 @@ def test_record_unmatched_returns_false():
 def test_ab_conflict_both_stored_one_event_prompt_shows_both():
     """A「快去吃」vs B「在家呆着」：两条都存、事件仍一条、prompt 双倾向呈现、不崩。"""
     engine = _make_engine(pending=[dict(_EVENT)])
-    assert record_suggestion(engine, _UID_A, "快去买烤面筋啊", _NOW) is True
-    assert record_suggestion(engine, _UID_B, "烤面筋就别买了，在家呆着吧", _NOW) is True
+    assert record_suggestion(engine.deps, _UID_A, "快去买烤面筋啊", _NOW) is True
+    assert record_suggestion(engine.deps, _UID_B, "烤面筋就别买了，在家呆着吧", _NOW) is True
 
     pending = engine._self_state["state"]["focus"]["pending_events"]
     assert len(pending) == 1, "不双写：事件仍一条"

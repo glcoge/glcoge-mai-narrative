@@ -749,7 +749,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
         # 群聊已在上方提前 return（R35：内容不进生活线）——结构性排除。
         # 旁路纪律同 pairs：路由/写入失败绝不拖垮入站主链路。
         try:
-            record_suggestion(self._engine, user_id, plain, now)
+            record_suggestion(self._engine.deps, user_id, plain, now)
         except Exception as exc:
             self.ctx.logger.warning("建议通道路由失败（不阻断）: %s", exc)
         # 验收采样（指标 1/2 的判定与登记下沉 Telemetry，2026-09-13 C5）
