@@ -56,7 +56,7 @@ class IdentitySection(PluginConfigBase):
     ``config/bot_config.toml`` 的 ``[personality]``（personality / behavior_style /
     reply_style）与 ``[bot].nickname``——系统提示里只保留这一份"你是谁"，
     避免双人格并置。本段只承载原生三段没有的维度：世界观 / 价值观底线 /
-    世界观规则 / 不可变人格特征。
+    世界观规则。
     """
 
     __ui_label__: ClassVar[str] = "锚定层（世界观与铁律）"

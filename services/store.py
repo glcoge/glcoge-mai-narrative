@@ -1,7 +1,7 @@
 """叙事状态存储：双层状态机 + 编年史 + 事件队列 + 每日快照 + 指标 CSV。
 
 独立于 MaiBot.db 核心表（规避核心升级迁移风险），落在插件标准数据目录：
-``data/plugins/glcoge.mai-narrative/``
+``data/plugins/glcoge.mai-narrative/narrative/``
 
 - narrative.db（sqlite）：kv 状态（自我层/支线层）、编年史、事件队列
 - snapshots/YYYY-MM-DD.json：每日状态快照（变化留痕、回滚点）

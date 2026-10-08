@@ -7,9 +7,11 @@ v0.1 最小切片（设计树已闭合，.scratch/narrative-persona/）：
 - 主动消息：活跃窗口 + 随机计时 + 静默时段 + 由头签发（禁止干聊）
 - 表达学习隔离：剧本模式会话阻断表达注入与写入
 
-构成：@HookHandler x5（入站落痕 / 出站采样 / 剧本注入 / 表达选择拦截 / 表达写入拦截）、
-@Command + @API。接入点全部走命名 hook（chat.receive.after_process /
-send_service.before_send / maisaka.planner.before_request / expression.*）；
+构成：@HookHandler x6（入站落痕 / 出站采样 / 剧本注入 / 漂移注入 / 表达选择拦截 / 表达写入拦截）、
+@ReplyExtension（主动轮由头进 replyer 指令位，v0.3.0 批 4）、@Command + @API。
+接入点全部走命名 hook（chat.receive.after_process /
+send_service.after_build_message / maisaka.planner.before_request /
+maisaka.replyer.before_model_request / expression.*）；
 本代架构消息经 heart_flow + 命名 hook，事件（ON_MESSAGE/POST_SEND）不再派发给插件。
 不使用已废弃的 @Action（官方建议）。
 """

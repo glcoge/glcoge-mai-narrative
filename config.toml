@@ -94,10 +94,38 @@ silent_end = "08:00"
 random_minutes = [60, 240]
 daily_max = 2
 default_active_window = ["09:00-22:00"]
+# ── 分享欲 share_urge（v0.1.8 第一步：动机驱动时机，规则层零 LLM） ──
+# 随机计时器只作"最小间隔闸门"，到点后按分享欲采样决定是否真的开口；
+# 用户主动来找时回复路径绝不设门。
+urge_enabled = true
+# self 层基线分享欲：无事件时每 tick 向该值回归（双向）
+urge_base = 0.7
+# 正反馈步长：主动消息被接住 +1×该值；用户主动发起对话 +0.5×该值
+urge_gain = 0.1
+# 负反馈步长：主动消息在承接窗口（16 小时，代码常量）内无人接住时每条 -该值
+urge_decay = 0.25
+# 基线回归系数：每 tick 分享欲向基线靠拢的比例
+urge_regain = 0.15
+# branch 层对人系数下限：长期被冷落也不会低于该值（防彻底饿死）
+urge_branch_floor = 0.4
+# branch 层回归系数（沉默螺旋修复）：每 tick 对人系数向中性 1.0 靠拢——
+# 修复前 branch 层只降不升，约 3 次冷落触地板后永不回升（结构性沉默根因）
+urge_branch_regain = 0.05
+
 # 回忆里程碑（方案 §6 / Q4）：主动消息被接住后若真的聊起来（1 小时窗内 ≥3 条且
 # ≥30 字，取且），落一条用户原话回忆供日后当由头。关闭＝回忆恒空、回到改造前。
 # ⚠️ 本开关只管写入；三闸（7 天冷却 / 30 天保质 / 3 选 1）是代码常量，观察期冻结。
 milestone_enabled = true
+
+# 跨用户签发冷却（P4 / R44，v0.3.0 批 2）：同一事件/片段 T 小时内只签给 1 人，
+# 治同片段同时段多人群发。⚠️ 不构成生活线分叉/素材隔离——只限时间窗内的
+# 签发人数，素材内容不改、生活线仍单条。
+sign_cooldown_hours = 6
+
+# 由头进回复指令位（R39，v0.3.0 批 4，需宿主 ≥1.3.5 的 REPLY_EXTENSION 通道）：
+# 开启后主动消息的 reason 会教模型在 reply 调用里选择本插件的回复扩展，由头
+# 随即出现在「【额外回复要求】」块。建议先积累几天回执基线（receipt_catch）再开。
+reply_extension_enabled = false
 
 # 按用户窗口规则（覆盖默认窗口）：一条规则 = QQ 号 × 生效星期 × 时段
 #   星期记法（ISO）：1=周一 2=周二 3=周三 4=周四 5=周五 6=周六 7=周日
@@ -133,6 +161,43 @@ show_prompt = false
 # ===== 验收采样 =====
 [telemetry]
 enabled = true
+
+# ===== 世界书（v0.3.0 批 1 / R43）=====
+# 她的世界的结构化知识基座——「她的世界有什么」（[identity] 管「她是谁、底线是什么」）。
+# 文件：data/narrative/lorebook.toml 手编（mtime 热重载，模板见 examples/lorebook.example.toml）；
+# 条目三类：world=世界设定（可常驻）/ cast=NPC 名册（播种器取材面）/ entry=关键词触发。
+# 双模式：simple=世界书不读（[identity].world 照旧注入）；detailed=世界书接管世界观，
+# [identity].world 不再注入——values/world_rules 铁律两种模式都注入、不动。
+[lorebook]
+enabled = false
+mode = "simple"
+file = "lorebook.toml"
+# 命中条目的累计注入预算（字符）：constant 优先 → high 优先 → 文件序，超预算整条丢弃
+inject_budget_chars = 800
+# 条目数软上限：超出打 WARNING 不阻断、不截断（防手滑写崩）
+max_entries = 100
+
+# ===== 世界事件播种器（v0.3.0 批 2 / R40）=====
+# 独立题材源：周期低概率生成「她的世界里正在发生的小事」（事实权威、反应自由），
+# 进由头池带「外面发生的一件事：」前缀、origin=seed 可单独度量兑现回执。
+# 🔴 参与者禁入双层红线：生成 prompt 明示禁止涉及真实用户 + 落库前词面拦截
+# （模式用户号/已知会话号/群号/手工网名表），命中整条丢弃、不占每日配额。
+# 建议先填好世界书的世界基调与 NPC 名册再开启。
+[seeder]
+enabled = false
+# 两次播种尝试的最小间隔（分钟）；probability=每次尝试的实际播种概率（期望每天 1~2 条起步）
+interval_minutes = 240
+probability = 0.5
+daily_max = 2
+# 参与者拦截补充词表：模式用户与已知会话/群号之外的网名/昵称/称呼
+blocked_names = []
+
+# ===== 建议通道（v0.3.0 批 3 / R42）=====
+# 社交层 → 生活层唯一入口：网友建议经语义路由（须命中建议句式且挂靠某条待办事件）
+# 写入事件实体的 suggestions 字段，生活片段生成时作「倾向」参考——不是指令，bot 可
+# 任性不听；消费时匿名化（「有网友建议」）。与对话素材回声池两池分离；群聊永不路由。
+[suggestion]
+enabled = false
 
 # ===== 慢变晋升机（批 4）=====
 # 本段只控制**晋升行为**，不承载学习成果（`[learned]` 刻意不声明进 config.py，

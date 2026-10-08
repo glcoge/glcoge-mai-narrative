@@ -153,5 +153,5 @@ _Avoid_: 测试脚本（它是验收设施，进 git）
 _Avoid_: mock（泛指）
 
 **预留接口（Reserved Interface）**：
-声明未实现或实现待观察的接口/字段/参数，必须登记 `docs/预留接口登记表.md` 并在代码处 `# RESERVED(Rn)`/`# OBSERVE(Rn)` 锚定。不登记的预留一律视为死字段删除。
+声明未实现或实现待观察的接口/字段/参数，必须登记主仓本地 `.scratch/narrative-docs/预留接口登记表.md`（已随开发文档迁出本仓库）并在代码处 `# RESERVED(Rn)`/`# OBSERVE(Rn)` 锚定。不登记的预留一律视为死字段删除。
 _Avoid_: 占位符、TODO

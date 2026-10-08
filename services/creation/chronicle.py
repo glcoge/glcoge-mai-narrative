@@ -3,9 +3,9 @@
 从 ``state/engine.py`` 拆出（v0.2.0 批 2-C7，执行路线「类拆分推迟表」）：
 ``maybe_daily_chronicle`` / ``_build_chronicle_prompt`` / ``_load_native_personality``。
 
-依赖方向：本模块接受 ``deps`` 依赖束（深化 B）（不持有状态），engine 侧保留一层薄委托方法（B1 起传 ``self.deps``），
-对外 API 不变（``engine.maybe_daily_chronicle`` 等照旧）——与 ``proactive/sourcing.py``
-同一约定（改可见性会连带 33+ 处测试绑定点，纯移动不该动它们）。
+依赖方向：本模块接受 ``deps`` 依赖束（深化 B）（不持有状态）；深化 B1~B3 期的
+engine 薄委托壳（``engine.maybe_daily_chronicle`` 等）已随深化 C3 删除，
+调用方（engine tick）直调本模块函数。
 
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
 import ``state.engine``。``_SELF_SCOPE`` / ``parse_clock`` 采用函数内延迟导入。
