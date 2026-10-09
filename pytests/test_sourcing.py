@@ -3,7 +3,7 @@
 覆盖：
 - B6 纯移动：``build_bysource`` / ``compute_share_urge`` / ``record_urge_feedback``
   迁到 ``proactive/sourcing.py`` 后，engine 的对外 API 与行为不变
-- B7 取材优先级：tier 只定详略，真正的取材顺序＝**未用过 + 与最近对话不撞车**（R23）
+- B7 取材优先级：取材顺序＝**未用过 + 与最近对话不撞车**（R23；原 tier 三信号 2026-09-30 已随功能删除）
 - B8 命令兜底：``looks_like_command`` 本地正则（R9，宿主修复后可删）
 
 运行（项目根）：
@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import _synth_loader
 
 _synth_loader.load("services.state.engine")  # 触发 services/__init__.py
-_ENGINE_MOD = _synth_loader.load("services.state.engine")
+_ENGINE_MOD = _synth_loader.load("services.state.engine")
 sourcing = _synth_loader.load("services.proactive.sourcing")
 _SOURCING = _synth_loader.load("services.proactive.sourcing")
 _MESSAGE = _synth_loader.load("services.message")
@@ -103,7 +103,7 @@ def _make_engine(pending, events=None):
 
 def test_engine_methods_still_work_after_move():
     """engine.build_bysource / compute_share_urge / record_urge_feedback 行为不变。"""
-    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走", "tier": "normal"}])
+    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走"}])
     assert "去海边走了走" in sourcing.build_bysource(engine.deps,_UID, _NOW)
     assert sourcing.compute_share_urge(engine.deps,_UID) > 0
     sourcing.record_urge_feedback(engine.deps,_UID, "caught")
@@ -112,7 +112,7 @@ def test_engine_methods_still_work_after_move():
 
 def test_sourcing_functions_callable_directly():
     """迁出后可脱离 engine 类直接调用（新模块的对外契约）。"""
-    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走", "tier": "normal"}])
+    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "去海边走了走"}])
     assert "去海边走了走" in build_bysource(engine.deps, _UID, _NOW)
     assert _SOURCING.compute_share_urge(engine.deps, _UID) > 0
 
@@ -130,7 +130,7 @@ def test_bysource_skips_fragment_overlapping_recent_dialogue():
     """由头要是"新事"：与最近对话高度撞车的片段不作由头（宁可跳过）。"""
     same = "去海边走了走，风很大"
     engine = _make_engine(
-        [{"ts": "2026-09-22T10:00:00", "text": same, "tier": "normal"}],
+        [{"ts": "2026-09-22T10:00:00", "text": same}],
         events=[{"bysource": same}],
     )
     assert sourcing.build_bysource(engine.deps,_UID, _NOW) == "", "撞车片段应被跳过（本轮主动取消）"
@@ -139,16 +139,10 @@ def test_bysource_skips_fragment_overlapping_recent_dialogue():
 def test_bysource_keeps_non_overlapping_fragment():
     """不撞车时照常取材（过滤不能把正常功能滤掉）。"""
     engine = _make_engine(
-        [{"ts": "2026-09-22T10:00:00", "text": "去海边走了走，风很大", "tier": "normal"}],
+        [{"ts": "2026-09-22T10:00:00", "text": "去海边走了走，风很大"}],
         events=[{"bysource": "今天写完了作业"}],
     )
     assert "去海边走了走" in sourcing.build_bysource(engine.deps,_UID, _NOW)
-
-
-def test_minor_tier_now_usable_alone():
-    """回滚批 1 的 minor 排除（Q1）：详略与资格解耦，无素材切片同样可作由头。"""
-    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "无素材切片", "tier": "minor"}])
-    assert "无素材切片" in sourcing.build_bysource(engine.deps,_UID, _NOW)
 
 
 def test_full_window_sourcing_beyond_last_two():
@@ -158,9 +152,9 @@ def test_full_window_sourcing_beyond_last_two():
     ``build_bysource`` 返回 ""（宁可跳过）。全窗口化后第 3 旧的片段重新可见。
     """
     pending = [
-        {"ts": "2026-09-22T09:00:00", "text": "最旧的片段", "tier": "normal"},
-        {"ts": "2026-09-22T10:00:00", "text": "次新的片段", "tier": "normal"},
-        {"ts": "2026-09-22T11:00:00", "text": "最新的片段", "tier": "normal"},
+        {"ts": "2026-09-22T09:00:00", "text": "最旧的片段"},
+        {"ts": "2026-09-22T10:00:00", "text": "次新的片段"},
+        {"ts": "2026-09-22T11:00:00", "text": "最新的片段"},
     ]
     engine = _make_engine(pending)
     # 最新两条登记为已用 → 旧窗口（[-2:]）下无候选
@@ -174,7 +168,7 @@ def test_full_window_sourcing_beyond_last_two():
 
 def test_used_registry_width_follows_pending_max():
     """去重登记表宽度派生自 fragment_pending_max（§15-4）：不再硬编码 8。"""
-    engine = _make_engine([{"ts": "2026-09-22T11:00:00", "text": "片段甲", "tier": "normal"}])
+    engine = _make_engine([{"ts": "2026-09-22T11:00:00", "text": "片段甲"}])
     engine._plugin.config.narrative.fragment_pending_max = 3
     key = _SOURCING._bysource_used_key(_UID)
     # 预填 6 条更旧的登记（2026-01-01）→ 选中后再登记 1 条，共 7 条，只应留最新 3 条

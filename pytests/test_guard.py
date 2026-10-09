@@ -23,7 +23,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
 life = load("services.creation.life")
 
 _GUARD = load("services.state.continuity")
@@ -285,8 +285,8 @@ def test_inject_guard_drops_hitting_pending_fragment_only():
     text = _render(
         _plugin(guard_fragments=["言行不一"]),
         pending=[
-            {"ts": "2026-09-22T10:00:00", "text": "今天在厨房煮了粥", "tier": "minor"},
-            {"ts": "2026-09-22T10:30:00", "text": "忽然想起他有点言行不一", "tier": "minor"},
+            {"ts": "2026-09-22T10:00:00", "text": "今天在厨房煮了粥"},
+            {"ts": "2026-09-22T10:30:00", "text": "忽然想起他有点言行不一"},
         ],
     )
     assert "今天在厨房煮了粥" in text
@@ -298,7 +298,7 @@ def test_inject_guard_zero_keywords_renders_everything():
     text = _render(
         _plugin(),
         entries=[{"text": "昨天去海边走了走", "kind": "life", "source_uid": ""}],
-        pending=[{"ts": "2026-09-22T10:00:00", "text": "煮了粥", "tier": "minor"}],
+        pending=[{"ts": "2026-09-22T10:00:00", "text": "煮了粥"}],
     )
     assert "昨天去海边走了走" in text
     assert "煮了粥" in text

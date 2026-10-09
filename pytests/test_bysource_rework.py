@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import _synth_loader
 from pytests._synth_loader import FakeStore, make_logger  # noqa: E402
 
-_ENGINE = _synth_loader.load("services.state.engine")
+_ENGINE = _synth_loader.load("services.state.engine")
 _SYNTH_SERVICES = _synth_loader.load("services")
 _PROACTIVE = _synth_loader.load("services.proactive.scheduler")
 _SOURCING = _synth_loader.load("services.proactive.sourcing")
@@ -73,8 +73,8 @@ def _make_engine(pending):
     return engine
 
 
-def _frag(ts, tier, text="一段有画面的生活片段"):
-    return {"ts": ts, "text": text, "tier": tier}
+def _frag(ts, text="一段有画面的生活片段"):
+    return {"ts": ts, "text": text}
 
 
 # ===== B 去复用 =====
@@ -82,7 +82,7 @@ def _frag(ts, tier, text="一段有画面的生活片段"):
 
 def test_same_fragment_not_reused():
     """同一片段用过一次后，不再作第二次由头（宁可跳过，不重复说同一件事）。"""
-    engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
+    engine = _make_engine([_frag("2026-09-22T10:00:00")])
 
     first = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "一段有画面的生活片段" in first, "首次应取该片段"
@@ -96,8 +96,8 @@ def test_two_fragments_rotated():
     """两条未用片段时，逐次取不同的（各自只用一次）。"""
     engine = _make_engine(
         [
-            _frag("2026-09-22T10:00:00", "normal", "旧片段"),
-            _frag("2026-09-22T11:00:00", "normal", "新片段"),
+            _frag("2026-09-22T10:00:00", "旧片段"),
+            _frag("2026-09-22T11:00:00", "新片段"),
         ]
     )
     first = sourcing.build_bysource(engine.deps,"10001", _NOW)
@@ -116,7 +116,7 @@ def test_used_marks_are_per_user():
     批 2（R44）语义变更：签发冷却（默认 6h）内同一事件不签给第二人——跨用户的
     素材共享观察窗移到冷却结束之后（used 键的 per-uid 隔离由分键本身保证）。
     """
-    engine = _make_engine([_frag("2026-09-22T10:00:00", "normal")])
+    engine = _make_engine([_frag("2026-09-22T10:00:00")])
 
     first = sourcing.build_bysource(engine.deps,"10001", _NOW)
     assert "一段有画面的生活片段" in first
@@ -136,23 +136,21 @@ def third_is_empty(engine) -> bool:
 # ===== C 资格解耦（2026-09-30 回滚批 1）=====
 
 
-def test_minor_fragment_usable_alone():
-    """回滚批 1 的 minor 排除（Q1）：纯状态切片同样可作由头。"""
-    engine = _make_engine([_frag("2026-09-22T10:00:00", "minor", "只是发了个呆")])
-    assert "只是发了个呆" in sourcing.build_bysource(engine.deps,"10001", _NOW)
+def test_extra_or_missing_fields_do_not_block_bysource():
+    """条目带已废弃/未知字段或缺字段不影响由头资格（资格解耦回归钉）。
 
-
-def test_major_fragment_usable():
-    """major 档可用（写细了的片段才值得开口）。"""
-    engine = _make_engine([_frag("2026-09-22T10:00:00", "major", "写细了的那一件事")])
-    bysource = sourcing.build_bysource(engine.deps,"10001", _NOW)
-    assert "写细了的那一件事" in bysource
-
-
-def test_old_entry_without_tier_still_usable():
-    """老片段没有 tier 字段（升级前写入）→ 按可用处理，不因缺字段丢失。"""
-    engine = _make_engine([{"ts": "2026-09-22T10:00:00", "text": "升级前的片段"}])
-    assert "升级前的片段" in sourcing.build_bysource(engine.deps,"10001", _NOW)
+    2026-09-30 tier 三信号整体删除（minor 排除回滚，Q1）：旧条目可能仍带
+    minor/major 废弃档位值，升级前条目可能缺 tier 字段——档位与资格解耦后
+    都不该丢素材。原 minor/major/缺字段三条用例合并于此，断言点全部保留
+    （E13 审计：随 tier 功能删除的用例合并，2026-10-09 测试精简轮 T1）。
+    """
+    for entry in (
+        {"ts": "2026-09-22T10:00:00", "text": "只是发了个呆", "tier": "minor"},
+        {"ts": "2026-09-22T10:00:00", "text": "写细了的那一件事", "tier": "major"},
+        {"ts": "2026-09-22T10:00:00", "text": "升级前的片段"},
+    ):
+        engine = _make_engine([entry])
+        assert entry["text"] in sourcing.build_bysource(engine.deps, "10001", _NOW)
 
 
 # ===== G 迟来承接（24h） =====
