@@ -41,22 +41,6 @@ MaiNarrativePlugin = _PLUGIN.MaiNarrativePlugin
 _SELF_SCOPE = "self"
 
 
-class _Logger:
-    """吞掉所有日志的假 logger。"""
-
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
-
-
 class _FakeStore(_synth_loader.KvStoreMixin):
     """只实现编年史/事件相关的假 store。
 
@@ -121,7 +105,7 @@ def _make_engine(
     events=None,
     creator=None,
 ):
-    """构造只含编年史链路所需依赖的 engine。"""
+    """构造只含编年史链路所需依赖的 engine（骨架经 _synth_loader.make_engine 装配）。"""
     cfg = SimpleNamespace(
         plugin=SimpleNamespace(enabled=plugin_enabled),
         narrative=SimpleNamespace(
@@ -145,22 +129,19 @@ def _make_engine(
         llm=SimpleNamespace(show_prompt=False),
         identity=SimpleNamespace(world="一座海边小城", values=[], world_rules=[], immutable_traits=[]),
     )
-    engine = NarrativeEngine.__new__(NarrativeEngine)
-    engine._plugin = SimpleNamespace(
-        config=cfg, ctx=SimpleNamespace(logger=_Logger())
+    engine, _ = _synth_loader.make_engine(
+        config=cfg,
+        state={
+            "state": {
+                "last_talk_date": talk_date,
+                "mood": {"label": "平静", "energy": 0.6},
+                "routine": {"phase": "白天"},
+                "focus": {},
+            }
+        },
+        store=_FakeStore(events=events),
+        creator=creator or _FakeCreator(),
     )
-    engine._store = _FakeStore(events=events)
-    engine._creator = creator or _FakeCreator()
-    engine._self_state = {
-        "state": {
-            "last_talk_date": talk_date,
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "白天"},
-            "focus": {},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
     return engine
 
 

@@ -23,7 +23,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import FakeCreator as _FakeCreator, KvStoreMixin, load, pending_events as _pending, WarnLogger as _Logger  # noqa: E402
+from pytests._synth_loader import KvStoreMixin, load, make_life_engine, pending_events as _pending  # noqa: E402
 
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
 life = load("services.creation.life")
@@ -59,46 +59,8 @@ class _FakeStore(KvStoreMixin):
 
 
 def _make_engine(*, interval=30, daily_max=16, pending_max=12):
-    """构造只含生活片段链路依赖的 engine（走 engine 的薄委托方法）。"""
-    config = SimpleNamespace(
-        plugin=SimpleNamespace(enabled=True),
-        narrative=SimpleNamespace(
-            enabled=True,
-            chronicle_enabled=True,
-            mode_user_ids=["10001"],
-            life_fragment_daily_max=daily_max,
-            life_fragment_interval_minutes=interval,
-            life_fragment_detail_enabled=False,
-            fragment_pending_max=pending_max,
-            # 高光签概率：0.0 = 本文件内永不抽签（本文件只测容量 LRU）
-            highlight_probability=0.0,
-            sleep_time="",
-            wake_time="",
-            wake_fragment_enabled=False,
-            sleep_pre_sleep_hint_minutes=25,
-        ),
-        llm=SimpleNamespace(show_prompt=False, temperature=0.7),
-        identity=SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
-        anchor=SimpleNamespace(guard_keywords=[]),
-    )
-    logger = _Logger()
-    engine = _NarrativeEngine.__new__(_NarrativeEngine)
-    engine._plugin = SimpleNamespace(
-        config=config, ctx=SimpleNamespace(logger=logger), _telemetry=None
-    )
-    engine._store = _FakeStore()
-    engine._creator = _FakeCreator()
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "白天", "sleep_state": "awake"},
-            "focus": {"pending_events": []},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
-    engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
-    return engine
+    """构造只含生活片段链路依赖的 engine（装配收敛至 _synth_loader.make_life_engine）。"""
+    return make_life_engine(interval=interval, daily_max=daily_max, pending_max=pending_max)
 
 
 def _generate(engine, count, *, step_minutes=31):

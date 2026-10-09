@@ -434,13 +434,31 @@ def pending_events(engine):
     return engine._self_state["state"]["focus"]["pending_events"]
 
 
-def make_engine(*, config=None, state=None, store=None, creator=None, telemetry=None):
+def make_engine(
+    *,
+    config=None,
+    state=None,
+    store=None,
+    creator=None,
+    telemetry=None,
+    branch=None,
+    branch_save=False,
+    local_now=None,
+    plugin_extra=None,
+):
     """真 NarrativeEngine + 共享替身的标准装配（各文件 ``__new__``+手挂的单一化）。
 
     - ``config`` 缺省给最小可用段（plugin/narrative/llm/identity/anchor）；
     - ``state`` 缺省给标准自我层形状；传入则原样使用（load/save 直连该 dict）；
     - ``store`` 缺省新建 :class:`FakeStore`；``creator`` 缺省 ``None``（创作链
-      测试自行注入 FakeCreator）。
+      测试自行注入 FakeCreator）；
+    - ``branch`` 传 dict 则挂 ``load_branch_state``（**同一 dict** 每次返回，与
+      各文件手挂闭包语义一致）；``branch_save=True`` 再挂 no-op ``save_branch_state``；
+    - ``local_now`` 传 callable 则挂 ``engine._local_now``；
+    - ``plugin_extra`` 键值并入 plugin 命名空间（如 seeder 的 _lorebook/_streams）。
+
+    ``plugin._store`` 与 ``engine._store`` 恒为**同一实例**——生产不变量
+    （scheduler 走前者、engine 走后者；批 3-C5 话题归因从 plugin 侧取 store）。
     Returns:
         ``(engine, store)``——store 一并返回供断言。
     """
@@ -468,12 +486,15 @@ def make_engine(*, config=None, state=None, store=None, creator=None, telemetry=
     engine_mod = load("services.state.engine")
     resolved_store = store if store is not None else FakeStore()
     engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
-    engine._plugin = types.SimpleNamespace(
+    plugin = types.SimpleNamespace(
         config=config,
         ctx=types.SimpleNamespace(logger=make_logger()),
         _store=resolved_store,
         **({"_telemetry": telemetry} if telemetry is not None else {}),
     )
+    if plugin_extra:
+        plugin.__dict__.update(plugin_extra)
+    engine._plugin = plugin
     engine._store = resolved_store
     if creator is not None:
         engine._creator = creator
@@ -486,7 +507,61 @@ def make_engine(*, config=None, state=None, store=None, creator=None, telemetry=
     }
     engine.load_self_state = lambda: engine._self_state
     engine.save_self_state = lambda value: None
+    if branch is not None:
+        engine.load_branch_state = lambda uid, _b=branch: _b
+        if branch_save:
+            engine.save_branch_state = lambda uid, value: None
+    if local_now is not None:
+        # 原手挂语义是 ``engine._local_now = lambda: _NOW``（可调用）；传值时包一层
+        engine._local_now = local_now if callable(local_now) else (lambda: local_now)
     return engine, resolved_store
+
+
+def make_life_engine(
+    *,
+    interval=30,
+    daily_max=16,
+    pending_max=12,
+    detail_enabled=False,
+    highlight_probability=0.0,
+    mode_user_ids=("10001",),
+    store=None,
+    creator=None,
+):
+    """生活片段链路标准 engine（原 fragment_pending_capacity / life_fragment_highlight
+    两文件逐字同源的装配，测试精简轮 T3 收敛）。
+
+    - ``creator`` 缺省新建 :class:`FakeCreator`（两文件原本恒挂创作替身）；
+    - ``load_branch_state`` 保持「每次全新字面量」的手挂语义（区别于
+      :func:`make_engine` 的共享 dict）。
+    """
+    config = types.SimpleNamespace(
+        plugin=types.SimpleNamespace(enabled=True),
+        narrative=types.SimpleNamespace(
+            enabled=True,
+            chronicle_enabled=True,
+            mode_user_ids=list(mode_user_ids),
+            life_fragment_daily_max=daily_max,
+            life_fragment_interval_minutes=interval,
+            life_fragment_detail_enabled=detail_enabled,
+            highlight_probability=highlight_probability,
+            fragment_pending_max=pending_max,
+            sleep_time="",
+            wake_time="",
+            wake_fragment_enabled=False,
+            sleep_pre_sleep_hint_minutes=25,
+        ),
+        llm=types.SimpleNamespace(show_prompt=False, temperature=0.7),
+        identity=types.SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
+        anchor=types.SimpleNamespace(guard_keywords=[]),
+    )
+    engine, _store = make_engine(
+        config=config,
+        store=store,
+        creator=creator if creator is not None else FakeCreator(),
+    )
+    engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
+    return engine
 
 
 def run_standalone(globals_dict: dict) -> int:

@@ -33,7 +33,7 @@ _NOW = datetime.datetime(2026, 9, 22, 12, 0, 0)
 
 
 def _make_engine(pending):
-    """构造含指定 pending_events 的 engine。"""
+    """构造含指定 pending_events 的 engine（骨架经 _synth_loader.make_engine 装配）。"""
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         narrative=SimpleNamespace(
@@ -48,28 +48,20 @@ def _make_engine(pending):
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
         identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], immutable_traits=[]),
     )
-    engine = NarrativeEngine.__new__(NarrativeEngine)
-    # plugin._store 与 engine._store 在生产里是**同一个实例**（scheduler 走前者、
-    # engine 走后者）；批 3-C5 话题归因从 plugin 侧取 store，假对象必须同样共享
-    store = FakeStore()
-    engine._plugin = SimpleNamespace(
-        config=config, ctx=SimpleNamespace(logger=make_logger()), _store=store
+    engine, _ = _synth_loader.make_engine(
+        config=config,
+        state={
+            "state": {
+                "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
+                "routine": {"phase": "午后"},
+                "focus": {"pending_events": pending},
+            }
+        },
+        branch={
+            "state": {"familiarity": 10.0, "milestones": []},
+            "identity": {"stage": "陌生人"},
+        },
     )
-    engine._store = store
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
-            "routine": {"phase": "午后"},
-            "focus": {"pending_events": pending},
-        }
-    }
-    branch = {
-        "state": {"familiarity": 10.0, "milestones": []},
-        "identity": {"stage": "陌生人"},
-    }
-    engine.load_branch_state = lambda uid: branch
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
     return engine
 
 

@@ -26,8 +26,8 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 import _synth_loader
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
-from pytests._synth_loader import FakeLogger, FakeStore, make_logger, pending_events as _pending  # noqa: E402
+from pytests._synth_loader import load  # noqa: E402
+from pytests._synth_loader import FakeStore, pending_events as _pending  # noqa: E402
 
 _SEEDER = load("services.creation.seeder")
 _LOADER = load("services.lorebook.loader")
@@ -97,7 +97,7 @@ def _make_engine(
     known_uids=(),
     known_gids=(),
 ):
-    """播种链路最小 engine（四闸 + 生成 + 拦截 + 落账所需依赖齐备）。"""
+    """播种链路最小 engine（骨架经 _synth_loader.make_engine 装配）。"""
     if seeder is None:
         seeder = _synth_loader.seeder_config(enabled=True)
     config = SimpleNamespace(
@@ -113,29 +113,24 @@ def _make_engine(
         anchor=SimpleNamespace(guard_keywords=[]),
         seeder=seeder,
     )
-    logger = FakeLogger()
-    store = FakeStore()
-    plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _store=store)
-    plugin._lorebook = _make_loader(lorebook_text)
+    plugin_extra = {"_lorebook": _make_loader(lorebook_text)}
     if known_uids:
-        plugin._streams = SimpleNamespace(known_uids=lambda: list(known_uids))
+        plugin_extra["_streams"] = SimpleNamespace(known_uids=lambda: list(known_uids))
     if known_gids:
-        plugin._group_streams = SimpleNamespace(known_gids=lambda: list(known_gids))
-    engine = load("services.state.engine").NarrativeEngine.__new__(
-        load("services.state.engine").NarrativeEngine
+        plugin_extra["_group_streams"] = SimpleNamespace(known_gids=lambda: list(known_gids))
+    engine, _ = _synth_loader.make_engine(
+        config=config,
+        state={
+            "state": {
+                "mood": {"label": "平静", "energy": 0.6},
+                "routine": {"phase": "午后", "sleep_state": "awake"},
+                "focus": {"pending_events": []},
+            }
+        },
+        store=FakeStore(),
+        creator=_FakeCreator(creator_text),
+        plugin_extra=plugin_extra,
     )
-    engine._plugin = plugin
-    engine._store = store
-    engine._creator = _FakeCreator(creator_text)
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "午后", "sleep_state": "awake"},
-            "focus": {"pending_events": []},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
     return engine
 
 

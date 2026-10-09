@@ -53,7 +53,7 @@ _SUGGEST_TEXT = "快去买烤面筋啊"
 
 
 def _make_engine(*, pending=None, enabled=True):
-    """建议链路最小 engine（路由 + 写入 + prompt 消费所需依赖）。"""
+    """建议链路最小 engine（骨架经 _synth_loader.make_engine 装配）。"""
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         narrative=SimpleNamespace(
@@ -68,20 +68,18 @@ def _make_engine(*, pending=None, enabled=True):
         identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], guard_fragments=[]),
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
     )
-    engine_mod = load("services.state.engine")
-    engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=_Logger()))
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "傍晚", "sleep_state": "awake"},
-            "focus": {"pending_events": list(pending or [])},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
-    engine._local_now = lambda: _NOW
-    engine._store = FakeStore()
+    engine, _ = _synth_loader.make_engine(
+        config=config,
+        state={
+            "state": {
+                "mood": {"label": "平静", "energy": 0.6},
+                "routine": {"phase": "傍晚", "sleep_state": "awake"},
+                "focus": {"pending_events": list(pending or [])},
+            }
+        },
+        store=FakeStore(),
+        local_now=_NOW,
+    )
     return engine
 
 

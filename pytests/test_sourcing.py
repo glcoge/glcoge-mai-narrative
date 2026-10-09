@@ -35,9 +35,6 @@ _NOW = datetime.datetime(2026, 9, 22, 11, 37, 0)
 _UID = "10001"
 
 
-_Logger = _synth_loader.null_logger
-
-
 class _FakeStore:
     def __init__(self, events=None):
         self.kv_str: dict = {}
@@ -54,6 +51,7 @@ class _FakeStore:
 
 
 def _make_engine(pending, events=None):
+    """构造 sourcing 链路 engine（骨架经 _synth_loader.make_engine 装配）。"""
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         narrative=SimpleNamespace(
@@ -67,23 +65,21 @@ def _make_engine(pending, events=None):
             urge_branch_floor=0.3,
         ),
     )
-    engine = NarrativeEngine.__new__(NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=_Logger()))
-    engine._store = _FakeStore(events)
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6, "last_shift_ts": ""},
-            "routine": {"phase": "午后"},
-            "focus": {"pending_events": pending},
-            "urge": 0.5,
-        }
-    }
-    branch = {"state": {"familiarity": 10.0, "milestones": [], "urge_factor": 1.0},
-              "identity": {"stage": "陌生人"}}
-    engine.load_branch_state = lambda uid: branch
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
-    engine.save_branch_state = lambda uid, b: None
+    engine, _ = _synth_loader.make_engine(
+        config=config,
+        state={
+            "state": {
+                "mood": {"label": "平静", "energy": 0.6},
+                "routine": {"phase": "午后"},
+                "focus": {"pending_events": pending},
+                "urge": 0.5,
+            }
+        },
+        store=_FakeStore(events),
+        branch={"state": {"familiarity": 10.0, "milestones": [], "urge_factor": 1.0},
+                "identity": {"stage": "陌生人"}},
+        branch_save=True,
+    )
     return engine
 
 
