@@ -23,7 +23,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, WarnLogger as _Logger, load  # noqa: E402
+from pytests._synth_loader import FakeStore, WarnLogger as _Logger, load  # noqa: E402
 life = load("services.creation.life")
 
 _GUARD = load("services.state.continuity")
@@ -327,34 +327,6 @@ def test_inject_guard_keyword_come_from_values_too():
 # ─── 第一道闸：入库前（创作出口，creation/life.py） ───────────
 
 
-class _FakeStore(KvStoreMixin):
-    """只含生活片段链路所需接口的假 store。"""
-
-    def __init__(self, events=None):
-        self.events = list(events or [])
-        self.chronicle: list = []
-        self.kv_int: dict = {}
-        self.kv_str: dict = {}
-
-    def get_kv_int(self, key):
-        return self.kv_int.get(key, 0)
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def list_events(self, scope, limit=20):
-        return self.events[:limit]
-
-    def append_chronicle(self, scope, kind, text, ts):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
-
-
 class _FakeCreator:
     def __init__(self, text):
         self.text = text
@@ -399,7 +371,7 @@ def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rule
     logger = _Logger()
     engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
     engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _telemetry=None)
-    engine._store = _FakeStore()
+    engine._store = FakeStore()
     engine._creator = _FakeCreator(creator_text)
     engine._self_state = {
         "state": {

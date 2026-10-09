@@ -55,31 +55,6 @@ class _Logger:
         pass
 
 
-class _FakeStore(_synth_loader.KvStoreMixin):
-    """假 store：kv 字符串 + JSON kv（KvStoreMixin）+ 无事件（承接链不需要）。"""
-
-    def __init__(self):
-        self.kv_str: dict = {}
-
-    def list_events(self, scope, limit=20):
-        return []
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def get_kv_int(self, key):
-        try:
-            return int(self.kv_str.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            return 0
-
-    def set_kv_int(self, key, value):
-        self.kv_str[key] = str(int(value))
-
-
 def _make_engine(*, milestone_enabled=True, milestones=None, uid=_UID):
     """真 engine 实例 + 假 store + 内存 branch（``append_milestone`` 走真实现）。"""
     config = SimpleNamespace(
@@ -93,7 +68,7 @@ def _make_engine(*, milestone_enabled=True, milestones=None, uid=_UID):
         "state": {},
     }
     logger = _Logger()
-    store = _FakeStore()
+    store = _synth_loader.FakeStore()
     engine = NarrativeEngine.__new__(NarrativeEngine)
     engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _store=store)
     engine._store = store
@@ -301,7 +276,7 @@ def _make_sourcing_engine(branch_by_uid, pending=None):
         proactive=SimpleNamespace(milestone_enabled=True),
     )
     logger = _Logger()
-    store = _FakeStore()
+    store = _synth_loader.FakeStore()
     engine = NarrativeEngine.__new__(NarrativeEngine)
     engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _store=store)
     engine._store = store

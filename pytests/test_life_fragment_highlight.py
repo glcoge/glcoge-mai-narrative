@@ -29,7 +29,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load, make_life_engine, pending_events as _pending  # noqa: E402
+from pytests._synth_loader import load, make_life_engine, pending_events as _pending  # noqa: E402
 
 _LIFE = load("services.creation.life")
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
@@ -43,33 +43,6 @@ build_life_fragment_prompt = _LIFE.build_life_fragment_prompt
 _NOW = datetime.datetime(2026, 9, 21, 12, 0, 0)
 _TODAY = "2026-09-21"
 _UID = "10001"
-
-
-class _FakeStore(KvStoreMixin):
-    """只含生活片段链路所需接口的假 store。"""
-
-    def __init__(self):
-        self.chronicle: list = []
-        self.kv_int: dict = {}
-        self.kv_str: dict = {}
-
-    def get_kv_int(self, key):
-        return self.kv_int.get(key, 0)
-
-    def set_kv_int(self, key, value):
-        self.kv_int[key] = value
-
-    def get_kv_str(self, key):
-        return self.kv_str.get(key, "")
-
-    def set_kv_str(self, key, value):
-        self.kv_str[key] = value
-
-    def list_events(self, scope, limit=20):
-        return []
-
-    def append_chronicle(self, scope, kind, text, ts):
-        self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
 
 
 def _make_engine(
