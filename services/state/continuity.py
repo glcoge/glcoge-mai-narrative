@@ -354,6 +354,7 @@ def coerce_slow_value(path: str, value: Any) -> Any:
 
 # OBSERVE(R30)：双向守卫关键词**自动抽取**的落点——从 [identity].world_rules/values 切子句
 # + 剥祈使前缀抽可命中片段；删掉则第二道闸（注入侧）失去词源，锚定层的底线无从拦截。
+# ⚠️ 2026-10-09 裁定：关键词匹配整体默认禁用（[anchor].guard_check = false，见下）。
 def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Iterable[str]) -> Set[str]:
     """汇总守卫关键词（ADR-0002 §9 双向守卫）。
 
@@ -409,9 +410,18 @@ def build_guard_keywords(config: Any) -> Set[str]:
     配置段解耦（缺段不炸）：老配置 / 测试假件没有 ``[anchor]`` 或 ``[identity]``
     的 ``guard_fragments`` 时按空处理——**不是**用 getattr 掩盖错误，而是这三项
     来源本就都是"可选补充"，缺一个就少一路。
+
+    ⚠️ 2026-10-09 裁定（登记表 R30）：``[anchor].guard_check = false`` 时**恒返回
+    空集**——关键词子串匹配误判风险高（中文无词边界、集合只增不减），误判代价
+    是丢弃整条产出；HDSI 借鉴源的 validateScriptCommit 实为纯结构校验，当初
+    误读为「关键词过滤」。部署期禁用入口，待功能测试完整后再定修改/废弃/删除。
+    空集语义 = 两道闸全放行（``should_drop_output`` 恒 False、
+    ``filter_guarded_entries`` 原样通过），测试已锁。
     """
-    identity = getattr(config, "identity", None)
     anchor = getattr(config, "anchor", None)
+    if not getattr(anchor, "guard_check", False):
+        return set()
+    identity = getattr(config, "identity", None)
     world_rules = list(getattr(identity, "world_rules", None) or [])
     values = list(getattr(identity, "values", None) or [])
     extra = list(getattr(identity, "guard_fragments", None) or [])

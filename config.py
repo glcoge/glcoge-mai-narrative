@@ -126,17 +126,34 @@ class AnchorSection(PluginConfigBase):
         ),
         json_schema_extra={"label": "启动期锚定一致性比对", "order": 1},
     )
+    guard_check: bool = Field(
+        default=False,
+        description=(
+            "双向守卫（入库前 + 注入前的关键词合规闸）总开关。"
+            "⚠️ 2026-10-09 裁定（登记表 R30）：关键词子串匹配误判率高——中文无词边界、"
+            "关键词集合只增不减，误判代价 = 丢弃整条产出；借鉴源 HDSI 的 "
+            "validateScriptCommit 实为纯结构校验（散文非空/事件 id 唯一/因果引用存在性），"
+            "当初借鉴时误读为「关键词过滤」。部署期默认禁用：守卫不拦任何产出；"
+            "待功能测试完整后再评估修改、废弃或删除。"
+        ),
+        json_schema_extra={
+            "label": "关键词守卫总开关",
+            "hint": "默认关：误判代价是丢弃整条产出；重开前先读登记表 R30 裁定",
+            "order": 2,
+        },
+    )
     guard_keywords: List[str] = Field(
         default_factory=list,
         description=(
             "双向守卫（入库前 + 注入前）的**手工补充**关键词。"
             "自动部分另从 [identity].world_rules / values 抽取，无需在此重复。"
+            "⚠️ 仅在 guard_check = true 时生效（2026-10-09 裁定默认关）。"
         ),
         json_schema_extra={
             "label": "守卫关键词（手工补充）",
             "hint": '例 ["内部代号","真实姓名"]；自动部分已含 world_rules/values',
             "item_type": "string",
-            "order": 2,
+            "order": 3,
         },
     )
 

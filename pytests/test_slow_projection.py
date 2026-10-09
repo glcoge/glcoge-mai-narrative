@@ -47,6 +47,9 @@ def _make_plugin(*, values=None, world_rules=None, projection_limit=None) -> Sim
                 world_rules=list(world_rules or []),
                 immutable_traits=[],
             ),
+            # guard_check=True：本文件的守卫用例（test_build_drops_guarded_items）
+            # 测的是「守卫开启时丢条目」；2026-10-09 裁定默认禁用。
+            anchor=SimpleNamespace(guard_keywords=[], guard_check=True),
             narrative=_synth_loader.sleep_config(sleep_time="", wake_time=""),
             promotion=promotion,
         )

@@ -48,8 +48,10 @@ class _Identity:
 
 
 class _Anchor:
-    def __init__(self, guard_keywords=()):
+    def __init__(self, guard_keywords=(), guard_check=None):
         self.guard_keywords = list(guard_keywords)
+        if guard_check is not None:
+            self.guard_check = guard_check
 
 
 class _Config:
@@ -67,7 +69,7 @@ def test_build_guard_keywords_merges_three_sources():
                 values=["诚实"],
                 guard_fragments=["内部代号"],
             ),
-            anchor=_Anchor(guard_keywords=["真实姓名"]),
+            anchor=_Anchor(guard_keywords=["真实姓名"], guard_check=True),
         )
     )
     assert "不可说谎" in keywords
@@ -92,8 +94,62 @@ def test_build_guard_keywords_tolerates_missing_sections():
 
 def test_build_guard_keywords_tolerates_missing_guard_fragments():
     """``[identity]`` 没有 guard_fragments 字段（旧配置）时只取另外两路。"""
-    keywords = build_guard_keywords(_Config(identity=_Identity(world_rules=["不可说谎"])))
+    keywords = build_guard_keywords(
+        _Config(
+            identity=_Identity(world_rules=["不可说谎"]),
+            anchor=_Anchor(guard_check=True),
+        )
+    )
     assert keywords == {"不可说谎", "说谎"}
+
+
+# ─── 2026-10-09 裁定：[anchor].guard_check 总开关（登记表 R30，部署期默认禁用）───
+
+
+def test_build_guard_keywords_disabled_returns_empty_set():
+    """guard_check=false（2026-10-09 裁定默认）→ 恒空集：三路来源齐全也不抽。"""
+    keywords = build_guard_keywords(
+        _Config(
+            identity=_Identity(
+                world_rules=["不可说谎"],
+                values=["诚实"],
+                guard_fragments=["内部代号"],
+            ),
+            anchor=_Anchor(guard_keywords=["真实姓名"], guard_check=False),
+        )
+    )
+    assert keywords == set()
+
+
+def test_build_guard_keywords_enabled_keeps_three_sources():
+    """guard_check=true → 三路来源照常进集合（开关只管入口，不改抽取逻辑）。"""
+    keywords = build_guard_keywords(
+        _Config(
+            identity=_Identity(
+                world_rules=["不可说谎"],
+                values=["诚实"],
+                guard_fragments=["内部代号"],
+            ),
+            anchor=_Anchor(guard_keywords=["真实姓名"], guard_check=True),
+        )
+    )
+    assert keywords == {"不可说谎", "说谎", "诚实", "内部代号", "真实姓名"}
+
+
+def test_build_guard_keywords_missing_anchor_flag_defaults_disabled():
+    """``[anchor]`` 没有 guard_check 字段（老配置 / 测试假件）→ 视为禁用。
+
+    缺段 = 关闭语义与 seeder/[lorebook] 的「缺段不炸」先例一致；
+    生产 config 恒有该字段（config.py 默认 False）。
+    """
+
+    class _OldAnchor:  # 故意不带 guard_check
+        guard_keywords = ["真实姓名"]
+
+    keywords = build_guard_keywords(
+        _Config(identity=_Identity(values=["诚实"]), anchor=_OldAnchor())
+    )
+    assert keywords == set()
 
 
 # ─── 命中判定 ────────────────────────────────────────────────
@@ -195,7 +251,7 @@ def _plugin(world_rules=(), values=(), guard_fragments=(), guard_keywords=()):
                 values=values,
                 guard_fragments=guard_fragments,
             ),
-            anchor=_Anchor(guard_keywords=guard_keywords),
+            anchor=_Anchor(guard_keywords=guard_keywords, guard_check=True),
             narrative=SimpleNamespace(
                 sleep_time="",
                 wake_time="",
@@ -362,7 +418,7 @@ def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rule
             world_rules=list(world_rules),
             guard_fragments=list(guard_fragments),
         ),
-        anchor=SimpleNamespace(guard_keywords=[]),
+        anchor=SimpleNamespace(guard_keywords=[], guard_check=True),
     )
     engine, _ = make_engine(
         config=config,
