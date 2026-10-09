@@ -27,7 +27,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 import _synth_loader
 from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
-from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
+from pytests._synth_loader import FakeLogger, FakeStore, make_logger, pending_events as _pending  # noqa: E402
 
 _SEEDER = load("services.creation.seeder")
 _LOADER = load("services.lorebook.loader")
@@ -146,10 +146,6 @@ def _make_loader(book_text):
     path = tmp / "lorebook.toml"
     path.write_text(book_text, encoding="utf-8")
     return _LOADER.LorebookLoader(path, budget=800, max_entries=100)
-
-
-def _pending(engine):
-    return engine._self_state["state"]["focus"]["pending_events"]
 
 
 # ===== 四闸节奏 =====

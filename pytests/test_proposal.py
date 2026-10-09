@@ -54,12 +54,7 @@ class _FakeClient:
         return self._response
 
 
-class _Counter:
-    def __init__(self):
-        self.kinds: list = []
-
-    def record_counter(self, kind: str, value: float = 1) -> None:
-        self.kinds.append(kind)
+_Counter = _synth_loader.CounterTelemetry
 
 
 def _make(tmp: str, *, response="", fail=False, counters=None, **config_overrides):

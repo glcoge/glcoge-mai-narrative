@@ -23,29 +23,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import FakeCreator as _FakeCreator, KvStoreMixin, load, pending_events as _pending, WarnLogger as _Logger  # noqa: E402
 
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
 life = load("services.creation.life")
 
 _BASE = datetime.datetime(2026, 9, 21, 8, 0, 0)
-
-
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-
-    def info(self, *a, **k):
-        pass
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
 
 
 class _FakeStore(KvStoreMixin):
@@ -73,11 +56,6 @@ class _FakeStore(KvStoreMixin):
 
     def append_chronicle(self, scope, kind, text, ts):
         self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
-
-
-class _FakeCreator:
-    async def generate(self, prompt):
-        return "今天在厨房煮了粥。"
 
 
 def _make_engine(*, interval=30, daily_max=16, pending_max=12):
@@ -128,10 +106,6 @@ def _generate(engine, count, *, step_minutes=31):
     for index in range(count):
         moment = _BASE + datetime.timedelta(minutes=step_minutes * index)
         asyncio.run(life.maybe_generate_life_fragment(engine.deps,moment))
-
-
-def _pending(engine):
-    return engine._self_state["state"]["focus"]["pending_events"]
 
 
 def test_capacity_lru_evicts_oldest():

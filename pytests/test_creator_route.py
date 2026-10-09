@@ -37,15 +37,7 @@ _CREATOR = _synth_loader.load("services.creation.creator")
 CreatorClient = _CREATOR.CreatorClient
 
 
-class _ListHandler(_stdlib_logging.Handler):
-    """捕获日志消息，供断言告警内容。"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list = []
-
-    def emit(self, record: _stdlib_logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
+_ListHandler = _synth_loader.ListLogHandler
 
 
 class _FakeLLM:

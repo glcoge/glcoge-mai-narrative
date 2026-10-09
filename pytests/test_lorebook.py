@@ -26,21 +26,7 @@ LorebookLoader = _LOADER.LorebookLoader
 LorebookEntry = _LOADER.LorebookEntry
 
 
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-
-    def info(self, *a, **k):
-        pass
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
+_Logger = _synth_loader.WarnLogger
 
 
 _FULL_BOOK = """

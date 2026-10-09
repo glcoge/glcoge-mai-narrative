@@ -10,6 +10,8 @@ test_plugin_hooks / test_engine_rules / test_render_turn / test_creator_route
 from __future__ import annotations
 
 import importlib.util
+import logging
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -359,6 +361,77 @@ def make_logger(capture: "list | None" = None) -> types.SimpleNamespace:
         logger.info = info
         logger.warning = warning
     return logger
+
+
+# ─── 机械等价夹具（测试精简轮 T2：≥2 文件逐字相同的定义上收） ─────────────
+# 收敛纪律（测试精简执行方案 §3.2）：共享版与被替换的本地定义**同源**，
+# 刺激面零变化；测试文件以别名绑定保持原名与调用点不变。
+
+
+class WarnLogger:
+    """warning 收集、其余静默的 logger（原 4 文件逐字相同的 ``_Logger``）。
+
+    四方法全部 ``*a, **k`` 宽容签名（生产侧多传 kwargs 不会炸）；
+    ``warnings`` 列表供断言告警文案。
+    """
+
+    def __init__(self):
+        self.warnings: list = []
+
+    def info(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
+
+    def error(self, *a, **k):
+        pass
+
+
+class CounterTelemetry:
+    """只实现 ``record_counter`` 的 telemetry 替身（promotion/proposal 族共用）。"""
+
+    def __init__(self):
+        self.kinds: list = []
+
+    def record_counter(self, kind: str, value: float = 1) -> None:
+        self.kinds.append(kind)
+
+
+class FakeCreator:
+    """创作客户端替身：``generate`` 吞 prompt 返固定文案（生活片段链路用）。"""
+
+    async def generate(self, prompt):
+        return "今天在厨房煮了粥。"
+
+
+class ListLogHandler(logging.Handler):
+    """stdlib logging 捕获器：``messages`` 列表供断言告警内容。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+def table_columns(db_path: Path, table: str) -> set:
+    """读 sqlite 表的列名集合（store 建表/列断言用）。"""
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    finally:
+        connection.close()
+    return {str(row[1]) for row in rows}
+
+
+def pending_events(engine):
+    """取 engine 自我层的 pending_events 列表（生活片段链路断言用）。"""
+    return engine._self_state["state"]["focus"]["pending_events"]
 
 
 def make_engine(*, config=None, state=None, store=None, creator=None, telemetry=None):

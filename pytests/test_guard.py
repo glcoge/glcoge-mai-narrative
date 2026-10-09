@@ -23,7 +23,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import KvStoreMixin, WarnLogger as _Logger, load  # noqa: E402
 life = load("services.creation.life")
 
 _GUARD = load("services.state.continuity")
@@ -325,23 +325,6 @@ def test_inject_guard_keyword_come_from_values_too():
 
 
 # ─── 第一道闸：入库前（创作出口，creation/life.py） ───────────
-
-
-class _Logger:
-    def __init__(self):
-        self.warnings: list = []
-
-    def info(self, *a, **k):
-        pass
-
-    def debug(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        self.warnings.append(a[0] % a[1:] if len(a) > 1 else str(a[0]))
-
-    def error(self, *a, **k):
-        pass
 
 
 class _FakeStore(KvStoreMixin):

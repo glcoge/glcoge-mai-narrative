@@ -134,9 +134,7 @@ def test_new_entry_visible_as_general():
 
 
 
-class _FakeCreator:
-    async def generate(self, prompt):
-        return "今天在厨房煮了粥。"
+_FakeCreator = _synth_loader.FakeCreator
 
 
 def _make_life_engine():

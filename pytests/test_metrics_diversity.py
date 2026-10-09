@@ -39,18 +39,7 @@ _NOW = datetime.datetime(2026, 9, 22, 11, 37, 0)
 _QQ = "927386371"
 
 
-class _Logger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
+_Logger = _synth_loader.null_logger
 
 
 

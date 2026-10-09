@@ -29,7 +29,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import KvStoreMixin, load  # noqa: E402
+from pytests._synth_loader import FakeCreator as _FakeCreator, KvStoreMixin, load, pending_events as _pending  # noqa: E402
 
 _LIFE = load("services.creation.life")
 _NarrativeEngine = load("services.state.engine").NarrativeEngine
@@ -89,11 +89,6 @@ class _FakeStore(KvStoreMixin):
         self.chronicle.append({"scope": scope, "kind": kind, "text": text, "ts": ts})
 
 
-class _FakeCreator:
-    async def generate(self, prompt):
-        return "今天在厨房煮了粥。"
-
-
 def _make_engine(
     *, detail_enabled=True, probability=0.12, interval=30, daily_max=16, pending_max=12
 ):
@@ -136,10 +131,6 @@ def _make_engine(
     engine.save_self_state = lambda state: None
     engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
     return engine
-
-
-def _pending(engine):
-    return engine._self_state["state"]["focus"]["pending_events"]
 
 
 def _block_rng(monkeypatch):

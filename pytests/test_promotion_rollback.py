@@ -60,12 +60,7 @@ class _FakeEngine:
         self.branches[str(uid)] = state
 
 
-class _Counter:
-    def __init__(self):
-        self.kinds: list = []
-
-    def record_counter(self, kind: str, value: float = 1) -> None:
-        self.kinds.append(kind)
+_Counter = _synth_loader.CounterTelemetry
 
 
 def _make(tmp: str, **overrides):

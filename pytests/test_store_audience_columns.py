@@ -68,13 +68,7 @@ def _make_legacy_db(data_dir: Path, rows=None) -> Path:
     return db_path
 
 
-def _columns(db_path: Path, table: str) -> set:
-    connection = sqlite3.connect(db_path)
-    try:
-        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
-    finally:
-        connection.close()
-    return {str(row[1]) for row in rows}
+_columns = _synth_loader.table_columns
 
 
 def _chronicle_rows(db_path: Path) -> list:
