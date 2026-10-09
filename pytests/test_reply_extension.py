@@ -175,15 +175,7 @@ def test_unknown_phase_returns_empty():
 
 
 def _make_scheduler():
-    sched = ProactiveScheduler.__new__(ProactiveScheduler)
-    sched._plugin = SimpleNamespace(_local_now=lambda: _NOW)
-    sched._task = None
-    sched._running = False
-    sched._next_fire = {}
-    sched._sent_records = {}
-    sched._pending_at = {}
-    sched._engaged_windows = {}
-    return sched
+    return _synth_loader.make_scheduler(SimpleNamespace(_local_now=lambda: _NOW))
 
 
 def test_bysource_for_reply_within_window():

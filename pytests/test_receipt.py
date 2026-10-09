@@ -20,7 +20,7 @@ import sys
 from types import SimpleNamespace
 
 import _synth_loader
-from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
+from pytests._synth_loader import FakeStore, make_logger  # noqa: E402
 
 _SCHEDULER = _synth_loader.load("services.proactive.scheduler")
 _SNAPSHOT = _synth_loader.load("services.state.snapshot")
@@ -53,15 +53,7 @@ def _make_scheduler(*, telemetry_enabled=True, with_telemetry=True):
     if with_telemetry:
         # 与生产同构：Telemetry 挂 plugin._telemetry（scheduler 经 plugin 取用）
         plugin._telemetry = Telemetry(plugin)
-    sched = ProactiveScheduler.__new__(ProactiveScheduler)
-    sched._plugin = plugin
-    sched._task = None
-    sched._running = False
-    sched._next_fire = {}
-    sched._sent_records = {}
-    sched._pending_at = {}
-    sched._engaged_windows = {}
-    return sched, store
+    return _synth_loader.make_scheduler(plugin), store
 
 
 def _receipts(store):

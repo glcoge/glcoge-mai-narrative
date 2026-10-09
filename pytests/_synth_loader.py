@@ -564,6 +564,63 @@ def make_life_engine(
     return engine
 
 
+class FakePromotionEngine:
+    """最小引擎假件：只管 self / branch state 的读写（promotion 族共用）。"""
+
+    def __init__(self):
+        engine_mod = load("services.state.engine")
+        self.self_state = engine_mod.default_self_state()
+        self._default_branch_state = engine_mod.default_branch_state
+        self.branches: dict = {}
+
+    def load_self_state(self):
+        return self.self_state
+
+    def save_self_state(self, state):
+        self.self_state = state
+
+    def load_branch_state(self, uid):
+        return self.branches.setdefault(str(uid), self._default_branch_state())
+
+    def save_branch_state(self, uid, state):
+        self.branches[str(uid)] = state
+
+
+def make_promotion(tmp: str, **overrides):
+    """PromotionEngine 标准装配：真 store（临时目录 sqlite）+ 假 engine + 计数替身。
+
+    Returns:
+        ``(promotion_engine, store, fake_engine, counter)``
+    """
+    store = load("services.store").NarrativeStore(Path(tmp))
+    engine = FakePromotionEngine()
+    engine.deps = types.SimpleNamespace(store=store)
+    counter = CounterTelemetry()
+    plugin = types.SimpleNamespace(
+        _store=store,
+        _engine=engine,
+        _telemetry=counter,
+        config=types.SimpleNamespace(promotion=promotion_config(**overrides)),
+        ctx=types.SimpleNamespace(logger=null_logger()),
+    )
+    promotion = load("services.state.continuity").PromotionEngine(plugin)
+    return promotion, store, engine, counter
+
+
+def make_scheduler(plugin):
+    """ProactiveScheduler 裸实例：``__new__`` 绕过 __init__，六件套内存结构手工初始化。"""
+    sched_mod = load("services.proactive.scheduler")
+    sched = sched_mod.ProactiveScheduler.__new__(sched_mod.ProactiveScheduler)
+    sched._plugin = plugin
+    sched._task = None
+    sched._running = False
+    sched._next_fire = {}
+    sched._sent_records = {}
+    sched._pending_at = {}
+    sched._engaged_windows = {}
+    return sched
+
+
 def run_standalone(globals_dict: dict) -> int:
     """独立运行入口：执行当前测试模块全部 test_ 函数并打印结果。
 

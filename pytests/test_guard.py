@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +24,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from pytests._synth_loader import FakeStore, WarnLogger as _Logger, load  # noqa: E402
+from pytests._synth_loader import FakeStore, load, make_engine  # noqa: E402
 life = load("services.creation.life")
 
 _GUARD = load("services.state.continuity")
@@ -336,12 +337,7 @@ class _FakeCreator:
 
 
 def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rules=()):
-    """构造只含生活片段链路依赖的 engine（走 engine 的薄委托方法）。"""
-    from types import SimpleNamespace
-
-    from pytests._synth_loader import load as _load
-
-    engine_mod = _load("services.state.engine")
+    """守卫链路 engine（骨架经 _synth_loader.make_engine 装配；返回 logger 供断言）。"""
     config = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         narrative=SimpleNamespace(
@@ -368,22 +364,12 @@ def _make_life_engine(creator_text, *, guard_fragments=(), values=(), world_rule
         ),
         anchor=SimpleNamespace(guard_keywords=[]),
     )
-    logger = _Logger()
-    engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
-    engine._plugin = SimpleNamespace(config=config, ctx=SimpleNamespace(logger=logger), _telemetry=None)
-    engine._store = FakeStore()
-    engine._creator = _FakeCreator(creator_text)
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "白天", "sleep_state": "awake"},
-            "focus": {"pending_events": []},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
-    engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
-    return engine, logger
+    engine, _ = make_engine(
+        config=config,
+        store=FakeStore(),
+        creator=_FakeCreator(creator_text),
+    )
+    return engine, engine._plugin.ctx.logger
 
 
 def test_persist_guard_drops_hitting_fragment():

@@ -164,16 +164,8 @@ def _make_scheduler():
         # 深化 C3b：scheduler 的 store 读经 engine.deps（与生产同构）
         _engine=SimpleNamespace(deps=SimpleNamespace(store=_store)),
     )
-    sched = ProactiveScheduler.__new__(ProactiveScheduler)
-    sched._plugin = plugin
-    sched._task = None
-    sched._running = False
-    sched._next_fire = {}
-    sched._sent_records = {}
-    sched._pending_at = {}
-    # engaged 计数窗（第④步新增；__new__ 绕过 __init__ 故须手工初始化）
-    sched._engaged_windows = {}
-    return sched
+    # engaged 计数窗（第④步新增）等六件套内存结构由 make_scheduler 统一初始化
+    return _synth_loader.make_scheduler(plugin)
 
 
 def _sent_delivered(sched, uid="10001", stream="stream-1", ts=_NOW, bysource="由头"):

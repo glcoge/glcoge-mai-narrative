@@ -22,7 +22,6 @@ from types import SimpleNamespace
 
 import _synth_loader
 life = _synth_loader.load("services.creation.life")
-from pytests._synth_loader import FakeLogger, FakeStore, make_logger  # noqa: E402
 
 _ENTITY = _synth_loader.load("services.creation.event_entity")
 _AUDIENCE = _synth_loader.load("services.render.audience")
@@ -134,49 +133,9 @@ def test_new_entry_visible_as_general():
 
 
 
-_FakeCreator = _synth_loader.FakeCreator
-
-
 def _make_life_engine():
-    """复用 test_fragment_pending_capacity 的装配手法（走 engine 薄委托）。"""
-    engine_mod = _synth_loader.load("services.state.engine")
-    config = SimpleNamespace(
-        plugin=SimpleNamespace(enabled=True),
-        narrative=SimpleNamespace(
-            enabled=True,
-            chronicle_enabled=True,
-            mode_user_ids=["10001"],
-            life_fragment_daily_max=16,
-            life_fragment_interval_minutes=30,
-            life_fragment_detail_enabled=False,
-            fragment_pending_max=12,
-            highlight_probability=0.0,
-            sleep_time="",
-            wake_time="",
-            wake_fragment_enabled=False,
-            sleep_pre_sleep_hint_minutes=25,
-        ),
-        llm=SimpleNamespace(show_prompt=False, temperature=0.7),
-        identity=SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
-        anchor=SimpleNamespace(guard_keywords=[]),
-    )
-    engine = engine_mod.NarrativeEngine.__new__(engine_mod.NarrativeEngine)
-    engine._plugin = SimpleNamespace(
-        config=config, ctx=SimpleNamespace(logger=FakeLogger()), _telemetry=None
-    )
-    engine._store = FakeStore()
-    engine._creator = _FakeCreator()
-    engine._self_state = {
-        "state": {
-            "mood": {"label": "平静", "energy": 0.6},
-            "routine": {"phase": "白天", "sleep_state": "awake"},
-            "focus": {"pending_events": []},
-        }
-    }
-    engine.load_self_state = lambda: engine._self_state
-    engine.save_self_state = lambda state: None
-    engine.load_branch_state = lambda uid: {"relationship": {"milestones": []}}
-    return engine
+    """生活片段链路 engine（装配收敛至 _synth_loader.make_life_engine）。"""
+    return _synth_loader.make_life_engine()
 
 
 def test_life_write_end_produces_event_entity():

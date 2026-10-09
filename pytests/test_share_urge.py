@@ -184,15 +184,7 @@ def _make_scheduler(
         _local_now=lambda: now,
         ctx=SimpleNamespace(logger=_QuietLogger()),
     )
-    scheduler = ProactiveScheduler.__new__(ProactiveScheduler)
-    scheduler._plugin = plugin
-    scheduler._task = None
-    scheduler._running = False
-    scheduler._next_fire: Dict[str, Any] = {}
-    scheduler._sent_records: Dict[str, Any] = {}
-    scheduler._pending_at: Dict[str, Any] = {}
-    # engaged 计数窗（第④步新增；__new__ 绕过 __init__ 故须手工初始化）
-    scheduler._engaged_windows: Dict[str, Any] = {}
+    scheduler = _synth_loader.make_scheduler(plugin)
     scheduler._metrics = metrics
 
     async def fake_fire(user_id: str, stream_id: str, ts: datetime.datetime) -> None:

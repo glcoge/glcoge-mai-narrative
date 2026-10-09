@@ -42,40 +42,13 @@ NOW = datetime.datetime(2026, 9, 26, 12, 0, 0)
 LATER = NOW + datetime.timedelta(hours=100)
 
 
-class _FakeEngine:
-    def __init__(self):
-        self.self_state = default_self_state()
-        self.branches: dict = {}
-
-    def load_self_state(self):
-        return self.self_state
-
-    def save_self_state(self, state):
-        self.self_state = state
-
-    def load_branch_state(self, uid):
-        return self.branches.setdefault(str(uid), default_branch_state())
-
-    def save_branch_state(self, uid, state):
-        self.branches[str(uid)] = state
+_FakeEngine = _synth_loader.FakePromotionEngine
 
 
 _Counter = _synth_loader.CounterTelemetry
 
 
-def _make(tmp: str, **overrides):
-    store = NarrativeStore(Path(tmp))
-    engine = _FakeEngine()
-    engine.deps = types.SimpleNamespace(store=store)
-    counter = _Counter()
-    plugin = types.SimpleNamespace(
-        _store=store,
-        _engine=engine,
-        _telemetry=counter,
-        config=types.SimpleNamespace(promotion=_synth_loader.promotion_config(**overrides)),
-        ctx=types.SimpleNamespace(logger=_synth_loader.null_logger()),
-    )
-    return PromotionEngine(plugin), store, engine, counter
+_make = _synth_loader.make_promotion
 
 
 def _seed_days(store, days: int, *, prefix="2026-09") -> str:

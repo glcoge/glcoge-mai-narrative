@@ -81,22 +81,14 @@ def _make_engine(*, milestone_enabled=True, milestones=None, uid=_UID):
 
 
 def _make_scheduler(engine):
-    """真 scheduler 实例（仅补 __init__ 里的内存结构；不启 asyncio 循环）。"""
+    """真 scheduler 实例（六件套经 _synth_loader.make_scheduler 初始化；不开 asyncio 循环）。"""
     plugin = SimpleNamespace(
         _engine=engine,
         _store=engine._store,
         _local_now=lambda: _NOW,
         ctx=SimpleNamespace(logger=engine._test_logger),
     )
-    sched = ProactiveScheduler.__new__(ProactiveScheduler)
-    sched._plugin = plugin
-    sched._task = None
-    sched._running = False
-    sched._next_fire = {}
-    sched._sent_records = {}
-    sched._engaged_windows = {}
-    sched._pending_at = {}
-    return sched
+    return _synth_loader.make_scheduler(plugin)
 
 
 def _note(sched, text, minute=0, *, catch=False):
