@@ -2,10 +2,9 @@
 
 设计共识（grill-me 会话）：
 - 锚定层（identity）由用户手动配置，运行时只读 —— 对应设计树 R4.1"锚定层"。
-- 创作模型按**已注册模型名**路由（`[llm].creation_model`）；`[creator_model]` 直连已于 v0.2.0 批 1 退役（R10：宿主 1.2.5 已透传 model_name）
-  直连 —— 对应 R5。注：宿主 `ctx.llm.generate(model=...)` 现在只认模型名，
+- 创作模型按**已注册模型名**路由（`[llm].creation_model`）；`[creator_model]` 直连已于 v0.2.0 批 1 退役
+  （R10：宿主 1.2.5 已透传 model_name）—— 对应 R5。注：宿主 `ctx.llm.generate(model=...)` 现在只认模型名，
   不认 task 名（2026-09-15 真机证实）。
-- v0.1 最小切片：单人单私聊"剧本模式"。
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ class IdentitySection(PluginConfigBase):
     ``config/bot_config.toml`` 的 ``[personality]``（personality / behavior_style /
     reply_style）与 ``[bot].nickname``——系统提示里只保留这一份"你是谁"，
     避免双人格并置。本段只承载原生三段没有的维度：世界观 / 价值观底线 /
-    世界观规则。
+    世界观规则 / 禁用片段。
     """
 
     __ui_label__: ClassVar[str] = "锚定层（世界观与铁律）"
@@ -92,9 +91,10 @@ class IdentitySection(PluginConfigBase):
         default_factory=list,
         description=(
             "禁用片段黑名单：世界/价值观/规则的**浓缩片段**（人物代号、专属称呼、"
-            "指认性表述等）。产出文本或注入文本命中即拦下——世界里不该出现的东西"
-            "（ADR-0002 §9）。与 [anchor].guard_keywords（字段名级手工补充）互补："
-            "本项面向「内容片段」，那项面向「字段/代号名」。"
+            "指认性表述等）。命中即拦下——世界里不该出现的东西（ADR-0002 §9）。"
+            "与 [anchor].guard_keywords 同为手工补充词，代码里合并进同一关键词集合"
+            "同样匹配。⚠️ 仅在 [anchor].guard_check = true 时生效"
+            "（2026-10-09 裁定默认关）。"
         ),
         json_schema_extra={
             "label": "禁用片段",
@@ -176,7 +176,7 @@ class NarrativeSection(PluginConfigBase):
     )
     mode_user_ids: List[str] = Field(
         default_factory=list,
-        description="剧本模式私聊用户 QQ 列表（v0.1 单人验证：只填你自己）。",
+        description="剧本模式私聊用户 QQ 列表（可多用户，各用户独立维护状态与主动消息节奏）。",
         json_schema_extra={
             "label": "剧本模式用户",
             "hint": "纯数字 QQ，例 [\"10001\"]；私聊自动识别",
@@ -248,8 +248,7 @@ class NarrativeSection(PluginConfigBase):
         le=1.0,
         description=(
             "基线回归系数：每 tick 向基线靠拢的比例，越大回摆越快。"
-            "0 = 关闭基线回归（精力不再向基线回落，只升不降）。"
-            "⚠️ 不是「老版单调衰减」—— 旧版已废弃，0 现在是冻结语义。"
+            "0 = 冻结精力（不做基线回归；被吵醒的扣减仍会生效）。"
         ),
         json_schema_extra={"label": "基线回归系数", "hint": "0-1；0=冻结精力，默认 0.3", "order": 9},
     )
@@ -260,8 +259,6 @@ class NarrativeSection(PluginConfigBase):
         description=(
             "睡眠中每 tick 额外恢复量：睡觉回血，早晨自然满状态。"
             "平衡点 = 基线 + 恢复量/回归系数（默认 0.45+0.1/0.3≈0.78，落在轻快档下沿）。"
-            "（2026-09-22：判定由「深夜相位」改为「睡眠态」——旧写法只在 23:00-05:00 回血，"
-            "05:00 到起床之间睡着却不回血，属漏网；且 23:00-23:30 明明还醒着反而回血。）"
         ),
         json_schema_extra={"label": "睡眠恢复", "hint": "每 tick 恢复量；默认 0.1", "order": 10},
     )
@@ -297,7 +294,6 @@ class NarrativeSection(PluginConfigBase):
             "实际间隔会被向上取整到 tick 的整数倍（tick=30 时填 45 等同 60）。"
             "⚠️ 间隔与日上限必须配套看：睡眠态启用后清醒窗口约 16.5 小时，"
             "间隔 120 时理论产能只有 8 条，日上限填再大也吃不到。"
-            "（2026-09-21：默认 240 → 120；2026-09-22：120 → 60，配合日上限 16。）"
         ),
         json_schema_extra={"label": "生活片段间隔", "hint": "分钟；30-1440；需 ≤60 才吃满日上限 16", "order": 9},
     )
@@ -308,8 +304,6 @@ class NarrativeSection(PluginConfigBase):
         description=(
             "每日生活片段生成上限（不含「起床补一段」，后者是状态转换的必然产物、"
             "豁免本上限）。成本控制手段之一（另有每日一次的编年史压缩）。"
-            "（2026-09-21：默认 3 → 6；2026-09-22：6 → 16，上限校验 12 → 24。"
-            "实测每日调用恒被压在上限上，成本仍远低于总量 1%。）"
         ),
         json_schema_extra={"label": "生活片段日上限", "hint": "0-24；0=不生成", "order": 10},
     )
@@ -319,7 +313,6 @@ class NarrativeSection(PluginConfigBase):
             "高光签总开关（2026-09-30 语义换轨，原名保留）：开启后每次正常生活片段"
             "生成前按 highlight_probability 抽签，抽中则追加「写一件不寻常的小事」的"
             "要求（每日上限 2 条、起床片段豁免）。关闭则一律走基础句、永不抽签。"
-            "（旧语义「三信号分级详略」已随 tier 删除而废弃，见废弃表 R22。）"
         ),
         json_schema_extra={
             "label": "高光签",
@@ -346,7 +339,6 @@ class NarrativeSection(PluginConfigBase):
             "生活片段素材池容量（pending_events 有界保留条数）。素材池是主动消息"
             "由头的取材范围：容量越大可选素材越多（由头按全窗口取材，planner 注入"
             "端仍只取最近 2 条不变）。由头去重登记表宽度跟随本值，不设独立配置。"
-            "（2026-09-30：5 → 12，随日上限 16 配套放宽。）"
             "⚠️ 观察期冻结（P20）：改动＝污染实验。"
         ),
         json_schema_extra={"label": "素材池容量", "hint": "1-32；默认 12；观察期冻结", "order": 11},
@@ -712,9 +704,7 @@ class LLMSection(PluginConfigBase):
         ge=64,
         le=8192,
         description=(
-            "创作最大输出 token（默认 1024）。"
-            "（2026-09-21 由 384 上调：生活片段分档后 major 档可达 400 字，384 会截断正文。）"
-            "v0.2.0 批 1 随 [creator_model] 直连退役（R10）从该段迁移至此。"
+            "创作最大输出 token（默认 1024）。过小会截断片段正文。"
         ),
         json_schema_extra={"label": "最大输出 token", "hint": "64-8192", "order": 2},
     )
