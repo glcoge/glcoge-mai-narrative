@@ -368,17 +368,63 @@ class ProactiveScheduler:
             return
         bysource = str(bysource_detail.get("text", ""))
         intent = "按剧本生活主动开口"
-        # msg_id 硬要求（2026-09-22）：主程序 reply 工具强制要求一个上下文里真实
-        # 存在的 msg_id，而主动开口没有"被回复的那条消息"，模型极易漏传——实测
-        # 68 次主动 reply 里漏传 11 次，占 09-09 之后全部失败的 100%（送达率被
-        # 卡在 76%）。主程序已在主动回合前回填真实用户消息（runtime.py:372），
-        # 锚点是有的，缺的只是把要求讲明白。
-        # ⚠️ 陷阱：主动任务自身带 id="proactive:<plugin>:<ts>"（runtime.py:679），
-        # 模型会误当成 msg_id 抄——已实证 2 次，故在此点名禁止。
-        reason = (
+        # 素材与锚点分离（单点解冻 #2，2026-10-11，复读修复方案 A）。
+        #
+        # 旧设计把片段全文塞进 reason，并硬指示「取最近一条用户消息的 msg_id」——
+        # 该指示本是 2026-09-22 为治模型漏传 msg_id（68 次漏 11 次、送达率卡 76%）
+        # 而加，但静默私聊里「最近一条用户消息」是数小时前已答过的旧提问，或被
+        # planner 抓成 bot 自己的消息 → replyer 被目标消息指令框死 → 重答旧提问 /
+        # 原句复读（Gi Hitomi 案定谳，#2127-③ 的插件侧变体）。
+        #
+        # 新设计（参考 idle_proactive_chat 的 append_context 配对与 mai-life 的
+        # 「可以考虑分享、可以不说」意图）：
+        # ① 片段全文经 maisaka.append_context 注入为纯文本素材——宿主渲染不带
+        #    msg_id 前缀且 original_message=None，reply 选不中它，「谈什么」与
+        #    「锚在哪」解耦；素材=签发事件原文，保 bysource:used 回执对账；
+        # ② reason 只留意图边界 + msg_id 软引导——保留「reply 需要 msg_id」的
+        #    教学（漏传教训），但去掉误导性的「最近一条」，并点明它只是发送锚。
+        material_id = f"narrative:share:{bysource_detail.get('event_id', '')}"
+        material_text = (
+            "【柯伊的最近生活 · 素材】\n"
             f"{bysource}\n"
-            "（开口时必须调用 reply 工具并传入 msg_id：取上下文里最近一条用户消息"
-            '前缀中的 msg_id="..." 数字；不要使用 proactive: 开头的 id，那不是可回复的消息。）'
+            "（这是柯伊自己的经历素材，不是用户发言，也不是必须执行的任务；"
+            "可以考虑让柯伊把这件事自然讲出来，不强制。）"
+        )
+        try:
+            inject_result = await plugin.ctx.maisaka.append_context(
+                stream_id,
+                [{"type": "text", "content": material_text}],
+                visible_text=material_text,
+                source_kind="plugin:glcoge.mai-narrative",
+                message_id=material_id,
+            )
+        except Exception as exc:
+            # 素材不在场就不开口：注入失败直接跳过本轮，不降级回旧由头
+            plugin.ctx.logger.error(
+                "主动素材注入失败，本轮跳过: uid=%s stream=%s error=%s", user_id, stream_id, exc
+            )
+            plugin._telemetry.record(
+                "proactive_material_inject_failed", 1, user_id=user_id, scope="proactive"
+            )
+            return
+        if isinstance(inject_result, dict) and inject_result.get("success") is False:
+            plugin.ctx.logger.error(
+                "主动素材注入被拒，本轮跳过: uid=%s stream=%s result=%r",
+                user_id,
+                stream_id,
+                inject_result,
+            )
+            plugin._telemetry.record(
+                "proactive_material_inject_failed", 1, user_id=user_id, scope="proactive"
+            )
+            return
+        reason = (
+            "上下文里刚注入了一条柯伊的最近生活素材。可以考虑让柯伊把这件事自然地讲出来——"
+            "分享柯伊自己的近况，不是去回答对方以前的提问，也不要像播报或任务汇报。"
+            "如果当前气氛不适合，可以不说。\n"
+            "（若决定开口：reply 工具需要一个 msg_id 作为发送锚——取上下文中任意一条真实"
+            "用户消息的 id（不要用柯伊自己发的消息的 id）；它只是技术参数，"
+            "不代表要回复那条消息的内容。）"
         )
         # 批 4（R39）：教模型选择 REPLY_EXTENSION（enabled 时；full_name 由 on_load 组装）
         try:
