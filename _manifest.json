@@ -27,6 +27,7 @@
     "config.get",
     "llm.generate",
     "llm.get_available_models",
+    "maisaka.context.append",
     "maisaka.proactive.trigger"
   ],
   "i18n": {
