@@ -41,6 +41,7 @@ def _make_plugin(
     append_result: Any = None,
     trigger_result: Any = None,
     ext_enabled: bool = False,
+    nickname: str = "柯伊",
 ):
     calls: Dict[str, List[Any]] = {
         "seq": [],
@@ -69,6 +70,11 @@ def _make_plugin(
             "task_id": "task-1",
         }
 
+    async def fake_config_get(key, default=None):
+        if key == "bot.nickname":
+            return nickname
+        return default
+
     store = _synth_loader.FakeStore()
     cfg = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
@@ -85,6 +91,7 @@ def _make_plugin(
         reply_extension_full_name="glcoge.mai-narrative.proactive_bysource",
         ctx=SimpleNamespace(
             logger=_synth_loader.make_logger(),
+            config=SimpleNamespace(get=fake_config_get),
             maisaka=SimpleNamespace(
                 append_context=fake_append,
                 proactive=SimpleNamespace(trigger=fake_trigger),
@@ -192,3 +199,26 @@ def test_receipt_bookkeeping_intact(monkeypatch):
     assert calls["topic"] == [(_UID, _FRAGMENT)]
     today = _NOW.strftime("%Y-%m-%d")
     assert plugin._store.get_kv_int(f"proactive:count:{_UID}:{today}") == 1
+
+
+def test_nickname_flows_from_host_config(monkeypatch):
+    """人设名取宿主 [bot].nickname（非硬编码）——素材与 reason 都带上名字。"""
+    scheduler, plugin, calls = _make_plugin(monkeypatch, nickname="测试人设")
+    asyncio.run(scheduler._fire(_UID, _STREAM, _NOW))
+
+    material = calls["append"][0][1][0]["content"]
+    assert "【测试人设的最近生活 · 素材】" in material
+    assert "这是测试人设自己的经历素材" in material
+    reason = calls["trigger"][0]["reason"]
+    assert "让测试人设把这件事自然地讲出来" in reason
+    assert "不要用测试人设自己发的消息" in reason
+
+
+def test_nickname_fallback_neutral(monkeypatch):
+    """nickname 读空 → 中性占位词「角色」，分享轮不中断。"""
+    scheduler, plugin, calls = _make_plugin(monkeypatch, nickname="")
+    asyncio.run(scheduler._fire(_UID, _STREAM, _NOW))
+
+    material = calls["append"][0][1][0]["content"]
+    assert "【角色的最近生活 · 素材】" in material
+    assert len(calls["trigger"]) == 1

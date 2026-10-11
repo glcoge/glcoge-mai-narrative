@@ -383,12 +383,22 @@ class ProactiveScheduler:
         #    「锚在哪」解耦；素材=签发事件原文，保 bysource:used 回执对账；
         # ② reason 只留意图边界 + msg_id 软引导——保留「reply 需要 msg_id」的
         #    教学（漏传教训），但去掉误导性的「最近一条」，并点明它只是发送锚。
+        # 人设名取主程序 ``[bot].nickname``（[identity] 设计：插件不存第二份"你是谁"；
+        # 读法参考 mai-life 的 ctx.config.get）。取不到时用中性词占位并告警——
+        # 名字是装饰性信息，不值得为它杀掉整轮分享，但失败必须可见。
+        try:
+            bot_name = str(await plugin.ctx.config.get("bot.nickname", "") or "").strip()
+        except Exception:
+            bot_name = ""
+        if not bot_name:
+            plugin.ctx.logger.warning("读取 bot.nickname 失败，主动素材标记使用中性占位词「角色」")
+            bot_name = "角色"
         material_id = f"narrative:share:{bysource_detail.get('event_id', '')}"
         material_text = (
-            "【柯伊的最近生活 · 素材】\n"
+            f"【{bot_name}的最近生活 · 素材】\n"
             f"{bysource}\n"
-            "（这是柯伊自己的经历素材，不是用户发言，也不是必须执行的任务；"
-            "可以考虑让柯伊把这件事自然讲出来，不强制。）"
+            f"（这是{bot_name}自己的经历素材，不是用户发言，也不是必须执行的任务；"
+            f"可以考虑让{bot_name}把这件事自然讲出来，不强制。）"
         )
         try:
             inject_result = await plugin.ctx.maisaka.append_context(
@@ -419,11 +429,11 @@ class ProactiveScheduler:
             )
             return
         reason = (
-            "上下文里刚注入了一条柯伊的最近生活素材。可以考虑让柯伊把这件事自然地讲出来——"
-            "分享柯伊自己的近况，不是去回答对方以前的提问，也不要像播报或任务汇报。"
+            f"上下文里刚注入了一条{bot_name}的最近生活素材。可以考虑让{bot_name}把这件事自然地讲出来——"
+            f"分享{bot_name}自己的近况，不是去回答对方以前的提问，也不要像播报或任务汇报。"
             "如果当前气氛不适合，可以不说。\n"
             "（若决定开口：reply 工具需要一个 msg_id 作为发送锚——取上下文中任意一条真实"
-            "用户消息的 id（不要用柯伊自己发的消息的 id）；它只是技术参数，"
+            f"用户消息的 id（不要用{bot_name}自己发的消息的 id）；它只是技术参数，"
             "不代表要回复那条消息的内容。）"
         )
         # 批 4（R39）：教模型选择 REPLY_EXTENSION（enabled 时；full_name 由 on_load 组装）
