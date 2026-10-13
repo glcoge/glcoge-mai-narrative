@@ -7,7 +7,11 @@
 | 块 | marker | 内容 |
 |---|---|---|
 | planner 块 | ``_narrative_life_context`` | 生活内容 / 编年史 / 由头（**发生了什么**） |
-| replyer 块（本模块） | ``_narrative_style_`` | 此刻状态调制 / 关系语境 / 文学授权（**这轮怎么表达**） |
+| replyer 块（本模块） | ``_narrative_style_`` | 此刻状态调制 / 文学授权（**这轮怎么表达**） |
+
+「关系语境」行已摘除（2026-10-13 用户裁定）：实机期关系在人设提示词层写死，
+动态注入的「关系阶段 = 陌生人」与写死关系打架且放大攻击性误读；关系亲密推进
+设计（含阶段呈现方式）留待部署线下单独 branch 重做。
 
 两块 marker **不互为子串** → 各自的幂等检查只看自己，互不误判、互不覆盖。
 
@@ -68,45 +72,22 @@ def is_style_item(item: Any) -> bool:
     return str(item_id or "").startswith(STYLE_ITEM)
 
 
-def relationship_line(stage: str, *, audience: str, owner: str) -> str:
-    """关系语境一句话（C4）：只描述**状态**，不规定表达。
-
-    可见性 fail-closed（ADR-0004）：只对支线归属人本人可见；群聊 / 他人视角返回空串
-    ——「你们是什么关系」这条信息对第三方不该出现（v0.2 群聊就绪纪律）。
-
-    Args:
-        stage: 关系阶段标签（``current_relationship_stage`` 产物）。
-        audience: 当前注入面对的受众标识（私聊为本人 uid，群聊为 ``g:<id>``）。
-        owner: 该关系事实的归属人 uid。
-    """
-    text = str(stage or "").strip()
-    if not text:
-        return ""
-    if not owner or not audience or str(audience) != str(owner):
-        return ""
-    return f"关系阶段：{text}。"
-
-
 def build_replyer_block(
     *,
     drift_text: str,
-    stage: str,
-    audience: str,
-    owner: str,
     learned_style: Sequence[str] = (),
 ) -> str:
     """把漂移层要素组装成注入块文本（零 LLM，纯确定性）。
 
-    结构：调制段 → 关系语境 → 授权段 → `[learned]` 槽（空则不渲染）。
+    结构：调制段 → 授权段 → `[learned]` 槽（空则不渲染）。
     **授权段恒定在列**（只增不删），见 ``AUTHORIZATION_TEXT`` 注释。
+    关系语境行已摘除（2026-10-13 裁定，见模块 docstring），不接受任何
+    stage / audience / owner 入参——实机期本块不得出现关系阶段文本。
     """
     parts: List[str] = []
     modulation = str(drift_text or "").strip()
     if modulation:
         parts.append(modulation)
-    relation = relationship_line(stage, audience=audience, owner=owner)
-    if relation:
-        parts.append(relation)
     parts.append(AUTHORIZATION_TEXT)
     if learned_style:
         items = [str(item).strip() for item in learned_style if str(item).strip()]

@@ -110,18 +110,19 @@ def test_write_timestamp_is_fresher_than_distillation_moment():
         "反证写入必须晚于提炼时刻：沿用旧 now 会把 promotions.ts 记成周期开始"
     )
     assert engine.refutations_now == base + _LLM_COST
-    assert relation_calls == [base + _LLM_COST], "关系晋升同样要用新鲜时刻"
+    # 关系晋升调用已摘除（2026-10-13 用户裁定：实机期关系阶段零注入，晋升无消费端）
+    assert relation_calls == [], "晋升 tick 不得再驱动关系晋升"
 
 
-def test_relationship_gets_fresh_moment_even_when_not_due():
-    """run 不到时机时，关系晋升仍应拿到新鲜时刻（节流用当前时刻才准）。"""
+def test_relationship_not_driven_by_promotion_tick():
+    """run 不到时机时，同样不得触发关系晋升（调用已摘除，2026-10-13 裁定）。"""
     plugin, _clock, runner, engine, relation_calls, base = _build("skipped")
 
     asyncio.run(MaiNarrativePlugin._maybe_run_promotion(plugin))
 
     assert runner.seen == base
     assert engine.refutations_now is None, "不到提炼时机时不该执行反证/晋升"
-    assert relation_calls == [base + _LLM_COST]
+    assert relation_calls == []
 
 
 def test_clock_is_read_exactly_twice_per_tick():

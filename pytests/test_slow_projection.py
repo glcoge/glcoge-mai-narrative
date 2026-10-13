@@ -153,7 +153,8 @@ def test_build_tie_keeps_registration_order():
 
 
 def test_build_excludes_requested_paths():
-    """``exclude`` 排掉已由专门行渲染过的路径（关系阶段不重复渲染）。"""
+    """``exclude`` 排掉调用方指定的路径（关系阶段：2026-10-13 裁定零注入，
+    专门关系行已摘除，此处 exclude 是 tendencies 侧的同一条防线）。"""
     state = _make_state("看法一", ["目标一"])
     picked = build_slow_tendencies(
         _make_plugin(),
@@ -232,13 +233,16 @@ def test_context_block_no_tendency_section_when_empty():
 
 
 def test_context_block_does_not_duplicate_relationship_stage():
-    """关系阶段只出现一次（由专门的关系行渲染，不进倾向段）。"""
+    """关系阶段零渲染（2026-10-13 裁定）：专门关系行已摘除、tendencies 排除
+    保留——branch 里存着 stage 也不得出现在上下文块的任何位置。"""
     text = _render(_make_state("看法一"), _branch("很亲近"), audience="927386371")
-    assert text.count("很亲近") == 1, "关系阶段被重复渲染"
+    assert text.count("很亲近") == 0, "关系阶段必须零渲染（专门行已摘除）"
+    assert "你与这位玩家的关系" not in text
 
 
 def test_context_block_hides_per_user_from_other_audience():
-    """**受众隔离**：换个人来看，per_user 的关系阶段不得进倾向段。"""
+    """**受众隔离**（双保险防线）：换个人来看，per_user 的关系阶段不得进倾向段
+    （关系行摘除后，exclude 成为 stage 进上下文的唯一残余通道，此闸必须保持）。"""
     text = _render(_make_state("看法一"), _branch("很亲近"), audience="")
     assert "关系已到" not in text
 

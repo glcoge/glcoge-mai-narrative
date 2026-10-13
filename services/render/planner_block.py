@@ -21,7 +21,6 @@ from typing import Any, Dict, List, Optional
 from ..proactive.sourcing import overlap_ratio
 from ..state.continuity import (
     build_guard_keywords,
-    current_relationship_stage,
     filter_guarded_entries,
     is_slow_field_visible,
 )
@@ -233,8 +232,9 @@ def build_slow_tendencies(
     - **上限**读 ``[promotion].projection_limit``（P8），缺省回退
       :data:`SLOW_TENDENCY_LIMIT`。
     - **守卫**：注入前过 ``filter_guarded_entries``（与批 2 同一道闸）。
-    - ``exclude``：调用方已渲染过的路径（``build_context_block`` 用它排掉
-      关系阶段——那条已由专门的关系行呈现，重复渲染只是噪声）。
+    - ``exclude``：调用方要求排除的路径（``build_context_block`` 用它排掉
+      关系阶段——2026-10-13 裁定实机期关系阶段**零注入**，专门的关系行已
+      摘除，此处排除是 tendencies 侧的同一条防线，双保险保持）。
     """
     candidates = [
         item
@@ -347,7 +347,7 @@ def build_context_block(
 
     # 慢变软倾向（批 4-C7 / R28）：由晋升机长期累积的「看法/人生目标」，按与**本场戏
     # 的相关度**挑最多 projection_limit 条注入。相关度用本轮可见素材文本做 query。
-    # 关系阶段刻意排除：它由下面那条专门的关系行呈现（重复渲染只是噪声）。
+    # 关系阶段刻意排除（2026-10-13 裁定：实机期关系阶段零注入，不进任何行）。
     tendency_query = " ".join(
         [str(entry.get("text", "")) for entry in guarded_entries] + ([bysource] if bysource else [])
     )
@@ -366,22 +366,10 @@ def build_context_block(
             + "\n".join(f"    - {item[:INJECT_TEXT_CAP]}" for item in tendencies)
         )
 
-    if branch is not None:
-        # 关系呈现（批 2 空窗期）：stage 由**只读事实**确定性推导（continuity），
-        # 旧的 familiarity/trust 数字不再显示（那是只进不退的假演化，E2 裁决）。
-        relationship = branch.get("relationship", {})
-        facts = {
-            "milestones": relationship.get("milestones", []),
-            "first_met": relationship.get("first_met", ""),
-        }
-        stage = str(
-            relationship.get("stage") or current_relationship_stage(facts)
-        )
-        first_met = str(relationship.get("first_met", ""))[:10]
-        lines.append(
-            f"- 你与这位玩家的关系：{stage}"
-            + (f"（最初见面：{first_met}）" if first_met else "")
-        )
+    # 关系呈现行已摘除（2026-10-13 用户裁定）：柯伊人设实机期，主角与用户的关系
+    # 在提示词层写死（人设态度分层带），「关系阶段 = 陌生人」的动态注入与写死关系
+    # 打架且放大攻击性误读。关系亲密推进的整体设计（含阶段呈现方式）留待部署线
+    # 下单独 branch 重做；实机期本块不注入任何关系阶段信息。
 
     # 世界观行（批 1 / R43 双模式）：simple（默认）照旧注入；detailed 下世界书
     # 接管世界观，本行不再注入——单一事实源，防双世界观并置（v0.1.2 教训）。

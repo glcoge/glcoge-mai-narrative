@@ -436,7 +436,7 @@ class MaiNarrativePlugin(MaiBotPlugin):
             )
 
     async def _maybe_run_promotion(self) -> None:
-        """慢变晋升 tick：提案 → 反证 → 晋升 → 关系确定性晋升。
+        """慢变晋升 tick：提案 → 反证 → 晋升（关系晋升已于 2026-10-13 摘除调用）。
 
         节流交给 ``ProposalRunner`` 自己的间隔/退避闸门（``is_due`` 只读一个 kv 键），
         所以 15s 调一次是廉价的。
@@ -466,7 +466,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
                 # 有晋升落库才写回投影（E5：只投影 general 维度；relationship 绝不落盘）
                 self._project_learned()
 
-        self._maybe_promote_relationship(write_now)
+        # 关系确定性晋升调用已摘除（2026-10-13 用户裁定）：柯伊人设实机期关系在
+        # 提示词层写死，阶段注入全线摘除后晋升写入无消费端，实机期不再推进；
+        # ``_maybe_promote_relationship`` 与晋升引擎原样保留，关系亲密推进的
+        # 整体设计留待部署线下单独 branch 重做（届时恢复本调用即可）。
 
     def _project_learned(self) -> None:
         """把 general 慢变现值写回 ``config.toml`` 的 ``[learned]`` 投影（批 4-C6）。
@@ -511,6 +514,10 @@ class MaiNarrativePlugin(MaiBotPlugin):
 
     def _maybe_promote_relationship(self, now: datetime.datetime) -> None:
         """关系确定性晋升（强约束 1/2）：按正向场景日推进 trust / closeness。
+
+        ⚠️ 2026-10-13 起休眠：实机期关系阶段零注入（用户裁定），本方法不再被
+        ``_maybe_run_promotion`` 调用；保留方法与引擎供部署线下 branch 的关系
+        亲密推进重设计复用。
 
         ⚠️ 节流 60 分钟：读 ``metrics/*.csv`` 不便宜，而关系值的变化尺度是天/周。
         ⚠️ 正向信号为 0 时 WARN 一次——最常见成因是 ``[telemetry].enabled`` 被关掉

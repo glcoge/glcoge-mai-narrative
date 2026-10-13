@@ -154,7 +154,10 @@ def test_injects_style_item(tmp_path: Path) -> None:
     assert injected["meta"]["item_id"].startswith("_narrative_style_")
     text = injected["parts"][0]["text"]
     assert "舒展" in text  # 调制段（energy=0.8 → 轻快档）
-    assert "关系阶段：相识" in text
+    # 关系阶段零注入（2026-10-13 裁定）：_make_plugin 的 branch 里存有 stage=相识，
+    # 块内也不得出现——正控制：有数据不泄漏（inject_drift_style 已不读 branch）。
+    assert "关系阶段" not in text
+    assert "相识" not in text
     assert "铺陈" in text  # 授权段（C6 只增不删）
 
 

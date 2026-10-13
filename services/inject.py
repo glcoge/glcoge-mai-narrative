@@ -21,7 +21,6 @@ from .render.planner_block import (
     items_dialogue_text,
 )
 from .render.replyer_block import build_replyer_block, build_style_item, is_style_item
-from .state.continuity import current_relationship_stage
 
 # REPLY_EXTENSION 组件名（批 4 / R39）：full_name = f"{manifest_id}.{本名}"；
 # 定义移本模块（深化 C1）：注入体日志与 plugin 装配/装饰器共用单一事实源。
@@ -111,36 +110,18 @@ async def inject_drift_style(plugin, **kwargs: Any) -> Dict[str, Any]:
         return {"action": "continue", "modified_kwargs": kwargs}
 
     started = time.perf_counter()
-    user_id = plugin._streams.uid_of(session_id)
     state = plugin._engine.load_self_state()
-    branch = plugin._engine.load_branch_state(user_id) if user_id else None
-    relationship = (branch or {}).get("relationship") or {}
+    # 关系阶段零注入（2026-10-13 用户裁定）：不读 branch/relationship、不传
+    # stage/audience/owner——顺带省掉 replyer 每轮一次的 load_branch_state 读取。
     if group_id:
-        # 🔴 群聊三处必须与私聊不同：
-        # ① relationship 传空 → Build 出的块天然不含关系语境
-        #    （"你们是什么关系"这种信息不该出现在第三方面前，Q2=B）；
-        # ② audience=g:<gid> 而 owner 为空 → 即便将来有人塞了 stage，
-        #    relationship_line 也会因 audience != owner 而 fail-closed 返回空串；
-        # ③ learned_style **强制为空** —— 它是 config.toml [learned] 区块里
-        #    私聊学到的表达习惯（ADR-0002），投进群 = 跨流泄露。
-        audience = f"g:{group_id}"
-        stage = ""
+        # 🔴 群聊与私聊的差异收敛为一处：learned_style **强制为空** ——
+        #    它是 config.toml [learned] 区块里私聊学到的表达习惯（ADR-0002），
+        #    投进群 = 跨流泄露（旧 ①② 关系可见性差异已随关系语境行摘除消失）。
         learned_style: Sequence[str] = ()
     else:
-        audience = user_id
-        stage = str(
-            relationship.get("stage")
-            or current_relationship_stage(relationship)
-        )
         learned_style = get_style_projection(plugin._config_path(), logger=plugin.ctx.logger)
     context_text = build_replyer_block(
         drift_text=describe_drift(state.get("state") or {}),
-        # 与 /narrative status 同款取值顺序：显式 ``stage``（批 4 晋升机写入的晋升值）
-        # 优先，批 4 前回退到只读事实推导（``continuity.current_relationship_stage``）。
-        stage=stage,
-        # 私聊剧本模式下受众即归属人本人；群聊时两者分离，可见性 fail-closed
-        audience=audience,
-        owner=user_id,
         learned_style=learned_style,
     )
     items.append(build_style_item(context_text))
