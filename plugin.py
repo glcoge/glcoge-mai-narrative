@@ -57,7 +57,6 @@ from .services.state.continuity import (
     current_relationship_stage,
 )
 from .services.learning.projection import (
-    get_style_projection,
     is_self_write_in_progress,
     rebuild_projection,
     write_projection,

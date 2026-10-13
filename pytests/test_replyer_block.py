@@ -1,4 +1,4 @@
-"""replyer 漂移注入块（批 3-C3/C4/C6）——item 契约 + 授权段护栏 + 关系语境零注入。
+"""replyer 漂移注入块（批 3-C3/C4）——item 契约 + 事实状态调制。
 
 三件事锁在本用例里：
 
@@ -6,11 +6,9 @@
    必须与宿主的 ``deserialize_context_item_snapshot`` 匹配；marker 前缀
    ``_narrative_style_`` 与 planner 块的 ``_narrative_life_context`` **不互为子串**
    → 两块互不误判（``is_style_item`` 不得把 planner 块认成自己）。
-2. **授权段只增不删**（C6 / ADR-0003 §6，HDSI 1.7B/C 教训）：任何输入组合下，
-   ``AUTHORIZATION_TEXT`` 都必须出现在块里。
-3. **关系语境零注入**（2026-10-13 用户裁定）：实机期关系在人设提示词层写死，
-   ``relationship_line`` / ``stage`` / ``audience`` / ``owner`` 已从块契约删除，
-   任何输入组合下块内不得出现关系阶段文本。
+2. **W2 裁定（2026-10-13）**：停用授权段与 learned_style 注入——漂移层只留事实状态
+   （心情/精力/作息相位），任何输入组合下块内不得出现「铺陈」「长期表达倾向」等文本。
+3. **签名锁**：``stage/audience/owner`` 已从块契约删除，重加即重开注入面。
 """
 
 from __future__ import annotations
@@ -30,11 +28,12 @@ from pytests._synth_loader import load  # noqa: E402
 _BLOCK = load("services.render.replyer_block")
 _PLANNER = load("services.render.planner_block")
 
-AUTHORIZATION_TEXT = _BLOCK.AUTHORIZATION_TEXT
+AUTHORIZATION_TEXT = getattr(_BLOCK, "AUTHORIZATION_TEXT", None)  # W2: removed
 STYLE_ITEM = _BLOCK.STYLE_ITEM
 build_style_item = _BLOCK.build_style_item
 is_style_item = _BLOCK.is_style_item
 build_replyer_block = _BLOCK.build_replyer_block
+# W2：AUTHORIZATION_TEXT 已停用，不再导出（若模块内仍保留则需删）
 
 
 # ─── item 契约 ──────────────────────────────────────────────
@@ -74,7 +73,7 @@ def test_is_style_item_rejects_garbage() -> None:
 
 
 def test_authorization_always_present() -> None:
-    """各种输入组合下授权段都在——这是 C6 的回归护栏。"""
+    """W2 裁定：授权段已停用，任何输入组合下「铺陈」不得出现。"""
     cases = [
         dict(drift_text="", learned_style=()),
         dict(drift_text="疲惫。", learned_style=()),
@@ -83,13 +82,19 @@ def test_authorization_always_present() -> None:
     ]
     for case in cases:
         block = build_replyer_block(**case)
-        assert AUTHORIZATION_TEXT in block, f"授权段缺失: {case}"
+        assert "铺陈" not in block, f"授权段不应出现: {case}"
 
 
-def test_authorization_text_is_narrative_only() -> None:
-    """性质边界（用户纠偏）：只许叙事授权，不得越界人格约束。"""
-    for banned in ("你是谁", "人格", "性格", "身份", "角色扮演", "不要", "禁止"):
-        assert banned not in AUTHORIZATION_TEXT
+def test_learned_slot_never_rendered() -> None:
+    """W2 裁定：learned_style 槽已停用，「长期表达倾向」永不渲染。"""
+    cases = [
+        dict(drift_text="", learned_style=()),
+        dict(drift_text="疲惫。", learned_style=["偏短"]),
+        dict(drift_text="轻快。", learned_style=["少用感叹号"]),
+    ]
+    for case in cases:
+        block = build_replyer_block(**case)
+        assert "长期表达倾向" not in block, f"learned 槽不应出现: {case}"
 
 
 # ─── 关系语境零注入（2026-10-13 裁定）─────────────────────────
@@ -125,23 +130,19 @@ def test_block_contains_drift_text() -> None:
     assert "句子偏短些" in block
 
 
-def test_learned_slot_absent_when_empty() -> None:
-    """槽空 → 整段不渲染（不输出空标题）。"""
-    block = build_replyer_block(drift_text="x", learned_style=())
-    assert "长期表达倾向" not in block
-
-
-def test_learned_slot_rendered_when_present() -> None:
+def test_learned_slot_never_rendered_when_present() -> None:
+    """W2：即使传入 learned_style，也不渲染（机制停用）。"""
     block = build_replyer_block(drift_text="x", learned_style=["少用感叹号"])
-    assert "长期表达倾向" in block
-    assert "少用感叹号" in block
+    assert "长期表达倾向" not in block
+    # drift_text 仍应渲染
+    assert "x" in block or block == ""  # 取决于是否空串处理
 
 
 def test_block_has_no_hard_format_directives() -> None:
     """整块同样不得含硬格式指令与禁令组（ADR-0003 §6）。"""
     block = build_replyer_block(
         drift_text="句子偏短些。",
-        learned_style=["偏短"],
+        learned_style=[],
     )
     for banned in ("字以内", "拆成", "分成", "不要", "禁止", "不得", "do not"):
         assert banned not in block

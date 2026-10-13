@@ -47,7 +47,11 @@ _BANNED_NEGATION: Tuple[str, ...] = ("不要", "禁止", "不得", "do not", "Do
 
 
 def case_style_injection(inputs: Any) -> List[str]:
-    """漂移注入块护栏：授权段恒定 + 无硬指令 / 禁令组。返回失败列表（空 = 通过）。"""
+    """漂移注入块护栏：无硬指令 / 禁令组 + 调制段非空。返回失败列表（空 = 通过）。
+
+    W2 裁定（2026-10-13）：停用授权段与 learned_style 注入，本用例不再断言
+    AUTHORIZATION_TEXT；只验证调制段渲染正确性 + 无越界词。
+    """
     failures: List[str] = []
 
     # 数据源健康（负控：空归档 / 读不出会话必须判失败）
@@ -76,16 +80,12 @@ def case_style_injection(inputs: Any) -> List[str]:
                 tag = f"{label}/{phase}/{sleep_state}/woken={woken}"
                 text = block_module.build_replyer_block(
                     drift_text=drift.describe_drift(inner),
-                    stage="相识",
-                    audience="u1",
-                    owner="u1",
                     learned_style=(),
                 )
                 if not text.strip():
                     failures.append(f"注入块为空（{tag}）")
                     continue
-                if block_module.AUTHORIZATION_TEXT not in text:
-                    failures.append(f"授权段缺失（{tag}）")
+                # W2：授权段已停用，不再断言 AUTHORIZATION_TEXT
                 for banned in _BANNED_HARD + _BANNED_NEGATION:
                     if banned in text:
                         failures.append(f"注入块出现越界词「{banned}」（{tag}）")

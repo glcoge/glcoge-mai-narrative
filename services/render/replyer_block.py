@@ -29,25 +29,6 @@ from typing import Any, Dict, List, Optional, Sequence
 #: item_id 前缀（marker）。与 ``_narrative_life_context`` 不互为子串——已验
 STYLE_ITEM = "_narrative_style_"
 
-# ─── 文学授权段（批 3-C6 / ADR-0003 §6）────────────────────────────────────
-#
-# ❗ 本段是「**只增不删**」的回归护栏对象：任何提示词精简/压缩都不得删掉它。
-#    依据：HDSI 1.7B/C 教训——每次压缩都会**不可见地**砍掉文学授权，正文随之干瘪；
-#    故文案写死在代码里（不做成配置项，防「顺手精简」），并由
-#    ``pytests/test_replyer_block.py::test_authorization_always_present`` 守住。
-#
-# ❗ 性质边界（用户 2026-09-26 纠偏）：只停在**叙事授权**（铺陈 / 节奏 / 深度），
-#    **不得越界到人格约束**——人格 / 角色扮演类约束不写死代码（0944cae 回退铁律），
-#    交 ``[personality]`` / ``[identity]`` 承载。
-# OBSERVE(R26)：文学授权段「只增不删」铁律的落点——文案写死代码不做配置，就是防提示词精简时顺手砍掉它。
-AUTHORIZATION_TEXT = (
-    "以上只关乎表达节奏与详略的着色：你可以顺着当下的感觉铺陈、留白，"
-    "也可以往深处多讲一层——不必每句都求完整。"
-)
-
-#: `[learned]` 槽（R1）的渲染标题；槽空则整段不渲染  # RESERVED(R1)
-_LEARNED_TITLE = "长期表达倾向"
-
 
 def build_style_item(text: str, now: Optional[datetime] = None) -> Dict[str, Any]:
     """构造可注入 replyer 请求 items 的用户消息快照（格式同 planner 块）。"""
@@ -79,18 +60,15 @@ def build_replyer_block(
 ) -> str:
     """把漂移层要素组装成注入块文本（零 LLM，纯确定性）。
 
-    结构：调制段 → 授权段 → `[learned]` 槽（空则不渲染）。
-    **授权段恒定在列**（只增不删），见 ``AUTHORIZATION_TEXT`` 注释。
-    关系语境行已摘除（2026-10-13 裁定，见模块 docstring），不接受任何
-    stage / audience / owner 入参——实机期本块不得出现关系阶段文本。
+    结构：调制段 → `[learned]` 槽（空则不渲染）。
+    
+    **W2 裁定（2026-10-13）**：停用授权段与 learned_style 注入——漂移层只留事实状态
+    （心情/精力/作息相位），不再渲染「长期表达倾向」槽。本函数保留参数接口供未来
+    扩展，但实际调用方已传入空序列（见 `inject.py`）。
     """
     parts: List[str] = []
     modulation = str(drift_text or "").strip()
     if modulation:
         parts.append(modulation)
-    parts.append(AUTHORIZATION_TEXT)
-    if learned_style:
-        items = [str(item).strip() for item in learned_style if str(item).strip()]
-        if items:
-            parts.append(f"（{_LEARNED_TITLE}）" + "；".join(items))
+    # W2：learned_slot 停用注入，整段不渲染（原逻辑：if learned_style: ...）
     return "\n".join(parts)

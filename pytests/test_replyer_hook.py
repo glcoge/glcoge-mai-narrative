@@ -154,11 +154,13 @@ def test_injects_style_item(tmp_path: Path) -> None:
     assert injected["meta"]["item_id"].startswith("_narrative_style_")
     text = injected["parts"][0]["text"]
     assert "舒展" in text  # 调制段（energy=0.8 → 轻快档）
-    # 关系阶段零注入（2026-10-13 裁定）：_make_plugin 的 branch 里存有 stage=相识，
-    # 块内也不得出现——正控制：有数据不泄漏（inject_drift_style 已不读 branch）。
+    # W2 裁定（2026-10-13）：漂移注入只留事实状态，授权段与 learned_style 已停用。
+    # _make_plugin 的 branch 里存有 stage=相识，块内也不得出现——正控制：有数据不泄漏
+    # （inject_drift_style 已不读 branch）。
     assert "关系阶段" not in text
     assert "相识" not in text
-    assert "铺陈" in text  # 授权段（C6 只增不删）
+    assert "铺陈" not in text  # 授权段已停用
+    assert "长期表达倾向" not in text  # learned_slot 已停用
 
 
 def test_kwargs_round_trip_no_loss(tmp_path: Path) -> None:
@@ -228,22 +230,16 @@ def test_empty_items_leaves_untouched(tmp_path: Path) -> None:
     assert result["modified_kwargs"]["items"] == []
 
 
-# ─── learned 槽 ─────────────────────────────────────────────
+# ─── learned 槽（W2：停用注入） ───────────────────────────────────
 
 
-def test_learned_slot_absent_when_empty(tmp_path: Path) -> None:
-    plugin = _make_plugin(tmp_path)
-    base = [{"item_type": "SystemMessageItem", "meta": {"item_id": "s1"}, "parts": []}]
-    text = _run(plugin, _payload(list(base)))["modified_kwargs"]["items"][-1]["parts"][0]["text"]
-    assert "长期表达倾向" not in text
-
-
-def test_learned_slot_injected_when_present(tmp_path: Path) -> None:
+def test_learned_slot_never_rendered(tmp_path: Path) -> None:
+    """W2：即使 config 写了 [learned] style，也不渲染。"""
     plugin = _make_plugin(tmp_path, style=["少用感叹号"])
     base = [{"item_type": "SystemMessageItem", "meta": {"item_id": "s1"}, "parts": []}]
     text = _run(plugin, _payload(list(base)))["modified_kwargs"]["items"][-1]["parts"][0]["text"]
-    assert "长期表达倾向" in text
-    assert "少用感叹号" in text
+    assert "长期表达倾向" not in text
+    assert "少用感叹号" not in text
 
 
 if __name__ == "__main__":

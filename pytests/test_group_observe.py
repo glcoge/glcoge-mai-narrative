@@ -282,8 +282,8 @@ def test_group_registry_persists_and_restores():
 # ─── 6. 群漂移层注入的边界 ───
 
 
-def test_group_injection_carries_no_relation_nor_learned_style(monkeypatch):
-    """群注入三不：不带关系语境、不带私聊 learning 风格、不认私聊 owner。"""
+def test_group_injection_carries_no_relation_nor_learned_style():
+    """群注入三不：不带关系语境、不带私聊 learning 风格（W2 已停用）、不认私聊 owner。"""
     tmp = _tmp_dir()
     plugin = _make_plugin(tmp, observe_groups=[GID])
     plugin._streams = SimpleNamespace(uid_of=lambda sid: "")
@@ -298,10 +298,7 @@ def test_group_injection_carries_no_relation_nor_learned_style(monkeypatch):
         },
         load_branch_state=lambda uid: {"relationship": {"stage": "挚友"}},
     )
-    # 私聊侧明明有学习成果；群聊侧必须一个字都不过去
-    monkeypatch.setattr(
-        _PLUGIN, "get_style_projection", lambda *a, **k: ["私聊里学到的口头禅"]
-    )
+    # W2：learned_style 已停用，无需 monkeypatch；关系语境对第三方不可见（fail-closed）
     items = [{"item_type": "UserMessageItem", "meta": {"item_id": "x:1"}, "parts": []}]
     kwargs = {
         "items": items,
@@ -313,9 +310,9 @@ def test_group_injection_carries_no_relation_nor_learned_style(monkeypatch):
     injected = [i for i in result["modified_kwargs"]["items"] if _REPLYER.is_style_item(i)]
     assert len(injected) == 1
     text = injected[0]["parts"][0]["text"]
-    assert "私聊里学到的口头禅" not in text  # 🔴 跨流泄露闸门
+    assert "私聊里学到的口头禅" not in text  # W2：learned 槽已停用
     assert "挚友" not in text  # 关系语境对第三方不可见
-    # 但调制段与文学授权仍在（这是群注入要的效果）
+    # 但调制段仍在（这是群注入要的效果）
     assert text.strip()
 
 

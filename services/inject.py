@@ -12,7 +12,7 @@ from typing import Any, Dict, Sequence
 import time
 
 from .learning.drift_style import describe_drift
-from .learning.projection import get_style_projection
+
 from .render.audience import visible_chronicle
 from .render.planner_block import (
     build_context_block,
@@ -111,15 +111,15 @@ async def inject_drift_style(plugin, **kwargs: Any) -> Dict[str, Any]:
 
     started = time.perf_counter()
     state = plugin._engine.load_self_state()
-    # 关系阶段零注入（2026-10-13 用户裁定）：不读 branch/relationship、不传
-    # stage/audience/owner——顺带省掉 replyer 每轮一次的 load_branch_state 读取。
+    # 漂移注入（W2：2026-10-13 裁定）：停用 learned_style 注入，只留事实状态调制段。
+    # 群/私差异已归零（learned_style 强制空），保留会话门（mode 会话 + 观察群）。
     if group_id:
         # 🔴 群聊与私聊的差异收敛为一处：learned_style **强制为空** ——
         #    它是 config.toml [learned] 区块里私聊学到的表达习惯（ADR-0002），
         #    投进群 = 跨流泄露（旧 ①② 关系可见性差异已随关系语境行摘除消失）。
         learned_style: Sequence[str] = ()
     else:
-        learned_style = get_style_projection(plugin._config_path(), logger=plugin.ctx.logger)
+        learned_style = ()  # W2：停用注入，但保留投影机制（commands.py:209 自带 import）
     context_text = build_replyer_block(
         drift_text=describe_drift(state.get("state") or {}),
         learned_style=learned_style,
