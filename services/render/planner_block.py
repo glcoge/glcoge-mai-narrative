@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -105,11 +106,16 @@ def is_injected_item(item: Any) -> bool:
     return str(item_id or "").startswith(_EXTRA_ITEM)
 
 
-def items_dialogue_text(items: Any, max_items: int = 3) -> str:
-    """提取 items 里最近若干个**非注入** item 的文本 parts（世界书触发扫描输入）。
+# 宿主 planner 消息前缀正则（对齐 src/maisaka/jargon_context_matcher.py:26）
+_MESSAGE_PREFIX_RE = re.compile(r"^<message\b[^>]*>\s*", re.IGNORECASE)
 
-    prework §4 定案：扫描输入 = 本轮 + 最近 2~3 轮对话文本，零 LLM token；
-    本插件自己注入的上下文 item 必须排除（否则世界书会被自己的注入内容触发）。
+
+def items_dialogue_text(items: Any, max_items: int = 3) -> str:
+    """提取 items 里最近若干个**真实对话** item 的正文（世界书触发扫描输入）。
+
+    W3+W4（2026-10-13）：只认带 `<message msg_id=… user=… group_card=…>` 前缀的
+    item（宿主尾部提示无此前缀，天然排除）；前缀整体剥除后取正文入窗（user=/
+    group_card=/quote= 元数据一并剥离，正文手打名字仍可触发）。
     """
     texts: List[str] = []
     for item in reversed(list(items or [])):
@@ -121,8 +127,13 @@ def items_dialogue_text(items: Any, max_items: int = 3) -> str:
             for part in (parts or [])
             if isinstance(part, dict) and str(part.get("type", "") or "") == "text"
         ).strip()
-        if chunk:
-            texts.append(chunk)
+        # W3：必须匹配宿主前缀才算真实对话（尾部提示无前缀，天然排除）
+        if not _MESSAGE_PREFIX_RE.match(chunk):
+            continue
+        # W4：前缀整体剥除，只留正文入窗
+        text_content = _MESSAGE_PREFIX_RE.sub("", chunk).strip()
+        if text_content:
+            texts.append(text_content)
         if len(texts) >= max_items:
             break
     return "\n".join(reversed(texts))

@@ -350,21 +350,58 @@ def test_lorebook_section_bypasses_guard(tmp_path):
 
 
 def test_items_dialogue_text_joins_recent_non_injected():
-    """触发扫描输入提取：跳过本插件注入的 item，取最近若干轮的文本 parts。"""
+    """触发扫描输入提取：跳过本插件注入的 item，取最近若干轮的文本 parts（带宿主前缀）。"""
     items = [
-        {"parts": [{"type": "text", "text": "更早的一轮"}]},
+        {"parts": [{"type": "text", "text": '<message msg_id="x">更早的一轮'}]},
         _RENDER.build_injected_item("本插件注入的上下文，绝不能当触发文本"),
-        {"parts": [{"type": "text", "text": "中间一轮"}]},
-        {"parts": [{"type": "text", "text": "最近一轮甲"}]},
-        {"parts": [{"type": "text", "text": "最近一轮乙"}, {"type": "image"}]},
+        {"parts": [{"type": "text", "text": '<message msg_id="y">中间一轮'}]},
+        {"parts": [{"type": "text", "text": '<message msg_id="z">最近一轮甲'}]},
+        {"parts": [{"type": "text", "text": '<message msg_id="w">最近一轮乙'}, {"type": "image"}]},
     ]
     text = _RENDER.items_dialogue_text(items)
     assert "最近一轮甲" in text and "最近一轮乙" in text and "中间一轮" in text
     assert "本插件注入的上下文" not in text
     assert "更早的一轮" not in text, "默认只取最近 3 个非注入 item"
+    # 元数据应被剥除
+    assert 'msg_id=' not in text
 
 
-# ===== 独立运行入口 =====
+# ===== W3+W4: 宿主尾部提示与元数据剥离 =====
+
+
+def test_items_dialogue_text_excludes_host_tail_messages():
+    """W3：宿主尾部提示（时间/注意事项/末尾提醒）无前缀，天然排除；带前缀的真实对话正常收。"""
+    items = [
+        {"parts": [{"type": "text", "text": '<message msg_id="1">真实对话正文'}]},
+        {"parts": [{"type": "text", "text": "当前聊天额外注意事项：\nfoo"}]},  # 尾部注意事项无前缀
+        {"parts": [{"type": "text", "text": "时间：2026-10-13 10:00:00"}]},  # 时间提示无前缀
+        {"parts": [{"type": "text", "text": "你需要输出对 bot 发言的分析…"}]},  # 末尾提醒无前缀
+    ]
+    text = _RENDER.items_dialogue_text(items)
+    assert "真实对话正文" in text
+    assert "当前聊天额外注意事项" not in text
+    assert "时间：" not in text
+    assert "你需要输出" not in text
+
+
+def test_items_dialogue_text_strips_user_group_card_metadata():
+    """W4：前缀中的 user=/group_card= 元数据整体剥除，只留正文；正文手打名字仍可触发。"""
+    items = [
+        {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": '<message msg_id="123" user="凯伊" group_card="测试号">正文手打柯伊',
+                }
+            ]
+        },
+    ]
+    text = _RENDER.items_dialogue_text(items)
+    # 元数据应被剥除，但正文手打「柯伊」仍正常
+    assert "正文手打柯伊" in text
+    assert 'user="凯伊"' not in text
+    assert 'group_card="测试号"' not in text
+
 
 if __name__ == "__main__":
     sys.exit(_synth_loader.run_standalone(globals()))
