@@ -30,7 +30,6 @@ is_slow_field_visible = _CONTINUITY.is_slow_field_visible
 is_anchor_field = _CONTINUITY.is_anchor_field
 current_relationship_stage = _CONTINUITY.current_relationship_stage
 normalize_relationship = _CONTINUITY.normalize_relationship
-guard_keywords = _CONTINUITY.guard_keywords
 
 
 # ─── 慢变区白名单（ADR-0002 §1） ────────────────────────────────
@@ -175,38 +174,6 @@ def test_non_anchor_fields_are_not_flagged():
     assert not is_anchor_field("")
     # 前缀匹配不得误伤：identityric 不是 identity.
     assert not is_anchor_field("identityric")
-
-
-# ─── 守卫关键词抽取（E6 自动 + 手工） ──────────────────────────
-
-
-def test_guard_keywords_from_world_rules():
-    """规则原文按标点切子句抽关键词（中文无分词，保守切分防误伤）。"""
-    keywords = guard_keywords(["不可说谎，不可泄露他人隐私。"], [], [])
-    assert "不可说谎" in keywords
-    assert "不可泄露他人隐私" in keywords
-
-
-def test_guard_keywords_from_values():
-    keywords = guard_keywords([], ["诚实", "善良"], [])
-    assert "诚实" in keywords and "善良" in keywords
-
-
-def test_guard_keywords_manual_extra():
-    """[anchor].guard_keywords 手工补充原样进集合。"""
-    keywords = guard_keywords([], [], ["内部代号", "真实姓名"])
-    assert "内部代号" in keywords and "真实姓名" in keywords
-
-
-def test_guard_keywords_skips_too_short_fragments():
-    """单字子句不入选（长度下限 2，防"的""了"误伤）。"""
-    keywords = guard_keywords(["我", "你好"], [], [])
-    assert "我" not in keywords
-    assert "你好" in keywords
-
-
-def test_guard_keywords_empty_when_no_source():
-    assert guard_keywords([], [], []) == set()
 
 
 if __name__ == "__main__":

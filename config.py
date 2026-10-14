@@ -87,29 +87,13 @@ class IdentitySection(PluginConfigBase):
             "order": 3,
         },
     )
-    guard_fragments: List[str] = Field(
-        default_factory=list,
-        description=(
-            "禁用片段黑名单：世界/价值观/规则的**浓缩片段**（人物代号、专属称呼、"
-            "指认性表述等）。命中即拦下——世界里不该出现的东西（ADR-0002 §9）。"
-            "与 [anchor].guard_keywords 同为手工补充词，代码里合并进同一关键词集合"
-            "同样匹配。⚠️ 仅在 [anchor].guard_check = true 时生效"
-            "（2026-10-09 裁定默认关）。"
-        ),
-        json_schema_extra={
-            "label": "禁用片段",
-            "hint": '例 ["现实中的真实姓名","穿越前的身份"]；不填 = 只从 world_rules/values 自动抽取',
-            "item_type": "string",
-            "order": 4,
-        },
-    )
 
 
 class AnchorSection(PluginConfigBase):
     """锚定层护栏（ADR-0002 §9，批 2）。
 
     锚定层内容本身在宿主 ``[personality]`` 与 ``[identity]`` 里；本段只管
-    **护栏行为**：启动期一致性比对、双向守卫的手工关键词。
+    **护栏行为**：启动期一致性比对（R30 双向守卫已于 2026-10-14 裁定删除）。
     """
 
     __ui_label__: ClassVar[str] = "锚定护栏"
@@ -125,36 +109,6 @@ class AnchorSection(PluginConfigBase):
             "默认关 = 通道建好、默认不跑。"
         ),
         json_schema_extra={"label": "启动期锚定一致性比对", "order": 1},
-    )
-    guard_check: bool = Field(
-        default=False,
-        description=(
-            "双向守卫（入库前 + 注入前的关键词合规闸）总开关。"
-            "⚠️ 2026-10-09 裁定（登记表 R30）：关键词子串匹配误判率高——中文无词边界、"
-            "关键词集合只增不减，误判代价 = 丢弃整条产出；借鉴源 HDSI 的 "
-            "validateScriptCommit 实为纯结构校验（散文非空/事件 id 唯一/因果引用存在性），"
-            "当初借鉴时误读为「关键词过滤」。部署期默认禁用：守卫不拦任何产出；"
-            "待功能测试完整后再评估修改、废弃或删除。"
-        ),
-        json_schema_extra={
-            "label": "关键词守卫总开关",
-            "hint": "默认关：误判代价是丢弃整条产出；重开前先读登记表 R30 裁定",
-            "order": 2,
-        },
-    )
-    guard_keywords: List[str] = Field(
-        default_factory=list,
-        description=(
-            "双向守卫（入库前 + 注入前）的**手工补充**关键词。"
-            "自动部分另从 [identity].world_rules / values 抽取，无需在此重复。"
-            "⚠️ 仅在 guard_check = true 时生效（2026-10-09 裁定默认关）。"
-        ),
-        json_schema_extra={
-            "label": "守卫关键词（手工补充）",
-            "hint": '例 ["内部代号","真实姓名"]；自动部分已含 world_rules/values',
-            "item_type": "string",
-            "order": 3,
-        },
     )
 
 

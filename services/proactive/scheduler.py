@@ -605,7 +605,7 @@ class ProactiveScheduler:
             # ——由头被岔开 = 特性（总览 §5.1），不写回状态、不罚不发。
             # scope=origin 供供给质量分析（批 2 后可比 fragment vs seed 接住率）。
             # 走通用 record 通道而非 record_counter（后者是晋升链路专属，R17）。
-            # getattr 守卫沿用 life.py:153 的可选子系统取用先例（旧测试夹具不带 _telemetry）。
+            # getattr 守卫沿用 life.py 的可选子系统取用先例（旧测试夹具不带 _telemetry）。
             telemetry = getattr(self._plugin, "_telemetry", None)
             if telemetry is not None:
                 telemetry.record(

@@ -20,11 +20,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..proactive.sourcing import overlap_ratio
-from ..state.continuity import (
-    build_guard_keywords,
-    filter_guarded_entries,
-    is_slow_field_visible,
-)
+from ..state.continuity import is_slow_field_visible
 from ..state.engine import (
     INJECT_TEXT_CAP,
     daylight_hint,
@@ -236,13 +232,12 @@ def build_slow_tendencies(
     limit: Optional[int] = None,
     exclude: tuple = (),
 ) -> List[str]:
-    """挑出要注入的慢变倾向文本（受众过滤 → 守卫 → 相关度排序 → 限流）。
+    """挑出要注入的慢变倾向文本（受众过滤 → 相关度排序 → 限流）。
 
     - **相关度**＝字符 bigram Jaccard（复用批 1 ``sourcing.overlap_ratio`` 口径，
       零依赖、离线可重算），按降序排列；分数相同保持登记顺序（``sorted`` 稳定）。
     - **上限**读 ``[promotion].projection_limit``（P8），缺省回退
       :data:`SLOW_TENDENCY_LIMIT`。
-    - **守卫**：注入前过 ``filter_guarded_entries``（与批 2 同一道闸）。
     - ``exclude``：调用方要求排除的路径（``build_context_block`` 用它排掉
       关系阶段——2026-10-13 裁定实机期关系阶段**零注入**，专门的关系行已
       摘除，此处排除是 tendencies 侧的同一条防线，双保险保持）。
@@ -252,8 +247,6 @@ def build_slow_tendencies(
         for item in collect_slow_tendencies(state, branch, audience=audience)
         if item["path"] not in exclude
     ]
-    guard_set = build_guard_keywords(plugin.config)
-    candidates = filter_guarded_entries(candidates, guard_set)
     if not candidates:
         return []
 
@@ -307,12 +300,6 @@ def build_context_block(
     mood = inner["mood"]
     phase = inner["routine"]["phase"]
 
-    # 双向守卫第二道（ADR-0002 §9，批 2-C6）：**注入前**再拦一次。
-    # 与入库前那道**语义不同**——这里只丢命中的**条目**，不丢整段：
-    # 本段同时承载状态/关系/由头，因一条素材违禁就整段丢弃会让本轮注入变空。
-    # 关键词来自 [identity].world_rules/values 自动抽取 + 手工补充（同第一道闸）。
-    guard_set = build_guard_keywords(cfg)
-
     lines: List[str] = [
         "【角色内部状态 · 仅供你（模型）参考，不要把本段原样告诉对方】",
         # v0.1.4 P1：日照预期锚点——相位标签之外补充"窗外什么样"的感官时间感
@@ -327,12 +314,11 @@ def build_context_block(
 
     # 受众过滤（ADR-0004）：涉私原文只讲给本人，diary 产物对所有人短路。
     # 过滤在这里做而不是在调用方——注入块是"最后一公里"，漏一处就是泄露面。
-    # 过滤顺序：先受众（谁能看）再守卫（能不能出现）——两道规则正交，顺序不影响结果。
-    guarded_entries = filter_guarded_entries(list(recent_entries or []), guard_set)
-    if guarded_entries:
+    recent = list(recent_entries or [])
+    if recent:
         recent_text = "；".join(
             str(entry.get("text", "")).strip()[:INJECT_TEXT_CAP]
-            for entry in filter_entries(guarded_entries, audience, limit=3)
+            for entry in filter_entries(recent, audience, limit=3)
             if str(entry.get("text", "")).strip()
         )
         if recent_text:
@@ -341,10 +327,7 @@ def build_context_block(
     # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
     # 2026-09-21：上限统一取 INJECT_TEXT_CAP（1024）。旧的 56/120 字会把 major 档
     # （可达 400 字）的细节截掉，等于白写；1024 只作防失控天花板，条数仍限最近 2 条。
-    pending_events = filter_guarded_entries(
-        filter_entries(list(inner.get("focus", {}).get("pending_events", [])), audience),
-        guard_set,
-    )
+    pending_events = filter_entries(list(inner.get("focus", {}).get("pending_events", [])), audience)
     fragments = [
         str(item.get("text", "")).strip()
         for item in pending_events[-2:]
@@ -360,7 +343,7 @@ def build_context_block(
     # 的相关度**挑最多 projection_limit 条注入。相关度用本轮可见素材文本做 query。
     # 关系阶段刻意排除（2026-10-13 裁定：实机期关系阶段零注入，不进任何行）。
     tendency_query = " ".join(
-        [str(entry.get("text", "")) for entry in guarded_entries] + ([bysource] if bysource else [])
+        [str(entry.get("text", "")) for entry in recent] + ([bysource] if bysource else [])
     )
     tendencies = build_slow_tendencies(
         plugin,
@@ -394,9 +377,6 @@ def build_context_block(
     if identity.world and not lorebook_active:
         lines.append(f"- 你生活在：{identity.world}")
 
-    # ⚠️ 锚定层行**不过守卫**：world_rules/values 是守卫关键词的**来源**，
-    # 让它们过闸等于"关键词命中自己"→ 一旦配了就永远自删，锚定层直接消失。
-    # 守卫管的是**素材/产出**（可能夹带不该出现的东西），不是锚定声明本身。
     anchored_values = [str(item).strip() for item in (identity.values or []) if str(item).strip()]
     anchored_rules = [str(item).strip() for item in (identity.world_rules or []) if str(item).strip()]
     if anchored_values:
@@ -405,9 +385,7 @@ def build_context_block(
         lines.append("- 你的世界观规则（不可违背）：\n" + "\n".join(f"    - {item}" for item in anchored_rules[:5]))
 
     # 世界书注入（批 1 / R43）：只登记与读取；触发文本 = dialogue_text（零 LLM token）。
-    # ⚠️ lorebook 段**不过守卫**：条目是用户手写声明，与锚定层同级信任——
-    # 让它过闸 = world_rules 抽出的关键词命中条目自删（上方锚定行同理由）。
-    # getattr 取段沿用 continuity.build_guard_keywords 的「缺段不炸」先例
+    # getattr 取段沿用 seeder._seeder_config 的「缺段不炸」先例
     # （老测试夹具的 SimpleNamespace 不带 lorebook 段，语义 = 关闭）。
     if lorebook_active:
         loader = getattr(plugin, "_lorebook", None)

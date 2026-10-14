@@ -109,8 +109,8 @@ def _make_engine(
             fragment_pending_max=12,
         ),
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
-        identity=SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
-        anchor=SimpleNamespace(guard_keywords=[]),
+        identity=SimpleNamespace(world="", values=[], world_rules=[]),
+        anchor=SimpleNamespace(),
         seeder=seeder,
     )
     plugin_extra = {"_lorebook": _make_loader(lorebook_text)}

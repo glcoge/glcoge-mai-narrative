@@ -47,9 +47,7 @@ def _make_plugin(*, values=None, world_rules=None, projection_limit=None) -> Sim
                 world_rules=list(world_rules or []),
                 immutable_traits=[],
             ),
-            # guard_check=True：本文件的守卫用例（test_build_drops_guarded_items）
-            # 测的是「守卫开启时丢条目」；2026-10-09 裁定默认禁用。
-            anchor=SimpleNamespace(guard_keywords=[], guard_check=True),
+            anchor=SimpleNamespace(),
             narrative=_synth_loader.sleep_config(sleep_time="", wake_time=""),
             promotion=promotion,
         )
@@ -117,7 +115,7 @@ def test_collect_empty_state_yields_nothing():
     assert collect_slow_tendencies(_make_state(), None) == []
 
 
-# ─── build：限流 / 排序 / 守卫 ──────────────────────────────────
+# ─── build：限流 / 排序 ────────────────────────────────────────
 
 
 def test_build_respects_default_limit():
@@ -166,15 +164,18 @@ def test_build_excludes_requested_paths():
     assert all("关系已到" not in item for item in picked)
 
 
-def test_build_drops_guarded_items():
-    """注入前过守卫（批 2 同一道闸）：命中关键词的条目不得进上下文。"""
+def test_build_no_keyword_guard_output_always_passes():
+    """R30 守卫已删（2026-10-14 裁定）：不存在关键词拦截，产出永远直通。
+
+    原用例测「命中 world_rules/values 关键词的倾向被拦下」；删除后反转钉住
+    新语义——即便倾向文本撞上 values 里的词也照常注入。"""
     state = _make_state("她觉得说谎也没关系")
     picked = build_slow_tendencies(
         _make_plugin(values=["说谎"]),
         state,
         None,
     )
-    assert picked == [], "命中锚定层关键词的倾向必须被拦下"
+    assert picked != [], "守卫机制已删，倾向文本不得因关键词被丢弃"
 
 
 def test_build_returns_empty_when_no_candidates():

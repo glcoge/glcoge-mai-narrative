@@ -11,25 +11,14 @@ admin_qq = []
 world = ""
 values = []
 world_rules = []
-# 禁用片段：世界/价值观/规则的浓缩片段（人物代号、专属称呼、指认性表述）。
-# 产出文本或注入文本命中即拦下。不填 = 只从上面两行自动抽取。
-guard_fragments = []
 
 # ===== 锚定护栏（ADR-0002 §9） =====
 # 锚定层内容在 [identity] 与宿主 [personality]；本段只管护栏行为。
+# （R30 双向守卫已于 2026-10-14 裁定删除，登记见《废弃接口登记表》。）
 [anchor]
 # 启动期「宿主 personality vs 插件 world/values」LLM 一次性一致性比对，
 # 不一致仅 WARN 不阻断。默认关：启动期同步 LLM 调用慢/失败会拖垮启动。
 consistency_check = false
-# 关键词守卫总开关（2026-10-09 裁定，登记表 R30）：false = 双向守卫（入库前 +
-# 注入前）整体禁用，不拦任何产出。原因：关键词子串匹配误判风险高（中文无词边界、
-# 关键词集合只增不减），误判代价 = 丢弃整条产出；借鉴源 HDSI 的 validateScriptCommit
-# 实为纯结构校验（散文非空/事件 id 唯一/因果引用存在性），当初误读为「关键词过滤」。
-# 待功能测试完整后再评估修改、废弃或删除。
-guard_check = false
-# 双向守卫（入库前 + 注入前）的手工补充关键词；自动部分已含 world_rules/values。
-# ⚠️ 仅在 guard_check = true 时生效。
-guard_keywords = []
 
 # ===== 剧本模式与世界引擎 =====
 [narrative]

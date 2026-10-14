@@ -1,7 +1,8 @@
 """三层连续性 —— 受控白名单 schema（批 2）+ 晋升状态机（批 4）。
 
 本模块是 ADR-0002 的**声明层**：三层各自的字段白名单、锚定层护栏常量、
-世界规则守卫的关键词抽取与判定。批 2 只落「声明 + 守卫」，不落晋升逻辑。
+锚定字段的写入守卫（``assert_writable``）。批 2 只落「声明 + 写入守卫」，不落晋升逻辑
+（R30 关键词守卫曾落于此，2026-10-14 裁定删除，见《废弃接口登记表》）。
 
 批 4 在此追加：晋升状态机（门槛/冷却/反证/证据纪律五条）+ 留痕 + 回滚。
 
@@ -350,179 +351,6 @@ def coerce_slow_value(path: str, value: Any) -> Any:
         except (TypeError, ValueError):
             return 0.0
     return str(value if value is not None else "")
-
-
-# OBSERVE(R30)：双向守卫关键词**自动抽取**的落点——从 [identity].world_rules/values 切子句
-# + 剥祈使前缀抽可命中片段；删掉则第二道闸（注入侧）失去词源，锚定层的底线无从拦截。
-# ⚠️ 2026-10-09 裁定：关键词匹配整体默认禁用（[anchor].guard_check = false，见下）。
-def guard_keywords(world_rules: Iterable[str], values: Iterable[str], extra: Iterable[str]) -> Set[str]:
-    """汇总守卫关键词（ADR-0002 §9 双向守卫）。
-
-    来源三路（E6 裁决：自动抽取 + 手工补充）：
-    1. ``[identity].world_rules`` 自动抽取——规则原文里"不可违背"的名词性片段
-    2. ``[identity].values`` 自动抽取——价值观底线词
-    3. ``[anchor].guard_keywords`` 手工补充（默认空）
-
-    中文无分词，故自动抽取采用**保守切分**：按标点/空格切成子句，取 2~8 字的
-    子句整体作关键词，避免逐字切分造成的误伤（纯自动分词的已知缺陷）。
-    """
-    keywords: Set[str] = set()
-    for text in list(world_rules or []) + list(values or []):
-        keywords.update(_keyword_fragments(str(text or "")))
-    for text in extra or []:
-        fragment = str(text or "").strip()
-        if fragment:
-            keywords.add(fragment)
-    return keywords
-
-
-#: 关键词切分的分隔符（中英文标点 + 空白）。**不是**分词，是切子句。
-_KEYWORD_SEPARATORS = "，。；！？、,.;!?（）()【】[]「」“”\"' \t\n—－-"
-#: OBSERVE(P13)：关键词长度上下限 2~8（过短易误伤、过长不可能命中）；调参依据是**真机 WARN 日志里的命中片段**。
-#: 关键词长度上下限：过短易误伤（"的"），过长不可能命中。
-_KEYWORD_MIN_LEN = 2
-_KEYWORD_MAX_LEN = 8
-
-#: 中文**语气/功能前缀**：真实规则几乎都写成祈使句（"不可说谎""不得泄露""不要迟到"），
-#: 整句作关键词永远不可能命中产出文本（产出不会复述规则原文）。故剥掉前缀留下真正的
-#: **内容词根**——这是"从规则原文抽可命中片段"与"不误伤正常表达"之间的唯一可行折中
-#: （中文无分词）。
-#:
-#: ⚠️ 这里只收**纯语气助词**（"不可/不得/不要/禁止/…"），不收实义动词组合：
-#: "不可说谎" → "说谎"（可命中）；若把"不可泄露"整段当前缀，会剥出"内部代号"这种
-#: 只剩名词根的碎片，反而把"泄露"这个真正的行为词丢掉。
-_KEYWORD_STRIP_PREFIXES = (
-    "不可", "不得", "不要", "不能", "不会", "禁止", "严禁", "防止", "避免", "拒绝",
-    "绝不", "勿", "别",
-)
-#: 剥前缀后的最小长度。取 2 是刻意的：`不可说谎` → `说谎` 正好 2 字，而这是最常见
-#: 的规则形态；若取下限 3，最自然的规则写法一律抽不出可命中关键词 → 守卫形同虚设。
-#: 代价是 2 字碎片可能误伤（如"说谎"撞到"别对我撒谎"不会命中，但撞到"说谎者"会）——
-#: 这属于保守放行的可接受代价：漏网的还有注入侧第二道闸，误杀则直接吞掉正常内容。
-#: OBSERVE(P13)：剥前缀后的下限 2——取 2 是刻意的（「不可说谎」剥出「说谎」正好 2 字），
-#: 改为 3 会让最自然的规则写法一律抽不出可命中关键词，守卫形同虚设。
-_KEYWORD_STRIP_MIN_LEN = 2
-
-
-def build_guard_keywords(config: Any) -> Set[str]:
-    """从插件配置装配守卫关键词集合（ADR-0002 §9 双向守卫的**唯一入口**）。
-
-    配置段解耦（缺段不炸）：老配置 / 测试假件没有 ``[anchor]`` 或 ``[identity]``
-    的 ``guard_fragments`` 时按空处理——**不是**用 getattr 掩盖错误，而是这三项
-    来源本就都是"可选补充"，缺一个就少一路。
-
-    ⚠️ 2026-10-09 裁定（登记表 R30）：``[anchor].guard_check = false`` 时**恒返回
-    空集**——关键词子串匹配误判风险高（中文无词边界、集合只增不减），误判代价
-    是丢弃整条产出；HDSI 借鉴源的 validateScriptCommit 实为纯结构校验，当初
-    误读为「关键词过滤」。部署期禁用入口，待功能测试完整后再定修改/废弃/删除。
-    空集语义 = 两道闸全放行（``should_drop_output`` 恒 False、
-    ``filter_guarded_entries`` 原样通过），测试已锁。
-    """
-    anchor = getattr(config, "anchor", None)
-    if not getattr(anchor, "guard_check", False):
-        return set()
-    identity = getattr(config, "identity", None)
-    world_rules = list(getattr(identity, "world_rules", None) or [])
-    values = list(getattr(identity, "values", None) or [])
-    extra = list(getattr(identity, "guard_fragments", None) or [])
-    extra += list(getattr(anchor, "guard_keywords", None) or [])
-    return guard_keywords(world_rules, values, extra)
-
-
-def guard_violations(text: str, keywords: Set[str]) -> List[str]:
-    """返回 ``text`` 命中的关键词（**排序后**，便于日志与断言稳定复现）。
-
-    零误判优先：只在整词出现时命中，不做模糊匹配（中文模糊匹配的误杀率
-    远高于漏网率，而漏网还有注入侧第二道闸兜着）。
-    """
-    normalized = str(text or "")
-    if not normalized or not keywords:
-        return []
-    return sorted(str(word) for word in keywords if str(word) in normalized)
-
-
-def guard_blocks_entry(entry: Dict[str, Any], keywords: Set[str]) -> bool:
-    """条目是否命中守卫（只看 ``text`` 字段）。
-
-    ``text`` 非字符串/缺失时返回 False —— 结构异常交给别的层暴露，
-    守卫不做结构校验（那会让一个格式 bug 伪装成"内容违规"）。
-    """
-    if not isinstance(entry, dict):
-        return False
-    return bool(guard_violations(entry.get("text"), keywords))
-
-
-def should_drop_output(text: str, keywords: Set[str]) -> bool:
-    """第一道闸（**入库前**）：创作产出是否要被丢弃。
-
-    空产出返回 False —— "没生成"不是"违禁"，由调用方原样 return 即可，
-    不该让守卫把它算成一次拦截（否则计数指标会被空产出污染）。
-
-    命中后的动作是**丢弃整条产出**，不是改写：改写等于让代码替模型撒谎，
-    且改写后的文本没有经过任何审查，只是把违规面藏得更深（E7 裁决）。
-    """
-    return bool(guard_violations(text, keywords))
-
-
-def filter_guarded_entries(
-    entries: Iterable[Dict[str, Any]], keywords: Set[str]
-) -> List[Dict[str, Any]]:
-    """第二道闸（**注入前**）：逐条过滤，只丢命中的条目（不丢整段）。
-
-    返回**新列表**（不改原序列：同一条entry 序列可能同时被受众过滤消费，
-    就地改会串味）。全被拦时返回空列表，调用方据此跳过该行不渲染空壳。
-
-    为什么是"丢条目"而非"丢整段"：注入段同时承载状态/关系/由头，
-    因为一条素材违禁就把整段丢掉，会让这一轮的注入直接变空（E7 裁决）。
-    """
-    return [entry for entry in entries if not guard_blocks_entry(entry, keywords)]
-
-
-def _keyword_fragments(text: str) -> List[str]:
-    """把一条规则/价值观原文切成候选关键词（保守、可预期）。
-
-    返回可能**同时**包含原文子句与剥前缀后的内容词根——保守起见两条都留着：
-    用户可能真写"我以诚实守信为底线"（整句就是内容），也可能写"不可说谎"
-    （整句永远不可能命中，只有"说谎"有用）。
-    """
-    fragments: List[str] = []
-    current = ""
-    for char in text:
-        if char in _KEYWORD_SEPARATORS:
-            if current:
-                fragments.append(current)
-            current = ""
-        else:
-            current += char
-    if current:
-        fragments.append(current)
-
-    candidates: List[str] = []
-    for fragment in fragments:
-        candidates.append(fragment)
-        stripped = _strip_imperative_prefix(fragment)
-        if stripped and stripped != fragment:
-            candidates.append(stripped)
-    return [
-        candidate
-        for candidate in candidates
-        if _KEYWORD_MIN_LEN <= len(candidate) <= _KEYWORD_MAX_LEN
-    ]
-
-
-def _strip_imperative_prefix(fragment: str) -> str:
-    """剥掉祈使句前缀（"不可说谎" → "说谎"）；不合条件时原样返回。
-
-    剥完若短于 ``_KEYWORD_STRIP_MIN_LEN`` 就不剥（"不可说" → "说" 只剩 1 字，
-    误伤面远大于收益）。
-    """
-    for prefix in _KEYWORD_STRIP_PREFIXES:
-        if fragment.startswith(prefix):
-            remainder = fragment[len(prefix) :]
-            if len(remainder) >= _KEYWORD_STRIP_MIN_LEN:
-                return remainder
-            return fragment
-    return fragment
 
 
 # ─── 晋升状态机（批 4-C4：确定性代码，零 LLM） ────────────────────
@@ -1140,14 +968,9 @@ __all__ = [
     "apply_refutation_penalty",
     "assert_writable",
     "audit_text",
-    "build_guard_keywords",
     "coerce_slow_value",
     "current_relationship_stage",
     "derive_stage",
-    "filter_guarded_entries",
-    "guard_blocks_entry",
-    "guard_keywords",
-    "guard_violations",
     "is_after_cooldown",
     "is_anchor_field",
     "is_slow_field",

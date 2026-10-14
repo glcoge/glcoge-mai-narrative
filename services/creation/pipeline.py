@@ -2,16 +2,17 @@
 
 背景：life（生活片段）与 seeder（世界事件播种）两条创作管道 13 个骨架段中
 12 段结构同构，但**闸门顺序与间隔键推进时机是真语义差异**（life=日上限→间隔、
-成功后才推进 last_ts、守卫丢弃可重试；seeder=间隔→尝试即推进 last_try→概率→
-日上限）——强统编排便 spec interface 膨胀到与实现同宽（浅模块）。故本模块只
+成功后才推进 last_ts；seeder=间隔→尝试即推进 last_try→概率→日上限）——强统
+编排便 spec interface 膨胀到与实现同宽（浅模块）。故本模块只
 收口三件**逐字级重复**，编排保留在两管道本地（差异表见
 `.workbuddy/v0.3重构/A+D执行方案.md` §0.1）：
 
 1. **闸门基元**：``interval_gate`` / ``daily_cap_gate``——读/解析/比较的单一
    实现；返回 bool（True=放行），调用方决定顺序与时序；
-2. **守卫拒绝日志**：``log_guard_reject``——「WARN 必须带原文」（R30 教训：
-   守卫是子串匹配，只看命中片段无法分辨真违规与误伤）的统一落点；
-   参数化 label/detail/ellipsis 使两管道文案**逐字节不变**；
+2. **拦截拒绝日志**：``log_guard_reject``——「WARN 必须带原文」（R30 教训：
+   拦截是子串匹配，只看命中片段无法分辨真违规与误伤；R30 守卫已于 2026-10-14
+   删除，本助手现仅 seeder 参与者禁入使用，教训同样适用）的统一落点；
+   参数化 label/detail/ellipsis 使调用方文案**逐字节不变**；
 3. **落账尾段**：``commit_created_event``——pending_events LRU 截断 +
    save_self_state + chronicle_enabled 条件写；``_SELF_SCOPE`` 延迟导入收进
    本模块一处（life/seeder 两处「避开循环」注释随之消失）。
@@ -69,11 +70,11 @@ def log_guard_reject(
     limit: int = 60,
     ellipsis: bool = True,
 ) -> None:
-    """守卫拒绝的统一 WARN（原文必须带，R30）。
+    """拦截拒绝的统一 WARN（原文必须带；命名沿用 R30 时期，现仅 seeder 参与者禁入在用）。
 
     文案模板：``{label}→ 已丢弃，不入库[；{detail}]；原文: {截断原文}``——
     detail 空则省略该段；``ellipsis=False`` 时超长原文裸截断（seeder 现行
-    格式），默认带「…」（life 现行格式）。两管道调用各自传参，文案逐字节不变。
+    格式），默认带「…」。
     """
     shown = (text[:limit] + "…") if (ellipsis and len(text) > limit) else text[:limit]
     message = f"{label}→ 已丢弃，不入库"

@@ -257,8 +257,8 @@ def test_state_change_still_expressed_in_words():
 # 零行为 diff 双保险：enabled=false（默认）或空世界书 → 注入块与现状一致；
 # detailed 模式接管世界观（world 行让位给世界书），values/world_rules 铁律两种
 # 模式都注入、逻辑不动（单一事实源，防双世界观并置——v0.1.2 同款教训）。
-# lorebook 段不过守卫：条目是用户手写声明，与锚定层同级信任（过闸 = 关键词
-# 命中自删，锚定层行同理由）。
+# （原「lorebook 段不过守卫」裁定注随 R30 守卫删除〔2026-10-14〕移除——注入侧
+# 已无关键词过滤，条目照常注入，见 test_lorebook_entries_injected_without_keyword_filter。）
 
 _LOADER = _synth_loader.load("services.lorebook.loader")
 
@@ -340,13 +340,14 @@ def test_detailed_mode_no_dialogue_only_constants(tmp_path):
     assert "巷口面馆的老板娘" not in text
 
 
-def test_lorebook_section_bypasses_guard(tmp_path):
-    """lorebook 段不过守卫：条目内容含守卫关键词也不自删（锚定层同级信任）。"""
+def test_lorebook_entries_injected_without_keyword_filter(tmp_path):
+    """R30 守卫已删（2026-10-14 裁定）：lorebook 条目照常注入，注入侧无关键词过滤。
+
+    原用例钉「lorebook 段不过守卫」裁定（与锚定层同级信任）；守卫机制删除后
+    反转钉新语义——常驻条目内容即便撞上 world_rules/values 措辞也照常注入。"""
     plugin = _make_lorebook_plugin(tmp_path, mode="detailed")
-    # _make_plugin 的 world_rules=["不能透露自己是 bot"] → 守卫关键词含「bot」相关碎片，
-    # 常驻条目内容若过闸会被关键词命中自删；本用例钉住「不过守卫」裁定。
     text = build_context_block(plugin, _make_state(), None, _NOW, [], dialogue_text="")
-    assert "一座常年起海雾的沿海城市" in text, "世界书条目是用户手写声明，不过守卫"
+    assert "一座常年起海雾的沿海城市" in text, "lorebook 条目必须照常注入上下文"
 
 
 def test_items_dialogue_text_joins_recent_non_injected():

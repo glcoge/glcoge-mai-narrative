@@ -65,7 +65,7 @@ def _make_engine(*, pending=None, enabled=True):
             sleep_pre_sleep_hint_minutes=25,
         ),
         suggestion=SimpleNamespace(enabled=enabled),
-        identity=SimpleNamespace(world="海边小城", values=[], world_rules=[], guard_fragments=[]),
+        identity=SimpleNamespace(world="海边小城", values=[], world_rules=[]),
         llm=SimpleNamespace(show_prompt=False, temperature=0.7),
     )
     engine, _ = _synth_loader.make_engine(

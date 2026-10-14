@@ -9,9 +9,6 @@ engine 薄委托壳已随深化 C3 删除，调用方（engine tick）直调本�
 ⚠ 循环导入：``state/engine.py`` 会在模块顶层 import 本模块，故本模块**不得**在顶层
 import ``state.engine``。``_SELF_SCOPE`` / 档位常量 / ``minutes_until_clock`` 采用函数内延迟导入。
 ``render.audience`` 不 import ``state.engine``，可以顶层 import。
-
-🔒 **守卫出口**：产出落库前要过双向守卫的第一道（入库前，ADR-0002 §9）。
-本模块是「创作产出」的唯一定义地，故该闸门挂在这里，不散到别处。
 """
 
 from __future__ import annotations
@@ -26,9 +23,8 @@ from ..kvkeys import LIFE_FRAGMENT_LAST_TS as _LIFE_LAST_TS_KEY
 from ..render.audience import visible_events
 from ..learning.topic import TOPIC_WEIGHT_SELF_FRAGMENT, reward_topic
 from ..learning.suggestion import tendency_prompt_block
-from ..state.continuity import build_guard_keywords, guard_violations, should_drop_output
 from .event_entity import make_fragment_event
-from .pipeline import commit_created_event, daily_cap_gate, interval_gate, log_guard_reject
+from .pipeline import commit_created_event, daily_cap_gate, interval_gate
 
 #: 通信事实标记（批 4-C9 / R25 / ADR-0003 §8；E8 裁定 (b)：**只做合约句**，
 #: 注入真实发送清单需接宿主账本，留收尾里程碑）。
@@ -131,27 +127,6 @@ async def maybe_generate_life_fragment(deps: Any, now: Optional[datetime] = None
     if not text:
         return
 
-    # 双向守卫**第一道**（入库前，ADR-0002 §9，批 2-C6）：
-    # 命中的产出**整条丢弃**（不入 pending_events、不入编年史、不推进闸门计数）。
-    # 不改写——改写等于让代码替模型撒谎，且改写产物没经过任何审查。
-    # 此处是"创作产出"的唯一定义地，故闸门挂在这里，不散到别处（E9 裁决）。
-    # 丢弃后**直接 return**，不推进 last_ts：这次尝试没有产出可用内容，
-    # 不该占用配额；下一个 tick 会以同一批素材再试一次。
-    guard_set = build_guard_keywords(cfg)
-    if should_drop_output(text, guard_set):
-        # OBSERVE(R30)：日志**必须带原文**——守卫是子串包含匹配，关键词又是从
-        # world_rules 切出来的短碎片（如「尾巴」「角」），只看命中片段无法分辨
-        # 「真违规」与「误伤」（真机 2026-09-27 16:02 就丢过一条只因出现「尾巴」）。
-        # 没有原文就只能事后猜，这正是误伤率长期无法收敛的原因。
-        # 统一格式助手（深化 A）：label/detail 传参保文案逐字节不变。
-        log_guard_reject(
-            deps.logger,
-            label="生活片段命中锚定守卫（world_rules/values/禁用片段）",
-            detail=f"命中片段: {guard_violations(text, guard_set)[:5]}",
-            text=text,
-        )
-        return
-
     # 指标 4 双轨埋点（R24 A 轨 / R7 B 轨）：只在产出这一刻采样，
     # 保证"注入侧组合熵"与"产出侧文本多样性"同尺度可比。
     telemetry = deps.telemetry
@@ -183,7 +158,7 @@ async def maybe_generate_life_fragment(deps: Any, now: Optional[datetime] = None
     deps.store.set_kv_str(_LIFE_LAST_TS_KEY, current.isoformat(timespec="seconds"))
     if not wake_fragment:
         deps.store.set_kv_int(f"{_LIFE_COUNT_KEY}{today}", day_count + 1)
-    # 高光计数（P19）：只在本段成功落库后推进（守卫丢弃在上方已 return，不占配额）
+    # 高光计数（P19）：只在本段成功落库后推进
     if highlight:
         deps.store.set_kv_int(
             f"{_LIFE_HIGHLIGHT_COUNT_KEY}{today}",

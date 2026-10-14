@@ -65,7 +65,7 @@ _rng = random.Random()
 
 
 def _seeder_config(deps: Any) -> Any:
-    """取 [seeder] 段（缺段 = 关闭：老测试夹具兼容，build_guard_keywords 同款先例）。"""
+    """取 [seeder] 段（缺段 = 关闭：老测试夹具兼容；取段回退先例另见 sourcing._sign_cooldown_hours）。"""
     return getattr(deps.config, "seeder", None)
 
 

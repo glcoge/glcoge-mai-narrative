@@ -159,7 +159,7 @@ def _recent_dialogue_text(deps: Any, user_id: str, limit: int = 5) -> str:
 
 def _sign_cooldown_hours(cfg: Any) -> float:
     """冷却时长（小时）：读 [proactive].sign_cooldown_hours；缺段回退模块缺省
-    （老测试夹具兼容，build_guard_keywords 同款先例；生产 config 恒有该字段）。"""
+    （老测试夹具兼容，取段先例另见 seeder._seeder_config；生产 config 恒有该字段）。"""
     pro_cfg = getattr(cfg, "proactive", None)
     if pro_cfg is None:
         return _SIGN_COOLDOWN_DEFAULT_HOURS

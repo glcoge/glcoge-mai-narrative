@@ -480,8 +480,8 @@ def make_engine(
                 sleep_pre_sleep_hint_minutes=25,
             ),
             llm=types.SimpleNamespace(show_prompt=False, temperature=0.7),
-            identity=types.SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
-            anchor=types.SimpleNamespace(guard_keywords=[]),
+            identity=types.SimpleNamespace(world="", values=[], world_rules=[]),
+            anchor=types.SimpleNamespace(),
         )
     engine_mod = load("services.state.engine")
     resolved_store = store if store is not None else FakeStore()
@@ -552,8 +552,8 @@ def make_life_engine(
             sleep_pre_sleep_hint_minutes=25,
         ),
         llm=types.SimpleNamespace(show_prompt=False, temperature=0.7),
-        identity=types.SimpleNamespace(world="", values=[], world_rules=[], guard_fragments=[]),
-        anchor=types.SimpleNamespace(guard_keywords=[]),
+        identity=types.SimpleNamespace(world="", values=[], world_rules=[]),
+        anchor=types.SimpleNamespace(),
     )
     engine, _store = make_engine(
         config=config,
