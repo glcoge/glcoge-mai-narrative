@@ -600,10 +600,11 @@ def parse_chronicle_refs(text: Any) -> List[int]:
 
 
 def scene_stats(rows: Iterable[Any]) -> Tuple[int, int]:
-    """从证据条目算 ``(场景数, 跨日数)``。
+    """从证据条目算 ``(场景数, 跨日数)``。 # OBSERVE(R5)
 
     场景键 = ``(自然日, 来源)``——**同一天同一来源只算 1 个场景**。真实归档数据里
     去重比最高 18.56（167 条事件压成 9 天），不去重则一天即可刷满门槛。
+    批 4 定标（R5）：归档 77 素材落 22 自然日 → (22, 22)，与素材条数解耦。
     """
     scenes: Set[Tuple[str, str]] = set()
     days: Set[str] = set()
@@ -625,11 +626,13 @@ def minor_gate_checks(
     min_scenes: int,
     min_days: int,
 ) -> Dict[str, bool]:
-    """minor 门槛的**逐项**判定（P3 的唯一判据所在地）。
+    """minor 门槛的**逐项**判定（P3 的唯一判据所在地）。 # OBSERVE(R4)
 
     诊断要回答「卡在哪一项」，但判据必须与晋升机**同源**——所以三条比较只在本
     函数写一次：``meets_minor_gate`` 是它的 ``all()`` 折叠，健康度诊断直接读本
     函数的返回值。写第二份判据迟早漂移，那时诊断会开始描述一个与晋升机不同的世界。
+    门槛数值（R4）：minor 默认 0.82/3 场景/2 天、major 0.95/2 场景（默认关），
+    走 `[promotion]` 配置；批 4 定标结论=门槛不是瓶颈、冷却是（cooldown_hours）。
     """
     return {
         "confidence": float(confidence) >= float(min_confidence),

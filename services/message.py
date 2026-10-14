@@ -87,7 +87,7 @@ def extract_user_id(message: Dict[str, Any]) -> str:
 def extract_group_id(message: Dict[str, Any]) -> str:
     """从消息中提取群号（私聊 / 取不到返回空串）。
 
-    R35（群聊观察）的入站 seam：群事件必须打上 ``g:<gid>`` 受众标，
+    # OBSERVE(R35)（群聊观察）的入站 seam：群事件必须打上 ``g:<gid>`` 受众标，
     **取不到 gid 就拒绝落库**（fail-closed——不带标的群素材会落进「通用」桶，
     畅通进私聊，正是 09-21 泄露事故的同型路径）。
 
