@@ -1,17 +1,16 @@
-"""漂移层规则调制（批 3-C1 / ADR-0003 §1 §5 §6）——确定性映射，零 LLM。
+"""漂移层状态事实段（2026-10-14 裁定改版）——确定性映射，零 LLM。
 
-调制段把**此刻状态**（精力 / 作息相位 / 睡眠态）翻成一句**倾向性软表述**，
-经 replyer 通道注入。
+事实段把**此刻状态**（心情 / 精力 / 睡眠态）翻成一句**纯事实表述**，经 replyer 通道注入。
 
 三条硬纪律锁在本用例里：
 
 | 纪律 | 依据 | 断言 |
 |---|---|---|
-| 句长/语气用**软表述**（区间、节奏感），不是硬格式指令 | ADR-0003 §6；E6 纠偏——ChatRhythm 废弃的是宿主检测器+硬格式指令，**不是软措辞** | 不含「条/字数/上限/字以内」等 |
-| **禁 Do-not 禁令组** | ADR-0003 §6（HDSI「五步仪式」事故根因） | 不含「不要/禁止/不得/do not」 |
-| 作息相位只作**映射输入**，不输出时间名词 | E9 分工（防与 planner 块重复） | 不含「深夜/清晨/上午/午后/下午/晚间」 |
+| **只输出事实，不输出表达指令**（禁风格词面） | 2026-10-14 用户裁定（W2「只留事实状态」意图补完）——原版句长/语气/节奏软表述整句移除 | 不含「句子/语气/节奏/铺陈」 |
+| **禁 Do-not 禁令组** | ADR-0003 §6（HDSI「五步仪式」事故根因，保留） | 不含「不要/禁止/不得/do not」 |
+| 作息相位只作**映射输入**，不输出、不渲染 | E9 分工（防与 planner 块重复，保留） | 不含「深夜/清晨/上午/午后/下午/晚间」，且相位不影响输出 |
 
-另锁：四档能量基调、睡眠/被吵醒修饰、未知输入不崩、输出确定性、长度上限。
+另锁：事实渲染（心情标签/精力 N/10/睡眠态）、无事实返回空串、未知输入不崩、输出确定性、长度上限。
 """
 
 from __future__ import annotations
@@ -33,47 +32,55 @@ modulation_text = _DRIFT.modulation_text
 describe_drift = _DRIFT.describe_drift
 MODULATION_MAX_CHARS = _DRIFT.MODULATION_MAX_CHARS
 
-#: 硬格式指令 / 禁令组关键词——出现即视为越界（ADR-0003 §6）
+#: 风格词面——2026-10-14 裁定：漂移层不得输出任何表达指令（回归锁）
+_FORBIDDEN_STYLE_WORDS = ("句子", "语气", "节奏", "铺陈", "句长")
+#: 硬格式指令关键词——出现即视为越界（ADR-0003 §6，保留）
 _FORBIDDEN_HARD = ("条", "字数", "上限", "字以内", "句以内", "拆成", "分成", "模板")
 #: 禁令组关键词——禁止性说明文本本身就是写作模板
 _FORBIDDEN_NEGATION = ("不要", "禁止", "不得", "不能", "别", "do not", "Do not")
-#: 作息时间名词——只作映射输入，不得出现在输出里（E9）
+#: 作息时间名词——只作映射输入，不得出现在输出里（E9，保留）
 _FORBIDDEN_TIME_WORDS = ("深夜", "清晨", "上午", "午后", "下午", "晚间")
 
 
 def _assert_clean(text: str) -> None:
+    for word in _FORBIDDEN_STYLE_WORDS:
+        assert word not in text, f"事实段出现风格词面「{word}」: {text}"
     for word in _FORBIDDEN_HARD:
-        assert word not in text, f"调制段出现硬格式指令「{word}」: {text}"
+        assert word not in text, f"事实段出现硬格式指令「{word}」: {text}"
     for word in _FORBIDDEN_NEGATION:
-        assert word not in text, f"调制段出现禁令组「{word}」: {text}"
+        assert word not in text, f"事实段出现禁令组「{word}」: {text}"
     for word in _FORBIDDEN_TIME_WORDS:
-        assert word not in text, f"调制段出现作息时间名词「{word}」: {text}"
+        assert word not in text, f"事实段出现作息时间名词「{word}」: {text}"
 
 
-# ─── 四档能量基调 ────────────────────────────────────────────
+# ─── 事实渲染：心情 + 精力 ──────────────────────────────────
 
 
-def test_high_energy_expands() -> None:
+def test_high_energy_renders_facts() -> None:
     text = modulation_text("轻快", 0.9, "上午")
-    assert "舒展" in text
+    assert "心情轻快" in text
+    assert "精力" in text
     _assert_clean(text)
 
 
-def test_mid_energy_neutral() -> None:
+def test_mid_energy_renders_facts() -> None:
     text = modulation_text("平静", 0.5, "下午")
-    assert "自然" in text
+    assert "心情平静" in text
+    assert "精力 5/10" in text
     _assert_clean(text)
 
 
-def test_low_energy_shortens() -> None:
+def test_low_energy_renders_facts() -> None:
     text = modulation_text("低落", 0.3, "下午")
-    assert "偏短" in text
+    assert "心情低落" in text
+    assert "精力 3/10" in text
     _assert_clean(text)
 
 
-def test_very_low_energy_shortens_more() -> None:
+def test_very_low_energy_renders_facts() -> None:
     text = modulation_text("疲惫", 0.1, "深夜")
-    assert "明显短" in text
+    assert "心情疲惫" in text
+    assert "精力 1/10" in text
     _assert_clean(text)
 
 
@@ -81,67 +88,85 @@ def test_boundary_values_do_not_crash() -> None:
     for energy in (0.0, 1.0, 0.72, 0.40, 0.20):
         text = modulation_text("平静", energy, "上午")
         assert text
+        assert "精力" in text
         _assert_clean(text)
 
 
-# ─── 作息相位 → 节奏（只作映射输入） ─────────────────────────
+# ─── 作息相位：不渲染（E9，相位事实归 planner） ───────────────
 
 
-def test_phase_changes_pace() -> None:
+def test_phase_not_rendered() -> None:
+    """相位不再影响输出（2026-10-14 裁定：原「相位→节奏措辞」映射整表移除）。"""
     day = modulation_text("平静", 0.5, "上午")
     night = modulation_text("平静", 0.5, "深夜")
-    assert day != night, "不同相位应产出不同节奏措辞"
+    assert day == night, "相位不得影响事实段输出"
     _assert_clean(day)
     _assert_clean(night)
 
 
-def test_unknown_phase_falls_back() -> None:
+def test_unknown_phase_not_rendered() -> None:
     text = modulation_text("平静", 0.5, "子夜未定义")
-    assert text
+    assert text == modulation_text("平静", 0.5, "上午")
     _assert_clean(text)
 
 
-def test_missing_phase_falls_back() -> None:
+def test_missing_phase_not_rendered() -> None:
     text = modulation_text("平静", 0.5, "")
-    assert text
+    assert text == modulation_text("平静", 0.5, "上午")
     _assert_clean(text)
 
 
-# ─── 睡眠态 / 被吵醒 ────────────────────────────────────────
+# ─── 睡眠态 / 被吵醒（事实） ────────────────────────────────
 
 
-def test_asleep_state_marks_drowsy() -> None:
+def test_asleep_state_renders_fact() -> None:
     text = modulation_text("疲惫", 0.1, "深夜", sleep_state="asleep")
-    assert "迷糊" in text
+    assert "睡梦中" in text
     _assert_clean(text)
 
 
-def test_woken_state_marks_sleepiness() -> None:
+def test_woken_state_renders_fact() -> None:
     text = modulation_text("疲惫", 0.1, "深夜", sleep_state="awake", woken_count=1)
-    assert "困意" in text
+    assert "刚被吵醒" in text
     _assert_clean(text)
 
 
 def test_asleep_takes_precedence_over_woken() -> None:
     """睡着优先于「被吵醒计数」，两者不重复叠加。"""
     text = modulation_text("疲惫", 0.1, "深夜", sleep_state="asleep", woken_count=2)
-    assert "迷糊" in text
-    assert "困意" not in text
+    assert "睡梦中" in text
+    assert "刚被吵醒" not in text
 
 
-# ─── 容错 / 确定性 / 长度 ───────────────────────────────────
+# ─── 容错 / 确定性 / 长度 / 空串契约 ─────────────────────────
 
 
-def test_nan_energy_uses_label_fallback() -> None:
+def test_nan_energy_omits_energy_fact() -> None:
     text = modulation_text("疲惫", float("nan"), "深夜")
-    assert text
+    assert "心情疲惫" in text
+    assert "精力" not in text
     _assert_clean(text)
 
 
-def test_out_of_range_energy_uses_label_fallback() -> None:
+def test_out_of_range_energy_omits_energy_fact() -> None:
     text = modulation_text("轻快", 9.9, "上午")
-    assert text
-    assert "舒展" in text, "越界 energy 应回落到 label 基调"
+    assert "心情轻快" in text
+    assert "精力" not in text
+    _assert_clean(text)
+
+
+def test_empty_state_returns_empty_string() -> None:
+    """无任何事实（无标签+无效精力+无睡眠修饰）→ 空串，调用方应跳过注入。"""
+    assert modulation_text("", None, "") == ""
+    assert modulation_text("", float("nan"), "", sleep_state="awake", woken_count=0) == ""
+    assert describe_drift({}) == ""
+
+
+def test_label_only_renders_mood_fact() -> None:
+    """精力缺失时只渲染心情事实。"""
+    text = modulation_text("平静", None, "上午")
+    assert text == "心情平静。"
+    _assert_clean(text)
 
 
 def test_deterministic() -> None:
@@ -164,15 +189,14 @@ def test_describe_drift_reads_nested_state() -> None:
         "routine": {"phase": "上午", "sleep_state": "awake", "woken_count": 0},
     }
     text = describe_drift(inner)
-    assert "舒展" in text
+    assert "心情轻快" in text
+    assert "精力 8/10" in text
     _assert_clean(text)
 
 
-def test_describe_drift_tolerates_missing_sections() -> None:
-    """state 结构残缺 → 仍产出合法文本，不崩。"""
-    text = describe_drift({})
-    assert text
-    _assert_clean(text)
+def test_describe_drift_missing_sections_return_empty() -> None:
+    """state 结构残缺 → 返回空串（不崩、不产词），由 inject 层跳过注入。"""
+    assert describe_drift({}) == ""
 
 
 if __name__ == "__main__":

@@ -148,6 +148,24 @@ def test_block_has_no_hard_format_directives() -> None:
         assert banned not in block
 
 
+def test_real_drift_output_is_pure_facts() -> None:
+    """2026-10-14 裁定贯通：真实 describe_drift 输出接进块 = 纯事实（心情/精力），
+    无任何风格词面（原「少些铺陈」低档措辞与「铺陈」禁令的潜在冲突就此消除）。"""
+    _DRIFT = load("services.learning.drift_style")
+    for energy in (0.9, 0.5, 0.3, 0.1):
+        drift = _DRIFT.describe_drift(
+            {
+                "mood": {"label": "轻快", "energy": energy},
+                "routine": {"phase": "上午", "sleep_state": "awake", "woken_count": 0},
+            }
+        )
+        block = build_replyer_block(drift_text=drift, learned_style=())
+        assert "心情轻快" in block
+        assert "精力" in block
+        for banned in ("句子", "语气", "节奏", "铺陈", "舒展", "迷糊", "困意"):
+            assert banned not in block, f"块内出现风格措辞「{banned}」: {block}"
+
+
 if __name__ == "__main__":
     from pytests._synth_loader import run_standalone
 

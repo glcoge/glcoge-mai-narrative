@@ -153,8 +153,11 @@ def test_injects_style_item(tmp_path: Path) -> None:
     _assert_host_contract(injected)
     assert injected["meta"]["item_id"].startswith("_narrative_style_")
     text = injected["parts"][0]["text"]
-    assert "舒展" in text  # 调制段（energy=0.8 → 轻快档）
-    # W2 裁定（2026-10-13）：漂移注入只留事实状态，授权段与 learned_style 已停用。
+    # 2026-10-14 裁定：漂移注入=纯事实段（心情/精力/睡眠），energy=0.8 → 轻快档
+    assert "心情轻快" in text
+    assert "精力 8/10" in text
+    assert "句子" not in text and "语气" not in text and "节奏" not in text  # 风格词面禁令
+    # W2 裁定（2026-10-13）：授权段与 learned_style 已停用。
     # _make_plugin 的 branch 里存有 stage=相识，块内也不得出现——正控制：有数据不泄漏
     # （inject_drift_style 已不读 branch）。
     assert "关系阶段" not in text
@@ -191,6 +194,20 @@ def test_inject_counter_increments(tmp_path: Path) -> None:
     _run(plugin, _payload(list(base)))
     _run(plugin, _payload(list(base)))
     assert plugin._style_inject_count == 2
+
+
+def test_empty_drift_skips_injection(tmp_path: Path) -> None:
+    """2026-10-14 裁定：无事实可注入（state 空）→ 跳过，不追加空 style item。"""
+    plugin = _make_plugin(tmp_path)
+    plugin._engine = SimpleNamespace(
+        load_self_state=lambda: {"state": {}},
+        load_branch_state=lambda uid: {"relationship": {"stage": "相识"}},
+    )
+    base = [{"item_type": "SystemMessageItem", "meta": {"item_id": "s1"}, "parts": []}]
+    result = _run(plugin, _payload(list(base)))
+    assert result["action"] == "continue"
+    assert result["modified_kwargs"]["items"] == base  # 原样，无追加
+    assert plugin._style_inject_count == 0
 
 
 # ─── 幂等 / 门禁 ────────────────────────────────────────────

@@ -79,14 +79,15 @@ async def inject_life_context(plugin, **kwargs: Any) -> Dict[str, Any]:
     return {"action": "continue", "modified_kwargs": kwargs}
 
 async def inject_drift_style(plugin, **kwargs: Any) -> Dict[str, Any]:
-    """把此刻状态调制 + 关系语境 + 文学授权追加进 replyer 请求 items。
+    """把此刻状态事实段追加进 replyer 请求 items。
 
     ⚠️ 三条硬约束（ADR-0003 §5 + 宿主源码实测 H2/H3/H7）：
     1. 宿主 ``modified_kwargs`` 是**整体替换非合并** → 必须全量带出 kwargs，只改 items；
     2. hook 有 **6 秒硬超时** → 本路径只读一次 state，不读编年史，零 LLM；
     3. 宿主 try/except **吞掉一切异常** → 注入失败完全静默，故埋耗时与注入计数。
 
-    与 planner 注入块分工（E9）：本块只出调制/关系/授权，**不重复**生活内容。
+    与 planner 注入块分工（E9）：本块只出此刻状态事实（2026-10-14 裁定：
+    不注入风格类措辞），**不重复**生活内容。
     """
     # A/B 对照 gate：与 planner 注入同款双开关，narrative.enabled=false 时行为全停
     if not (plugin.config.plugin.enabled and plugin.config.narrative.enabled):
@@ -111,7 +112,7 @@ async def inject_drift_style(plugin, **kwargs: Any) -> Dict[str, Any]:
 
     started = time.perf_counter()
     state = plugin._engine.load_self_state()
-    # 漂移注入（W2：2026-10-13 裁定）：停用 learned_style 注入，只留事实状态调制段。
+    # 漂移注入（W2：2026-10-13 裁定停用 learned_style；2026-10-14 裁定调制段→纯事实段）。
     # 群/私差异已归零（learned_style 强制空），保留会话门（mode 会话 + 观察群）。
     if group_id:
         # 🔴 群聊与私聊的差异收敛为一处：learned_style **强制为空** ——
@@ -120,8 +121,13 @@ async def inject_drift_style(plugin, **kwargs: Any) -> Dict[str, Any]:
         learned_style: Sequence[str] = ()
     else:
         learned_style = ()  # W2：停用注入，但保留投影机制（commands.py:209 自带 import）
+    drift_text = describe_drift(state.get("state") or {})
+    # 2026-10-14 裁定：漂移层只注入纯事实（心情/精力/睡眠态）；无事实可注入时
+    # 跳过——不追加空 style item（空 user 消息进 prompt 是污染）。
+    if not drift_text.strip():
+        return {"action": "continue", "modified_kwargs": kwargs}
     context_text = build_replyer_block(
-        drift_text=describe_drift(state.get("state") or {}),
+        drift_text=drift_text,
         learned_style=learned_style,
     )
     items.append(build_style_item(context_text))

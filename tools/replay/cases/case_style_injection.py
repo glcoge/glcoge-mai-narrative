@@ -44,13 +44,15 @@ _EXPECTED_COMBOS = len(_MOODS) * len(_PHASES) * len(_SLEEPS)
 _BANNED_HARD: Tuple[str, ...] = ("字以内", "句以内", "拆成", "分成", "上限")
 #: Do-not 禁令组（禁止性说明文本本身就是写作模板）
 _BANNED_NEGATION: Tuple[str, ...] = ("不要", "禁止", "不得", "do not", "Do not")
+#: 风格词面（2026-10-14 裁定：漂移层只出纯事实，不输出表达指令）
+_BANNED_STYLE: Tuple[str, ...] = ("句子", "语气", "节奏", "铺陈", "舒展", "迷糊", "困意")
 
 
 def case_style_injection(inputs: Any) -> List[str]:
-    """漂移注入块护栏：无硬指令 / 禁令组 + 调制段非空。返回失败列表（空 = 通过）。
+    """漂移注入块护栏：无硬指令 / 禁令组 / 风格词面 + 事实段非空。返回失败列表（空 = 通过）。
 
     W2 裁定（2026-10-13）：停用授权段与 learned_style 注入，本用例不再断言
-    AUTHORIZATION_TEXT；只验证调制段渲染正确性 + 无越界词。
+    AUTHORIZATION_TEXT；2026-10-14 裁定：调制段→纯事实段，追加风格词面禁令。
     """
     failures: List[str] = []
 
@@ -86,7 +88,7 @@ def case_style_injection(inputs: Any) -> List[str]:
                     failures.append(f"注入块为空（{tag}）")
                     continue
                 # W2：授权段已停用，不再断言 AUTHORIZATION_TEXT
-                for banned in _BANNED_HARD + _BANNED_NEGATION:
+                for banned in _BANNED_HARD + _BANNED_NEGATION + _BANNED_STYLE:
                     if banned in text:
                         failures.append(f"注入块出现越界词「{banned}」（{tag}）")
 
