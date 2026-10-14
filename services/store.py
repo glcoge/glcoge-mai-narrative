@@ -270,9 +270,11 @@ class NarrativeStore:
             for table, column in _DROPPED_COLUMNS:
                 if column in self._table_columns(connection, table):
                     connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-            # OBSERVE(R20)：存量历史数据隔离豁免——这一段看着像「只跑一次的迁移垃圾」，
-            # 但删掉即让存量 diary 条目失去隔离标记（涉私原文外泄）；换人设/清库后本条才自动失效。
-            # 存量打标（R20）：既有 diary 条目按「完全隔离」处理，不清洗不删除。
+            # [已废弃 R20]：存量历史数据隔离豁免——失效条件「换人设/清库」已于
+            # 2026-10-13 T0 触发（全清归零），登记已迁《废弃接口登记表》。
+            # 代码保留：这段对「存量 diary 条目缺 source_uid」补隔离标记的语句是
+            # 无害幂等兜底（现库为空即零行命中），删掉反而让将来可能出现的
+            # 未打标 diary 条目失去隔离标记（涉私原文外泄）。
             # 只补空值——用户已裁定 life/daily 不做反推打标（涉私影响内测期可接受），
             # 故此处**不碰**非 diary 条目，也不动它们的 source_uid。
             connection.execute(
