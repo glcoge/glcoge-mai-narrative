@@ -28,10 +28,13 @@
     "llm.generate",
     "llm.get_available_models",
     "maisaka.context.append",
-    "maisaka.proactive.trigger"
+    "maisaka.proactive.trigger",
+    "knowledge.search"
   ],
   "i18n": {
     "default_locale": "zh-CN",
-    "supported_locales": ["zh-CN"]
+    "supported_locales": [
+      "zh-CN"
+    ]
   }
 }

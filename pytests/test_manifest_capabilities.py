@@ -83,5 +83,32 @@ def test_used_capabilities_declared_in_manifest():
     assert not missing, f"以下能力被调用但 manifest 未声明（线上会 E_CAPABILITY_DENIED）: {sorted(missing)}"
 
 
+# ===== ctx.call_capability 通用调用面（P2/R45 起纳入同一防回归）=====
+
+_CALL_CAP_RE = re.compile(r"ctx\.call_capability\(\s*[\"']([a-z]+\.[a-z_.]+)[\"']")
+
+
+def _used_call_capability_names() -> set[str]:
+    """扫描源码里 ctx.call_capability("名", ...) 的字面量能力名。"""
+    names: set[str] = set()
+    for path in _collect_runtime_sources():
+        for match in _CALL_CAP_RE.finditer(path.read_text(encoding="utf-8")):
+            names.add(match.group(1))
+    return names
+
+
+def test_call_capability_names_declared_in_manifest():
+    """通用能力调用面与 ctx.maisaka.* 同一纪律：字面量能力名必须已在 manifest 声明。
+
+    背景：P2 意图重判用 ``ctx.call_capability("knowledge.search", ...)`` 做裁决点
+    检索——通用调用面绕过了 maisaka 映射表的覆盖，单独扫（能力名漏声明同样是
+    线上 E_CAPABILITY_DENIED，且本地 fake ctx 测不出）。
+    """
+    used = _used_call_capability_names()
+    declared = _manifest_capabilities()
+    missing = used - declared
+    assert not missing, f"call_capability 字面量未声明（线上会 E_CAPABILITY_DENIED）: {sorted(missing)}"
+
+
 if __name__ == "__main__":
     sys.exit(__import__("pytest").main([__file__, "-q"]))

@@ -79,10 +79,23 @@ def _make_plugin(
     cfg = SimpleNamespace(
         plugin=SimpleNamespace(enabled=True),
         proactive=SimpleNamespace(reply_extension_enabled=ext_enabled),
+        # P2（R45）：_fire 现在先走意图到期重判（settle_due）——空账本即 None
+        # 快速返回，夹具补齐生产形状（deps.state + [intent] 段）。
+        intent=SimpleNamespace(
+            recheck_cooldown_minutes=45,
+            pending_cap=8,
+            wait_defer_hours=6,
+            stale_expire_hours=48,
+        ),
     )
     plugin = SimpleNamespace(
         config=cfg,
-        _engine=SimpleNamespace(deps=SimpleNamespace(store=store)),
+        _engine=SimpleNamespace(
+            deps=SimpleNamespace(
+                store=store,
+                state=SimpleNamespace(load_self_state=lambda: {"state": {"focus": {}}}),
+            )
+        ),
         _telemetry=SimpleNamespace(
             record=lambda name, value=1, user_id="", scope="": calls["metrics"].append(name)
         ),

@@ -1009,6 +1009,55 @@ class SuggestionSection(PluginConfigBase):
     )
 
 
+class IntentSection(PluginConfigBase):
+    """意图账本（P2 / R45 / ADR-0006，2026-10-15）。
+
+    对人的未来动作/挂念的登记与到期重判。⚠️ **无总开关**（2026-10-15 用户裁定：
+    P2 定性 = 缺陷治理而非新能力，回滚 = git revert；本段只有成本/容量参数）。
+    """
+
+    __ui_label__: ClassVar[str] = "意图账本"
+    __ui_icon__: ClassVar[str] = "bookmark"
+    __ui_order__: ClassVar[int] = 10
+
+    recheck_cooldown_minutes: int = Field(
+        default=45,
+        ge=1,
+        description=(
+            "同一条挂念两次到期重判之间的最小间隔（分钟）。重判是一次 LLM 调用 + "
+            "一次记忆检索，此值是成本主旋钮；调小 = 跟进更跟脚、token 更贵。"
+        ),
+        json_schema_extra={"label": "重判冷却（分钟）", "order": 1},
+    )
+    pending_cap: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "账本里 pending 挂念的容量上限。超限时最老的 pending 转作废（staleness "
+            "淘汰，留指标不静默丢）。挂念是隔夜物，不能进片段 LRU 池。"
+        ),
+        json_schema_extra={"label": "挂念容量上限", "order": 2},
+    )
+    wait_defer_hours: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "重判「再等等 / 检索失败推迟」时，跟进时点后移的小时数。"
+            "同样用于 act 裁决后的防复读后移。"
+        ),
+        json_schema_extra={"label": "推迟步长（小时）", "order": 3},
+    )
+    stale_expire_hours: int = Field(
+        default=48,
+        ge=1,
+        description=(
+            "到期后仍未被重判消化的挂念，超过此小时数自动作废（零 LLM 的 staleness "
+            "淘汰）——「明天交作业」拖到后天就没有提醒价值了。"
+        ),
+        json_schema_extra={"label": "过期自动作废（小时）", "order": 4},
+    )
+
+
 class MaiNarrativePluginConfig(PluginConfigBase):
     """mai-narrative 顶层配置。"""
 
@@ -1023,6 +1072,7 @@ class MaiNarrativePluginConfig(PluginConfigBase):
     lorebook: LorebookSection = Field(default_factory=LorebookSection)
     seeder: SeederSection = Field(default_factory=SeederSection)
     suggestion: SuggestionSection = Field(default_factory=SuggestionSection)
+    intent: IntentSection = Field(default_factory=IntentSection)
 
 
 __all__ = [
@@ -1038,5 +1088,6 @@ __all__ = [
     "LorebookSection",
     "SeederSection",
     "SuggestionSection",
+    "IntentSection",
     "MaiNarrativePluginConfig",
 ]

@@ -19,6 +19,7 @@ from ..learning.topic import note_pending_topic, reward_pending_topic
 from ..proactive import sourcing
 from ..state.continuity import append_milestone
 from ..state.engine import parse_clock
+from ..intent import settle_due as _settle_intent_due
 
 # 承接窗口 = 冷落窗口（2026-09-22 定案，取代原先 30min / 24h 双口径）**16 小时**。
 #
@@ -358,15 +359,22 @@ class ProactiveScheduler:
         """签发由头并触发 Maisaka 主动任务。由头为空（无可借生活素材）则跳过本轮。"""
         cfg = self._plugin.config
         plugin = self._plugin
-        # 批 0（R41）：改用 detail 版取事件实体署名（event_id/origin 落回执）——
-        # 取材与选择逻辑同一实现，text 与旧接口逐字节一致（零行为 diff）。
-        bysource_detail = sourcing.build_bysource_detail(plugin._engine.deps, user_id, now)
+        # P2（R45 / ADR-0006）：到期意图重判优先——due commitment 带对话事实重判后
+        # 仍成立的，本轮由头改用它（origin=commitment，未定挂念形态）。settle 内部
+        # 四态落账（act/wait/fulfilled/cancel）；返回 None（无到期/检索失败推迟/
+        # 已了结）时照常走普通素材签发。
+        bysource_detail = await _settle_intent_due(plugin, user_id, now)
+        if bysource_detail is None:
+            # 批 0（R41）：改用 detail 版取事件实体署名（event_id/origin 落回执）——
+            # 取材与选择逻辑同一实现，text 与旧接口逐字节一致（零行为 diff）。
+            bysource_detail = sourcing.build_bysource_detail(plugin._engine.deps, user_id, now)
         if not bysource_detail:
             plugin.ctx.logger.info(
                 "主动消息跳过: uid=%s stream=%s 无可借由的生活素材（不干聊）", user_id, stream_id
             )
             return
         bysource = str(bysource_detail.get("text", ""))
+        is_commitment = str(bysource_detail.get("origin", "")) == "commitment"
         intent = "按剧本生活主动开口"
         # 素材与锚点分离（单点解冻 #2，2026-10-11，复读修复方案 A）。
         #
@@ -394,12 +402,21 @@ class ProactiveScheduler:
             plugin.ctx.logger.warning("读取 bot.nickname 失败，主动素材标记使用中性占位词「角色」")
             bot_name = "角色"
         material_id = f"narrative:share:{bysource_detail.get('event_id', '')}"
-        material_text = (
-            f"【{bot_name}的最近生活 · 素材】\n"
-            f"{bysource}\n"
-            f"（这是{bot_name}自己的经历素材，不是用户发言，也不是必须执行的任务；"
-            f"可以考虑让{bot_name}把这件事自然讲出来，不强制。）"
-        )
+        if is_commitment:
+            # 意图由头（ADR-0006 红线 2）：未定挂念形态，不是「去执行」的任务指令
+            material_text = (
+                f"【{bot_name}的近期挂念 · 素材】\n"
+                f"{bysource}\n"
+                f"（这是{bot_name}自己惦记的事，不是用户发言，也不是必须执行的任务；"
+                f"可以考虑自然地提起或问一句，也可以不提。）"
+            )
+        else:
+            material_text = (
+                f"【{bot_name}的最近生活 · 素材】\n"
+                f"{bysource}\n"
+                f"（这是{bot_name}自己的经历素材，不是用户发言，也不是必须执行的任务；"
+                f"可以考虑让{bot_name}把这件事自然讲出来，不强制。）"
+            )
         try:
             inject_result = await plugin.ctx.maisaka.append_context(
                 stream_id,
@@ -428,10 +445,19 @@ class ProactiveScheduler:
                 "proactive_material_inject_failed", 1, user_id=user_id, scope="proactive"
             )
             return
+        if is_commitment:
+            lead = (
+                f"上下文里刚注入了一件{bot_name}近期惦记的事。可以让{bot_name}自然地提起或问起——"
+                "只是随口关心一下，不是必须完成的追问任务，也不要像播报或任务汇报。"
+            )
+        else:
+            lead = (
+                f"上下文里刚注入了一条{bot_name}的最近生活素材。可以考虑让{bot_name}把这件事自然地讲出来——"
+                f"分享{bot_name}自己的近况，不是去回答对方以前的提问，也不要像播报或任务汇报。"
+            )
         reason = (
-            f"上下文里刚注入了一条{bot_name}的最近生活素材。可以考虑让{bot_name}把这件事自然地讲出来——"
-            f"分享{bot_name}自己的近况，不是去回答对方以前的提问，也不要像播报或任务汇报。"
-            "如果当前气氛不适合，可以不说。\n"
+            lead
+            + "如果当前气氛不适合，可以不说。\n"
             "（若决定开口：reply 工具需要一个 msg_id 作为发送锚——取上下文中任意一条真实"
             f"用户消息的 id（不要用{bot_name}自己发的消息的 id）；它只是技术参数，"
             "不代表要回复那条消息的内容。）"
