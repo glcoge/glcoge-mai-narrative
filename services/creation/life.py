@@ -138,6 +138,15 @@ async def maybe_generate_life_fragment(deps: Any, now: Optional[datetime] = None
     if not text:
         return
 
+    # 意图行登记（P2 / R45 / ADR-0006）：正文剥离意图行（元数据不进片段、
+    # 不进指标采样、不进编年史），有则落 commitment 账本；解析失败静默放弃。
+    # 注意顺序：必须在 note_fragment（指标 4 文本多样性采样）之前剥离。
+    from ..intent import parse_intent_line, register_commitment
+
+    text, intent_line = parse_intent_line(text)
+    if intent_line:
+        register_commitment(deps, state, now=current, **intent_line)
+
     # 指标 4 双轨埋点（R24 A 轨 / R7 B 轨）：只在产出这一刻采样，
     # 保证"注入侧组合熵"与"产出侧文本多样性"同尺度可比。
     telemetry = deps.telemetry
@@ -279,6 +288,16 @@ def build_life_fragment_prompt(
             "眼前停得最久的那个画面，以及你因此悄悄变化的一点认知。"
             "不用惊天动地——只要不是每天都在发生的就行。"
         )
+    # 意图行登记说明（P2 / R45 / ADR-0006）：P1 时态纪律（禁预决策）的结构化去处——
+    # 对人的挂念不写进散文当决定，另起一行登记进意图账本，到期由账本带对话事实
+    # 重判。可选指令：没有就什么都不写，不为了写而编。解析在 intent.parse_intent_line。
+    chunks.append(
+        "如果这一段正好写着你对某个具体的人的挂念（想提醒他什么事、答应过什么事、"
+        "想知道他某件事的进展），可以在正文之后另起一行登记这条挂念，格式：\n"
+        "[意图] 谁|惦记的具体的事|什么时候想起该跟进（今晚/明天/这两天 三选一）\n"
+        "这行是账本备忘，不是正文的一部分，至多写一行；没有就什么都不写，"
+        "不要为了写而编。"
+    )
     return "\n".join(chunks)
 
 

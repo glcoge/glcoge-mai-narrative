@@ -19,7 +19,8 @@ schema（9 字段 + 保留原三键；**缺键 = 该维度不适用**，读取�
 | ``text`` | 必写 | 呈现文本（由头/注入消费的唯一文本源） | life.py |
 | ``highlight`` | 必写 | 高光标记（P19 冻结区，只读不改语义） | life.py |
 | ``from_uid`` | 不写键 | 事件发起方（self 语义由 scope 隐含） | 批 3 commitment |
-| ``to_uid`` | 不写键 | 事件对象 | 批 3 commitment |
+| ``to_uid`` | 不写键 | 事件对象（**强绑定 uid**） | 暂无消费方（v1 用 ``target_ref`` 弱绑定，见下） |
+| ``target_ref`` | 不写键 | 事件对象的**弱引用**（素材里的称呼原词，如「那家伙」——不解析 uid） | 批 3 commitment（P2/R45 起） |
 | ``what`` | 不写键 | 结构化概要（谁→谁、做什么；防承诺方向漂移） | 批 3 commitment |
 | ``due_ts`` | 不写键 | 履约时限 | 批 3 commitment |
 | ``status`` | 不写键 | ``pending`` / ``resolved`` / ``expired``（缺省=pending） | 批 2/3 |
@@ -44,6 +45,7 @@ __all__ = [
     "DEFAULT_KIND",
     "make_fragment_event",
     "make_seed_event",
+    "make_commitment_event",
     "event_kind",
     "event_key",
     "normalize_event",
@@ -106,6 +108,28 @@ def make_seed_event(
         "kind": KIND_SEED,
         "importance": importance,
         "urgency": urgency,
+    }
+
+
+def make_commitment_event(
+    ts: str, text: str, what: str, target_ref: str, due_ts: str
+) -> Dict[str, Any]:
+    """构造一条 commitment 事件实体（P2 / R45，intent.py 写入端唯一入口）。
+
+    批 0 预留的第三型在此激活（ADR-0006）：对人的未来动作/挂念的结构化账目。
+    ``status`` 不写键（缺省 = pending，schema 表口径）；``to_uid`` 强绑定键留空
+    （v1 弱绑定裁定：素材称呼原词进 ``target_ref``，不解析 uid）；``highlight``
+    恒 False（与 seed 同理——账目不是高光素材）。
+    """
+    return {
+        "ts": ts,
+        "text": text,
+        "highlight": False,
+        "event_id": _event_id(ts, text),
+        "kind": KIND_COMMITMENT,
+        "what": what,
+        "target_ref": target_ref,
+        "due_ts": due_ts,
     }
 
 
