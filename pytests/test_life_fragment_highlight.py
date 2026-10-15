@@ -219,11 +219,18 @@ def test_render_keeps_full_fragment():
 
 
 def test_render_hard_cap_prevents_runaway():
-    """上限 1024 是防失控天花板（不是调节旋钮）：超长文本仍要被截住。"""
+    """上限 1024 是防失控天花板（不是调节旋钮）：超长文本仍要被截住。
+
+    2026-10-15（P1 顺手小项）：行首多了生成时间前缀，1024 天花板**连前缀一起计**
+    ——断言改为「行总长不破天花板 + 正文仍接近满额」，不锁前缀字数（前缀格式
+    将来再调也不破坏本用例的护栏意图）。
+    """
     fragment = "乙" * 5000
     text = _render_with_fragment(fragment)
-    assert ("乙" * 1024) in text, "应保留到 1024 字"
-    assert ("乙" * 1025) not in text, "超过 1024 字的部分必须截掉"
+    line = next(l for l in text.splitlines() if "乙" in l)
+    body = line.strip()[len("- "):]
+    assert len(body) <= 1024, f"超过 1024 的部分必须截掉（含时间前缀）: {len(body)}"
+    assert ("乙" * 1000) in text, "正文应保留到接近 1024 字"
 
 
 def test_bysource_keeps_full_fragment():

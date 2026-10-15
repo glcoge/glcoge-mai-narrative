@@ -1,12 +1,17 @@
-"""通信事实标记（v0.2.0 批 4 · C9 / R25 / ADR-0003 §8）。
+"""通信事实标记（v0.2.0 批 4 · C9 / R25 / ADR-0003 §8；2026-10-15 P1 收紧）。
 
 **问题**：生活片段与每日小结都是*私下独白*，模型会顺手把「想联系谁」写成
 「已经给他发了消息」；下一轮生成又把这个片段当事实引用（"就我刚才说的"），
 而对方毫无记忆 → 对话自相矛盾，且污染长期记忆。
 
 **本批的解法（E8 裁定 (b)：只做合约句）**：在创作合约里明文写「通信事实以真实
-记录为准，片段里的联系只能写**意图**」。注入「最近真实已发送清单」需要接宿主
-账本，**留收尾里程碑**——本文件用「prompt 里没有清单标记」把这条边界钉住。
+记录为准」。注入「最近真实已发送清单」需要接宿主账本，**留收尾里程碑**——
+本文件用「prompt 里没有清单标记」把这条边界钉住。
+
+**2026-10-15 收紧（P1 时态纪律，催饭复读事故裁定）**：旧版允许「打算」（想回他
+一句），但 10-14 晚事故素材「一会儿还是得发消息催催那家伙」恰好落在允许侧被
+planner 照办成主动催饭。四条收紧（禁既成事实 / 散文停在 now / 对人动作禁预决策 /
+禁自造日程）由本文件的锚定用例锁住。
 
 运行（项目根）：
 
@@ -72,11 +77,39 @@ def test_rule_declares_ledger_authority():
     assert "真实记录为准" in COMM_FACT_RULE
 
 
-def test_rule_forbids_fact_form_and_names_intent_form():
+def test_rule_forbids_fact_form():
+    """C9 核心（2026-10-15 收紧后原样保留）：点名禁止「既成事实」形态。"""
     assert "既成事实" in COMM_FACT_RULE, "必须点名禁止的形态"
-    assert "意图" in COMM_FACT_RULE or "打算" in COMM_FACT_RULE, "必须给出正确的写法"
-    # 给出正向例子（模型照例子学比照禁令学稳）
-    assert "想回" in COMM_FACT_RULE
+
+
+def test_rule_predetermined_outreach_examples_moved_to_forbidden_side():
+    """2026-10-15 收紧核心（催饭复读事故裁定）：旧版允例（想回他一句/明天问问她）
+    全部移到禁止侧，且新增事故同型例句（得发消息催他）。
+
+    10-14 晚事故素材「一会儿还是得发消息催催那家伙」落在旧版「打算」允许侧，
+    被 planner 照办成主动催饭——预决策例句必须作为**禁止例**出现在规则里，
+    让模型照例子学禁令（照禁令学不稳，同 C9 正向例子教训）。
+    """
+    for example in ("得发消息催他", "想回他一句", "明天问问她"):
+        assert example in COMM_FACT_RULE, f"禁止侧预决策例句缺失: {example}"
+
+
+def test_rule_allows_undecided_concern_forms():
+    """允许侧只留未定挂念与疑惑——要不要行动是之后对话轮的裁决，不是创作层的。"""
+    assert "惦记" in COMM_FACT_RULE, "必须给出允许侧的挂念例句"
+    assert "不知道他回了没" in COMM_FACT_RULE, "必须给出允许侧的疑惑例句"
+
+
+def test_rule_names_concern_as_the_legal_future_form():
+    """纪律②（散文停在 now）：未来只能以挂念/期待/犹豫的形态出现。"""
+    assert "散文停在" in COMM_FACT_RULE, "必须有停笔时点的明文"
+    for form in ("挂念", "期待", "犹豫"):
+        assert form in COMM_FACT_RULE, f"合法未来形态缺失: {form}"
+
+
+def test_rule_forbids_invented_schedule():
+    """纪律④（禁自造日程性未来）：事故实录「明天居然还得大扫除」进禁止例。"""
+    assert "大扫除" in COMM_FACT_RULE, "必须点名自造日程的禁止例"
 
 
 def test_rule_covers_the_three_contact_verbs():

@@ -113,6 +113,45 @@ def test_planner_block_injects_at_most_two_fragments():
     assert "最早的片段" not in text, "注入端只应取最近 2 条（容量放宽不改变注入条数）"
 
 
+# ===== 挂念片段的新鲜度前缀（2026-10-15 P1 顺手小项） =====
+
+
+def test_pending_fragment_carries_same_day_time_prefix():
+    """当日条目带（HH:MM）前缀——模型可据此分辨素材新鲜度（治过时素材照样新鲜注入）。"""
+    state = _make_state()
+    state["state"]["focus"]["pending_events"] = [
+        {"ts": "2026-09-11T08:00:00", "text": "惦记着白天没拼完的模型"},
+    ]
+    text = build_context_block(_make_plugin(), state, None, _NOW, [])
+    assert "（08:00）惦记着白天没拼完的模型" in text
+
+
+def test_pending_fragment_cross_day_prefix_carries_date():
+    """跨日条目带（MM-DD HH:MM）前缀——昨天的「等会儿要做 X」一眼可辨过时。"""
+    state = _make_state()
+    state["state"]["focus"]["pending_events"] = [
+        {"ts": "2026-09-10T21:05:00", "text": "等会儿要做手工"},
+    ]
+    text = build_context_block(_make_plugin(), state, None, _NOW, [])
+    assert "（09-10 21:05）等会儿要做手工" in text
+
+
+def test_pending_fragment_without_ts_still_injected_bare():
+    """ts 缺失/损坏 → 无前缀不炸（旧条目零迁移兼容，正文照常注入）。"""
+    state = _make_state()
+    state["state"]["focus"]["pending_events"] = [
+        {"text": "没有时间戳的旧条目"},
+        {"ts": "不是时间", "text": "时间戳损坏的条目"},
+    ]
+    text = build_context_block(_make_plugin(), state, None, _NOW, [])
+    assert "没有时间戳的旧条目" in text
+    assert "时间戳损坏的条目" in text
+    for line in text.splitlines():
+        assert "没有时间戳的旧条目" not in line or "（" not in line.split("没有时间戳的旧条目")[0], (
+            "无 ts 条目不得带时间前缀"
+        )
+
+
 # ===== 回归用例 =====
 
 

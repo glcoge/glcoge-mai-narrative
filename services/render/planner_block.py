@@ -79,6 +79,23 @@ def _elapsed_hours(iso_ts: str, now: datetime) -> Optional[float]:
     return (now - ts).total_seconds() / 3600
 
 
+def _fragment_ts_prefix(ts: Any, now: datetime) -> str:
+    """挂念片段的新鲜度前缀（2026-10-15 P1 顺手小项）。
+
+    当日 → ``（HH:MM）``；跨日 → ``（MM-DD HH:MM）``；ts 缺失或解析失败 →
+    空串（旧条目零迁移兼容，不炸）。解析路径与 ``_elapsed_hours`` 同款。
+    """
+    if not ts:
+        return ""
+    try:
+        ts_dt = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return ""
+    if ts_dt.date() == now.date():
+        return f"（{ts_dt.strftime('%H:%M')}）"
+    return f"（{ts_dt.strftime('%m-%d %H:%M')}）"
+
+
 def build_injected_item(text: str, now: Optional[datetime] = None) -> Dict[str, Any]:
     """构造可注入 before_request items 的用户消息快照（与 snapshot 格式一致）。"""
     current = now or datetime.now()
@@ -327,12 +344,15 @@ def build_context_block(
     # v0.1.3：创作层产出的生活片段（bot 自己的故事，供对话引用，防复述）
     # 2026-09-21：上限统一取 INJECT_TEXT_CAP（1024）。旧的 56/120 字会把 major 档
     # （可达 400 字）的细节截掉，等于白写；1024 只作防失控天花板，条数仍限最近 2 条。
+    # 2026-10-15（P1 顺手小项）：每条带生成时间前缀——给模型素材新鲜度信号，
+    # 治「过时素材照样新鲜注入」（10-14 晚 20:42 还在注入「等会儿大扫除」式旧素材）。
     pending_events = filter_entries(list(inner.get("focus", {}).get("pending_events", [])), audience)
-    fragments = [
-        str(item.get("text", "")).strip()
-        for item in pending_events[-2:]
-        if str(item.get("text", "") or "").strip()
-    ]
+    fragments = []
+    for item in pending_events[-2:]:
+        text = str(item.get("text", "") or "").strip()
+        if not text:
+            continue
+        fragments.append(f"{_fragment_ts_prefix(item.get('ts'), now)}{text}")
     if fragments:
         lines.append(
             "- 你心里正挂念的生活片段：\n"
