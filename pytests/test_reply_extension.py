@@ -132,6 +132,9 @@ def test_prepare_carries_bysource_and_catch_instruction():
     assert _BY_SOURCE in prompt
     assert "不要逐字复述" in prompt
     assert "不要解释这是主动消息" in prompt
+    # 转述口径（2026-10-16 终版）：与主动轮素材说明同句（reply_reference 同口径裁定）
+    assert "打字聊天的口吻转述" in prompt
+    assert "别照搬原文的书面句式" in prompt
 
 
 def test_prepare_empty_without_bysource():

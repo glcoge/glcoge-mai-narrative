@@ -145,6 +145,34 @@ def test_fire_injects_material_before_trigger(monkeypatch):
     assert _FRAGMENT in segments[0]["content"]
     assert "素材" in segments[0]["content"]
     assert "不是用户发言" in segments[0]["content"]
+    # 转述口径（2026-10-16 终版）：片段是书面叙述，提醒转打字口吻
+    assert "打字聊天的口吻转述" in segments[0]["content"]
+    assert "别照搬原文的书面句式" in segments[0]["content"]
+
+
+def test_fire_commitment_material_carries_translation_note(monkeypatch):
+    """意图由头分支：挂念头部 + 转述口径同句（同口径裁定）；不再取普通素材。"""
+    import sys
+
+    scheduler, plugin, calls = _make_plugin(monkeypatch)
+    sched_mod = sys.modules[type(scheduler).__module__]
+
+    async def fake_settle(p, user_id, now):
+        return {"text": "一直惦记着那家伙：晚饭吃没吃", "event_id": "ev_c", "origin": "commitment"}
+
+    monkeypatch.setattr(sched_mod, "_settle_intent_due", fake_settle)
+    monkeypatch.setattr(
+        sched_mod.sourcing,
+        "build_bysource_detail",
+        lambda deps, uid, now: (_ for _ in ()).throw(AssertionError("act 由头在场不得再取普通素材")),
+    )
+    asyncio.run(scheduler._fire(_UID, _STREAM, _NOW))
+
+    _, segments, _ = calls["append"][0]
+    content = segments[0]["content"]
+    assert "近期挂念 · 素材" in content
+    assert "一直惦记着那家伙" in content
+    assert "打字聊天的口吻转述" in content, "挂念分支与普通分支同口径"
 
 
 def test_reason_is_guidance_not_material(monkeypatch):

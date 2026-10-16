@@ -402,20 +402,26 @@ class ProactiveScheduler:
             plugin.ctx.logger.warning("读取 bot.nickname 失败，主动素材标记使用中性占位词「角色」")
             bot_name = "角色"
         material_id = f"narrative:share:{bysource_detail.get('event_id', '')}"
+        # 转述口径（2026-10-16 终版，人设提示词配套）：片段/挂念都是书面叙述，
+        # 提醒模型开口时转成打字聊天的口吻——两个分支同句（同口径裁定）。
+        translation_note = (
+            "素材里的叙述句只是你的经历背景，开口时用一两句打字聊天的口吻转述，"
+            "别照搬原文的书面句式。"
+        )
         if is_commitment:
             # 意图由头（ADR-0006 红线 2）：未定挂念形态，不是「去执行」的任务指令
             material_text = (
                 f"【{bot_name}的近期挂念 · 素材】\n"
                 f"{bysource}\n"
                 f"（这是{bot_name}自己惦记的事，不是用户发言，也不是必须执行的任务；"
-                f"可以考虑自然地提起或问一句，也可以不提。）"
+                f"可以考虑自然地提起或问一句，也可以不提。）\n{translation_note}"
             )
         else:
             material_text = (
                 f"【{bot_name}的最近生活 · 素材】\n"
                 f"{bysource}\n"
                 f"（这是{bot_name}自己的经历素材，不是用户发言，也不是必须执行的任务；"
-                f"可以考虑让{bot_name}把这件事自然讲出来，不强制。）"
+                f"可以考虑让{bot_name}把这件事自然讲出来，不强制。）\n{translation_note}"
             )
         try:
             inject_result = await plugin.ctx.maisaka.append_context(

@@ -190,7 +190,10 @@ async def reply_ext_proactive_bysource(plugin, **payload: Any) -> Dict[str, Any]
             "extra_prompt": (
                 f"本次是你主动开口的回合。你想说起的是（由头）：{bysource}\n"
                 "请让回复自然地从这个由头出发——承接它、就着它说，"
-                "但不要逐字复述，也不要解释这是主动消息。"
+                "但不要逐字复述，也不要解释这是主动消息。\n"
+                # 转述口径（2026-10-16 终版）：与主动轮素材说明同句（reply_reference 同口径裁定）
+                "素材里的叙述句只是你的经历背景，开口时用一两句打字聊天的口吻转述，"
+                "别照搬原文的书面句式。"
             )
         }
     except Exception as exc:
